@@ -55,6 +55,8 @@ class PainFinderBot:
 
     def _is_authorized(self, update) -> bool:
         import config
+        if update.effective_chat is None:
+            return False
         return update.effective_chat.id == config.TELEGRAM_CHAT_ID
 
     async def cmd_analyze(self, update, ctx):
