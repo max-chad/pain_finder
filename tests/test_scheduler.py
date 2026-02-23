@@ -62,3 +62,25 @@ async def test_get_job_count_returns_correct_number():
     await sched.reload_jobs()
     assert sched.job_count() == 3
     sched.stop()
+
+
+async def test_run_analysis_updates_last_checked_on_success():
+    mock_db = AsyncMock()
+    mock_analyze = AsyncMock()
+    sched = MonitoringScheduler(db=mock_db, analyze_fn=mock_analyze)
+
+    await sched._run_analysis("python")
+
+    mock_analyze.assert_awaited_once_with("python")
+    mock_db.update_last_checked.assert_awaited_once_with("python")
+
+
+async def test_run_analysis_skips_last_checked_on_failure():
+    mock_db = AsyncMock()
+    mock_analyze = AsyncMock(side_effect=RuntimeError("boom"))
+    sched = MonitoringScheduler(db=mock_db, analyze_fn=mock_analyze)
+
+    await sched._run_analysis("python")
+
+    mock_analyze.assert_awaited_once_with("python")
+    mock_db.update_last_checked.assert_not_awaited()

@@ -103,3 +103,35 @@ async def test_analyze_handles_empty_choices(respx_mock):
     client = OpenRouterClient(api_key="test-key", model="test-model")
     result = await client.analyze_post(title="Test", body="Test body")
     assert result is None
+
+
+async def test_analyze_retries_transient_http_errors(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        side_effect=[
+            httpx.Response(503),
+            httpx.Response(503),
+            httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"category": "complaint", "summary": "Retry worked", "severity": "medium"}'
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    with patch("openrouter.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        result = await client.analyze_post(title="Test", body="Body")
+
+    assert result is not None
+    assert result.summary == "Retry worked"
+    assert route.call_count == 3
+    assert sleep_mock.await_count == 2

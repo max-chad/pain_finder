@@ -106,3 +106,22 @@ async def test_fetch_posts_falls_back_to_public_json_on_praw_failure(respx_mock)
         posts = await scraper.fetch_posts("python", limit=5)
 
     assert isinstance(posts, list)
+
+
+async def test_fetch_public_json_retries_transient_error(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        side_effect=[
+            httpx.Response(503),
+            httpx.Response(200, json={"data": {"children": []}}),
+        ]
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert posts == []
+    assert route.call_count == 2
+    sleep_mock.assert_awaited_once()

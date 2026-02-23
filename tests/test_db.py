@@ -57,3 +57,27 @@ async def test_save_report(db):
         subreddit="python", post_count=50, pain_count=12, json_path="reports/r.json"
     )
     assert report_id > 0
+
+
+async def test_get_latest_report_for_subreddit(db):
+    await db.save_report(
+        subreddit="python", post_count=1, pain_count=1, json_path="reports/old.json"
+    )
+    await db.save_report(
+        subreddit="python", post_count=2, pain_count=2, json_path="reports/new.json"
+    )
+    latest = await db.get_latest_report(subreddit="python")
+    assert latest is not None
+    assert latest["json_path"] == "reports/new.json"
+
+
+async def test_get_latest_report_global(db):
+    await db.save_report(
+        subreddit="python", post_count=1, pain_count=1, json_path="reports/py.json"
+    )
+    await db.save_report(
+        subreddit="rust", post_count=1, pain_count=1, json_path="reports/rust.json"
+    )
+    latest = await db.get_latest_report()
+    assert latest is not None
+    assert latest["subreddit"] == "rust"

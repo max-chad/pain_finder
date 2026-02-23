@@ -1,108 +1,247 @@
 # tests/test_bot.py
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
-from bot import format_report, parse_analyze_args, parse_monitor_args
+
+from bot import (
+    ANALYZE_USAGE,
+    EXPORT_USAGE,
+    MONITOR_USAGE,
+    UNMONITOR_USAGE,
+    PainFinderBot,
+    format_report,
+    normalize_subreddit,
+    parse_analyze_args,
+    parse_monitor_args,
+)
 from classifier import PainSignal
 from scraper import Post
 
 
-# --- parse_analyze_args ---
+def _make_update():
+    return SimpleNamespace(
+        effective_chat=SimpleNamespace(id=1),
+        message=AsyncMock(),
+    )
 
-def test_parse_analyze_args_subreddit_only():
+
+def _make_ctx(args):
+    return SimpleNamespace(args=args)
+
+
+def _make_signal(post_id: str, category: str, summary: str) -> PainSignal:
+    return PainSignal(
+        post=Post(post_id=post_id, subreddit="python", title="T", body="", url="", score=1),
+        category=category,
+        summary=summary,
+        severity="low",
+    )
+
+
+def test_normalize_subreddit_handles_r_prefix_and_case():
+    assert normalize_subreddit("r/Python") == "python"
+    assert normalize_subreddit("rust") == "rust"
+
+
+def test_normalize_subreddit_rejects_invalid_values():
+    with pytest.raises(ValueError):
+        normalize_subreddit("")
+    with pytest.raises(ValueError):
+        normalize_subreddit("r/py-thon!")
+
+
+def test_parse_analyze_args_defaults_limit():
     subreddit, limit = parse_analyze_args("r/python")
     assert subreddit == "python"
     assert limit == 100
 
 
-def test_parse_analyze_args_with_limit():
-    subreddit, limit = parse_analyze_args("r/startups 50")
-    assert subreddit == "startups"
-    assert limit == 50
-
-
-def test_parse_analyze_args_without_r_prefix():
-    subreddit, limit = parse_analyze_args("python")
-    assert subreddit == "python"
+def test_parse_analyze_args_keeps_rust_intact():
+    subreddit, limit = parse_analyze_args("rust")
+    assert subreddit == "rust"
     assert limit == 100
 
 
-def test_parse_analyze_args_empty_string():
-    subreddit, limit = parse_analyze_args("")
-    assert isinstance(subreddit, str)
-    assert isinstance(limit, int)
+def test_parse_analyze_args_rejects_invalid_limit():
+    with pytest.raises(ValueError, match="Usage: /analyze"):
+        parse_analyze_args("python 0")
+    with pytest.raises(ValueError, match="Usage: /analyze"):
+        parse_analyze_args("python 101")
+    with pytest.raises(ValueError, match="Usage: /analyze"):
+        parse_analyze_args("python ten")
 
 
-# --- parse_monitor_args ---
-
-def test_parse_monitor_args_with_hours():
-    subreddit, hours = parse_monitor_args("r/webdev 6h")
-    assert subreddit == "webdev"
-    assert hours == 6
-
-
-def test_parse_monitor_args_default_interval():
+def test_parse_monitor_args_defaults_interval():
     subreddit, hours = parse_monitor_args("r/python")
     assert subreddit == "python"
     assert hours == 24
 
 
-def test_parse_monitor_args_without_h_suffix():
-    subreddit, hours = parse_monitor_args("r/python 12")
-    assert hours == 24  # "12" without "h" suffix should use default
+def test_parse_monitor_args_rejects_invalid_interval_format_or_range():
+    with pytest.raises(ValueError, match="Usage: /monitor"):
+        parse_monitor_args("r/python 12")
+    with pytest.raises(ValueError, match="Usage: /monitor"):
+        parse_monitor_args("r/python 0h")
+    with pytest.raises(ValueError, match="Usage: /monitor"):
+        parse_monitor_args("r/python 999h")
 
-
-# --- format_report ---
 
 def test_format_report_empty():
     text = format_report("python", [])
-    assert "python" in text
-    assert "0" in text
+    assert "r/python" in text
+    assert "0 pain points" in text
 
 
-def test_format_report_with_complaint():
+def test_format_report_with_categories():
     signals = [
-        PainSignal(
-            post=Post("p1", "python", "Can't import module", "", "", 10),
-            category="complaint",
-            summary="User can't import module",
-            severity="high",
-        )
+        _make_signal("p1", "complaint", "Broken import path"),
+        _make_signal("p2", "unsolved", "Cannot configure env"),
+        _make_signal("p3", "wish", "Need export command"),
     ]
     text = format_report("python", signals)
-    assert "python" in text
-    assert "1" in text
-    assert "🔴" in text
+    assert "🔴 Complaints (1)" in text
+    assert "🟡 Unsolved (1)" in text
+    assert "🟢 Wishes (1)" in text
+    assert "/export" in text
 
 
-def test_format_report_with_wish():
-    signals = [
-        PainSignal(
-            post=Post("p1", "python", "Wish there was a linter", "", "", 5),
-            category="wish",
-            summary="User wants a linter",
-            severity="low",
-        )
-    ]
-    text = format_report("python", signals)
-    assert "🟢" in text
+async def test_cmd_monitor_reload_jobs_called_once():
+    db = AsyncMock()
+    reload_jobs = AsyncMock()
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        reload_jobs_fn=reload_jobs,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "1h"])
+    await bot.cmd_monitor(update, ctx)
+
+    db.add_monitored_subreddit.assert_awaited_once_with("python", interval_hours=1)
+    reload_jobs.assert_awaited_once()
+    update.message.reply_text.assert_awaited_once_with("✅ Now monitoring r/python every 1h")
 
 
-def test_format_report_with_unsolved():
-    signals = [
-        PainSignal(
-            post=Post("p1", "python", "How do I do X", "", "", 5),
-            category="unsolved",
-            summary="User needs help with X",
-            severity="medium",
-        )
-    ]
-    text = format_report("python", signals)
-    assert "🟡" in text
+async def test_cmd_unmonitor_reload_jobs_called_once():
+    db = AsyncMock()
+    reload_jobs = AsyncMock()
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        reload_jobs_fn=reload_jobs,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["rust"])
+    await bot.cmd_unmonitor(update, ctx)
+
+    db.remove_monitored_subreddit.assert_awaited_once_with("rust")
+    reload_jobs.assert_awaited_once()
+    update.message.reply_text.assert_awaited_once_with("🗑 Stopped monitoring r/rust")
 
 
-def test_format_report_count_is_correct():
-    signals = [
-        PainSignal(post=Post(f"p{i}", "python", "T", "", "", 1), category="complaint", summary="s", severity="low")
-        for i in range(5)
-    ]
-    text = format_report("python", signals)
-    assert "5" in text
+async def test_cmd_unmonitor_usage_on_invalid_input():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx([])
+    await bot.cmd_unmonitor(update, ctx)
+
+    update.message.reply_text.assert_awaited_once_with(UNMONITOR_USAGE)
+
+
+async def test_cmd_analyze_uses_injected_pipeline():
+    run = SimpleNamespace(signals=[_make_signal("p1", "complaint", "Broken install")])
+    analyze_fn = AsyncMock(return_value=run)
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        analyze_fn=analyze_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "10"])
+    await bot.cmd_analyze(update, ctx)
+
+    analyze_fn.assert_awaited_once_with("python", 10)
+    assert update.message.reply_text.await_count == 2
+    first_message = update.message.reply_text.await_args_list[0].args[0]
+    second_message = update.message.reply_text.await_args_list[1].args[0]
+    assert first_message.startswith("⏳ Analyzing r/python")
+    assert second_message.startswith("📊 r/python")
+
+
+async def test_cmd_analyze_returns_usage_on_parse_error():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "999"])
+    await bot.cmd_analyze(update, ctx)
+
+    update.message.reply_text.assert_awaited_once_with(ANALYZE_USAGE)
+
+
+async def test_cmd_export_usage_for_too_many_args():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "extra"])
+    await bot.cmd_export(update, ctx)
+
+    update.message.reply_text.assert_awaited_once_with(EXPORT_USAGE)
+
+
+async def test_cmd_export_handles_no_reports():
+    db = AsyncMock()
+    db.get_latest_report.return_value = None
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx([])
+    await bot.cmd_export(update, ctx)
+
+    db.get_latest_report.assert_awaited_once_with(subreddit=None)
+    update.message.reply_text.assert_awaited_once_with("No reports found yet.")
+
+
+async def test_cmd_export_sends_document(tmp_path):
+    report_path = tmp_path / "python_report.json"
+    report_path.write_text("{}", encoding="utf-8")
+
+    db = AsyncMock()
+    db.get_latest_report.return_value = {
+        "subreddit": "python",
+        "json_path": str(report_path),
+    }
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python"])
+    await bot.cmd_export(update, ctx)
+
+    db.get_latest_report.assert_awaited_once_with(subreddit="python")
+    update.message.reply_document.assert_awaited_once()
+
+
+async def test_cmd_monitor_usage_on_bad_args():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "12"])
+    await bot.cmd_monitor(update, ctx)
+
+    update.message.reply_text.assert_awaited_once_with(MONITOR_USAGE)
