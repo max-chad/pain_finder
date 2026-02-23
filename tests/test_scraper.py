@@ -1,0 +1,127 @@
+# tests/test_scraper.py
+import pytest
+import pytest_asyncio
+import httpx
+import respx
+from scraper import RedditScraper, Post
+
+
+async def test_post_dataclass_fields():
+    p = Post(
+        post_id="t3_abc",
+        subreddit="python",
+        title="Why can't I do X",
+        body="I've been trying for hours",
+        url="https://reddit.com/r/python/t3_abc",
+        score=42,
+    )
+    assert p.post_id == "t3_abc"
+    assert p.title == "Why can't I do X"
+    assert p.score == 42
+
+
+async def test_scraper_no_credentials_sets_use_praw_false():
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test")
+    assert scraper._use_praw is False
+
+
+async def test_scraper_with_credentials_sets_use_praw_true():
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test")
+    assert scraper._use_praw is True
+
+
+async def test_fetch_public_json_returns_posts(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, json={
+            "data": {
+                "children": [
+                    {"data": {
+                        "id": "abc1",
+                        "title": "Test post",
+                        "selftext": "body text",
+                        "url": "https://reddit.com/abc1",
+                        "score": 10,
+                        "subreddit": "python",
+                    }},
+                    {"data": {
+                        "id": "abc2",
+                        "title": "Another post",
+                        "selftext": "",
+                        "url": "https://reddit.com/abc2",
+                        "score": 5,
+                        "subreddit": "python",
+                    }},
+                ]
+            }
+        })
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    posts = await scraper._fetch_public_json("python", limit=10)
+    assert len(posts) == 2
+    assert posts[0].post_id == "abc1"
+    assert posts[0].title == "Test post"
+    assert posts[0].body == "body text"
+    assert posts[1].post_id == "abc2"
+
+
+async def test_fetch_public_json_handles_http_error(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/doesnotexist/top.json").mock(
+        return_value=httpx.Response(404)
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    with pytest.raises(httpx.HTTPStatusError):
+        await scraper._fetch_public_json("doesnotexist", limit=10)
+
+
+async def test_fetch_posts_uses_public_json_when_no_credentials(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, json={"data": {"children": []}})
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    posts = await scraper.fetch_posts("python", limit=5)
+    assert isinstance(posts, list)
+
+
+async def test_fetch_posts_uses_praw_when_credentials_set():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test")
+    expected = [Post(post_id="p1", subreddit="python", title="T", body="", url="", score=1)]
+
+    with patch.object(scraper, "_fetch_praw", new=AsyncMock(return_value=expected)):
+        posts = await scraper.fetch_posts("python", limit=10)
+
+    assert posts == expected
+
+
+async def test_fetch_posts_falls_back_to_public_json_on_praw_failure(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, json={"data": {"children": []}})
+    )
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test")
+
+    with patch.object(scraper, "_fetch_praw", new=AsyncMock(side_effect=Exception("PRAW down"))):
+        posts = await scraper.fetch_posts("python", limit=5)
+
+    assert isinstance(posts, list)
+
+
+async def test_fetch_public_json_retries_transient_error(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        side_effect=[
+            httpx.Response(503),
+            httpx.Response(200, json={"data": {"children": []}}),
+        ]
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert posts == []
+    assert route.call_count == 2
+    sleep_mock.assert_awaited_once()
