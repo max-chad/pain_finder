@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from dataclasses import dataclass
 import httpx
 
@@ -32,23 +33,27 @@ class RedditScraper:
 
     async def _fetch_praw(self, subreddit: str, limit: int, timeframe: str) -> list[Post]:
         import praw
-        reddit = praw.Reddit(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            user_agent=self.user_agent,
-        )
-        posts = []
-        sub = reddit.subreddit(subreddit)
-        for submission in sub.top(time_filter=timeframe, limit=limit):
-            posts.append(Post(
-                post_id=submission.id,
-                subreddit=subreddit,
-                title=submission.title,
-                body=submission.selftext or "",
-                url=f"https://reddit.com{submission.permalink}",
-                score=submission.score,
-            ))
-        return posts
+
+        def _sync_fetch() -> list[Post]:
+            reddit = praw.Reddit(
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                user_agent=self.user_agent,
+            )
+            posts = []
+            sub = reddit.subreddit(subreddit)
+            for submission in sub.top(time_filter=timeframe, limit=limit):
+                posts.append(Post(
+                    post_id=submission.id,
+                    subreddit=subreddit,
+                    title=submission.title,
+                    body=submission.selftext or "",
+                    url=f"https://reddit.com{submission.permalink}",
+                    score=submission.score,
+                ))
+            return posts
+
+        return await asyncio.to_thread(_sync_fetch)
 
     async def _fetch_public_json(self, subreddit: str, limit: int, timeframe: str = "day") -> list[Post]:
         url = f"https://www.reddit.com/r/{subreddit}/top.json"
