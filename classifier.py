@@ -50,11 +50,11 @@ class Classifier:
 
     def _keyword_category(self, post: Post) -> str:
         text = f"{post.title} {post.body}".lower()
-        if any(w in text for w in WISH_WORDS):
-            return "wish"
+        if any(w in text for w in COMPLAINT_WORDS):
+            return "complaint"
         if any(w in text for w in UNSOLVED_WORDS):
             return "unsolved"
-        return "complaint"
+        return "wish"
 
     async def classify(self, post: Post) -> Optional[PainSignal]:
         score = self.keyword_score(post)

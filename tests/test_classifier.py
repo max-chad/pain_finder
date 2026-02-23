@@ -34,7 +34,7 @@ def test_keyword_score_max_is_3():
     score = clf.keyword_score(make_post(
         title="I can't do this, wish it worked, help me please"
     ))
-    assert score <= 3
+    assert score == 3
 
 
 async def test_classify_skips_llm_for_zero_score():
@@ -65,7 +65,7 @@ async def test_classify_falls_back_to_keyword_when_llm_returns_none():
     post = make_post(title="I wish this tool had export feature")
     result = await clf.classify(post)
     assert result is not None
-    assert result.category in ("complaint", "unsolved", "wish")
+    assert result.category == "wish"
     assert result.summary == post.title[:120]
 
 
@@ -74,7 +74,7 @@ async def test_classify_without_llm_uses_keyword_fallback():
     post = make_post(title="I can't figure this out, stuck on it for days")
     result = await clf.classify(post)
     assert result is not None
-    assert result.category in ("complaint", "unsolved", "wish")
+    assert result.category == "complaint"
 
 
 async def test_classify_batch_filters_nones():
@@ -89,4 +89,4 @@ async def test_classify_batch_filters_nones():
     assert len(signals) >= 1
     assert all(s is not None for s in signals)
     pain_ids = {s.post.post_id for s in signals}
-    assert "p2" in pain_ids or "p4" in pain_ids
+    assert "p2" in pain_ids and "p4" in pain_ids
