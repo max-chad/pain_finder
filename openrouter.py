@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 VALID_CATEGORIES = {"complaint", "unsolved", "wish"}
 VALID_SEVERITIES = {"low", "medium", "high"}
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
 
 PROMPT_TEMPLATE = """Analyze this Reddit post and extract the pain point.
 
@@ -51,23 +54,53 @@ class OpenRouterClient:
         }
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(self.BASE_URL, json=payload, headers=headers)
-                resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
-                data = json.loads(content)
-                if (
-                    data.get("category") not in VALID_CATEGORIES
-                    or data.get("severity") not in VALID_SEVERITIES
-                    or not isinstance(data.get("summary"), str)
-                    or not data.get("summary")
-                ):
-                    logger.warning("OpenRouter returned invalid fields: %s", data)
-                    return None
-                return AnalysisResult(
-                    category=data["category"],
-                    summary=data["summary"],
-                    severity=data["severity"],
-                )
+                for attempt in range(1, 4):
+                    try:
+                        resp = await client.post(self.BASE_URL, json=payload, headers=headers)
+                        resp.raise_for_status()
+                        content = resp.json()["choices"][0]["message"]["content"]
+                        data = json.loads(content)
+                        if (
+                            data.get("category") not in VALID_CATEGORIES
+                            or data.get("severity") not in VALID_SEVERITIES
+                            or not isinstance(data.get("summary"), str)
+                            or not data.get("summary")
+                        ):
+                            logger.warning("OpenRouter returned invalid fields: %s", data)
+                            return None
+                        return AnalysisResult(
+                            category=data["category"],
+                            summary=data["summary"],
+                            severity=data["severity"],
+                        )
+                    except httpx.HTTPStatusError as e:
+                        status_code = e.response.status_code if e.response else None
+                        if (
+                            status_code in RETRYABLE_STATUS_CODES
+                            and attempt < 3
+                        ):
+                            delay = RETRY_BACKOFF_SECONDS[attempt - 1]
+                            logger.warning(
+                                "OpenRouter transient HTTP %s (attempt %d/3), retrying in %.1fs",
+                                status_code,
+                                attempt,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        raise
+                    except httpx.RequestError as e:
+                        if attempt < 3:
+                            delay = RETRY_BACKOFF_SECONDS[attempt - 1]
+                            logger.warning(
+                                "OpenRouter request error %s (attempt %d/3), retrying in %.1fs",
+                                e,
+                                attempt,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        raise
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
             logger.warning("OpenRouter analysis failed: %s", e)
             return None

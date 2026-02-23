@@ -37,6 +37,16 @@ CREATE TABLE IF NOT EXISTS reports (
     json_path TEXT
 )"""
 
+CREATE_IDX_PAIN_POINTS = """
+CREATE INDEX IF NOT EXISTS idx_pain_points_subreddit_created_at
+ON pain_points(subreddit, created_at DESC)
+"""
+
+CREATE_IDX_REPORTS = """
+CREATE INDEX IF NOT EXISTS idx_reports_subreddit_run_at
+ON reports(subreddit, run_at DESC)
+"""
+
 
 class Database:
     def __init__(self, path: str = "pain_finder.db"):
@@ -49,6 +59,8 @@ class Database:
         await self._conn.execute(CREATE_PAIN_POINTS)
         await self._conn.execute(CREATE_MONITORED)
         await self._conn.execute(CREATE_REPORTS)
+        await self._conn.execute(CREATE_IDX_PAIN_POINTS)
+        await self._conn.execute(CREATE_IDX_REPORTS)
         await self._conn.commit()
 
     async def close(self):
@@ -113,3 +125,18 @@ class Database:
         ) as cur:
             await self._conn.commit()
             return cur.lastrowid
+
+    async def get_latest_report(self, subreddit: str | None = None) -> dict | None:
+        if subreddit:
+            query = (
+                "SELECT * FROM reports WHERE subreddit = ? "
+                "ORDER BY run_at DESC, id DESC LIMIT 1"
+            )
+            params: tuple[object, ...] = (subreddit,)
+        else:
+            query = "SELECT * FROM reports ORDER BY run_at DESC, id DESC LIMIT 1"
+            params = ()
+
+        async with self._conn.execute(query, params) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None

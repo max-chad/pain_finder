@@ -46,5 +46,5 @@ class MonitoringScheduler:
         try:
             await self.analyze_fn(subreddit)
             await self.db.update_last_checked(subreddit)
-        except Exception as e:
-            logger.error("Scheduled analysis failed for r/%s: %s", subreddit, e)
+        except Exception:
+            logger.exception("Scheduled analysis failed for r/%s", subreddit)

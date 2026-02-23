@@ -1,14 +1,12 @@
 import asyncio
-import json
 import logging
-import os
-from datetime import UTC, datetime
 
 import config
 from bot import PainFinderBot, format_report
 from classifier import Classifier
 from db import Database
 from openrouter import OpenRouterClient
+from pipeline import AnalysisPipeline
 from scheduler import MonitoringScheduler
 from scraper import RedditScraper
 
@@ -20,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 async def run() -> None:
-    os.makedirs(config.REPORTS_DIR, exist_ok=True)
-
     db = Database(config.DB_PATH)
     await db.init()
 
@@ -35,58 +31,30 @@ async def run() -> None:
         model=config.OPENROUTER_MODEL,
     )
     classifier = Classifier(openrouter=openrouter)
-    bot = PainFinderBot(scraper=scraper, classifier=classifier, db=db)
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=config.REPORTS_DIR,
+    )
 
-    async def analyze_and_notify(subreddit: str, limit: int = 100) -> None:
-        posts = await scraper.fetch_posts(subreddit, limit=limit)
-        signals = await classifier.classify_batch(posts)
+    bot = PainFinderBot(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        analyze_fn=pipeline.analyze_subreddit,
+    )
 
-        for signal in signals:
-            await db.insert_pain_point(
-                subreddit=subreddit,
-                post_id=signal.post.post_id,
-                url=signal.post.url,
-                title=signal.post.title,
-                body=signal.post.body,
-                category=signal.category,
-                summary=signal.summary,
-                severity=signal.severity,
-            )
-
-        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        json_path = os.path.join(config.REPORTS_DIR, f"{subreddit}_{timestamp}.json")
-        with open(json_path, "w", encoding="utf-8") as report_file:
-            json.dump(
-                [
-                    {
-                        "post_id": signal.post.post_id,
-                        "title": signal.post.title,
-                        "url": signal.post.url,
-                        "category": signal.category,
-                        "summary": signal.summary,
-                        "severity": signal.severity,
-                    }
-                    for signal in signals
-                ],
-                report_file,
-                indent=2,
-                ensure_ascii=False,
-            )
-
-        await db.save_report(
-            subreddit=subreddit,
-            post_count=len(posts),
-            pain_count=len(signals),
-            json_path=json_path,
-        )
-
+    async def analyze_and_notify(subreddit: str) -> None:
+        run_result = await pipeline.analyze_subreddit(subreddit=subreddit, limit=100)
         if bot.app:
             await bot.app.bot.send_message(
                 chat_id=config.TELEGRAM_CHAT_ID,
-                text=format_report(subreddit, signals),
+                text=format_report(subreddit, run_result.signals),
             )
 
     scheduler = MonitoringScheduler(db=db, analyze_fn=analyze_and_notify)
+    bot.reload_jobs_fn = scheduler.reload_jobs
     scheduler_started = False
 
     try:
