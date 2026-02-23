@@ -83,3 +83,23 @@ async def test_body_truncated_to_1000_chars(respx_mock):
     req_body = json.loads(captured_requests[0].content)
     prompt = req_body["messages"][0]["content"]
     assert "OVERFLOW_MARKER" not in prompt
+
+
+async def test_analyze_rejects_invalid_category(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "choices": [{"message": {"content": '{"category": "frustration", "summary": "s", "severity": "high"}'}}]
+        })
+    )
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    result = await client.analyze_post(title="Test", body="Test body")
+    assert result is None
+
+
+async def test_analyze_handles_empty_choices(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    result = await client.analyze_post(title="Test", body="Test body")
+    assert result is None

@@ -6,6 +6,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+VALID_CATEGORIES = {"complaint", "unsolved", "wish"}
+VALID_SEVERITIES = {"low", "medium", "high"}
+
 PROMPT_TEMPLATE = """Analyze this Reddit post and extract the pain point.
 
 Title: {title}
@@ -52,11 +55,14 @@ class OpenRouterClient:
                 resp.raise_for_status()
                 content = resp.json()["choices"][0]["message"]["content"]
                 data = json.loads(content)
+                if data.get("category") not in VALID_CATEGORIES or data.get("severity") not in VALID_SEVERITIES:
+                    logger.warning("OpenRouter returned invalid fields: %s", data)
+                    return None
                 return AnalysisResult(
                     category=data["category"],
                     summary=data["summary"],
                     severity=data["severity"],
                 )
-        except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
             logger.warning("OpenRouter analysis failed: %s", e)
             return None
