@@ -1,9 +1,10 @@
 # tests/test_db.py
 import pytest
+import pytest_asyncio
 import aiosqlite
 from db import Database
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db(tmp_path):
     d = Database(str(tmp_path / "test.db"))
     await d.init()

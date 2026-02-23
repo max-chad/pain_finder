@@ -1,5 +1,8 @@
+import logging
 import aiosqlite
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 CREATE_PAIN_POINTS = """
 CREATE TABLE IF NOT EXISTS pain_points (
@@ -43,9 +46,9 @@ class Database:
     async def init(self):
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
-        await self._conn.executescript(
-            f"{CREATE_PAIN_POINTS}; {CREATE_MONITORED}; {CREATE_REPORTS};"
-        )
+        await self._conn.execute(CREATE_PAIN_POINTS)
+        await self._conn.execute(CREATE_MONITORED)
+        await self._conn.execute(CREATE_REPORTS)
         await self._conn.commit()
 
     async def close(self):
@@ -62,8 +65,8 @@ class Database:
                 (subreddit, post_id, url, title, body, category, summary, severity),
             )
             await self._conn.commit()
-        except Exception:
-            pass  # log in production
+        except Exception as e:
+            logger.error("Failed to insert pain point %s: %s", post_id, e)
 
     async def get_pain_points(self, subreddit: str) -> list[dict]:
         async with self._conn.execute(
@@ -75,7 +78,8 @@ class Database:
 
     async def add_monitored_subreddit(self, name: str, interval_hours: int):
         await self._conn.execute(
-            "INSERT OR REPLACE INTO monitored_subreddits (name, interval_hours) VALUES (?, ?)",
+            "INSERT INTO monitored_subreddits (name, interval_hours) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET interval_hours = excluded.interval_hours",
             (name, interval_hours),
         )
         await self._conn.commit()
