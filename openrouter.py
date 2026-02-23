@@ -55,7 +55,12 @@ class OpenRouterClient:
                 resp.raise_for_status()
                 content = resp.json()["choices"][0]["message"]["content"]
                 data = json.loads(content)
-                if data.get("category") not in VALID_CATEGORIES or data.get("severity") not in VALID_SEVERITIES:
+                if (
+                    data.get("category") not in VALID_CATEGORIES
+                    or data.get("severity") not in VALID_SEVERITIES
+                    or not isinstance(data.get("summary"), str)
+                    or not data.get("summary")
+                ):
                     logger.warning("OpenRouter returned invalid fields: %s", data)
                     return None
                 return AnalysisResult(
