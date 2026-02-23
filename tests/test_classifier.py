@@ -86,7 +86,7 @@ async def test_classify_batch_filters_nones():
         make_post(title="Wish this had dark mode", post_id="p4"),
     ]
     signals = await clf.classify_batch(posts)
-    assert len(signals) >= 1
+    assert len(signals) >= 2
     assert all(s is not None for s in signals)
     pain_ids = {s.post.post_id for s in signals}
     assert "p2" in pain_ids and "p4" in pain_ids
