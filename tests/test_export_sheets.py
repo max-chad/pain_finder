@@ -108,7 +108,6 @@ async def test_export_service_returns_sheet_url_on_success(tmp_path):
 async def test_upsert_google_sheet_is_sync_method(tmp_path):
     """_upsert_google_sheet must remain a regular (non-async) method."""
     import asyncio as _asyncio
-    import inspect
 
     db = MagicMock()
     service = ExportService(
