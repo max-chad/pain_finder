@@ -1,37 +1,117 @@
-# tests/test_openrouter.py
-import pytest
+﻿from unittest.mock import AsyncMock
+
 import httpx
-import respx
-from openrouter import OpenRouterClient, AnalysisResult
+
+from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient
 
 
-async def test_analyze_returns_structured_result(respx_mock):
+async def test_analyze_returns_primary_b2b_result(respx_mock):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={
-            "choices": [{
-                "message": {
-                    "content": '{"category": "complaint", "summary": "User frustrated with billing", "severity": "high"}'
-                }
-            }]
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 9, '
+                                '"niche_category": "E-commerce", "competitor_tags": ["shopify"], '
+                                '"summary": "Inventory sync is failing for stores", "category": "complaint", '
+                                '"severity": "high"}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
     )
+
     client = OpenRouterClient(api_key="test-key", model="test-model")
     result = await client.analyze_post(
-        title="AWS billing is insane",
-        body="I got a $500 bill and have no idea why",
+        title="Shopify inventory mismatch",
+        body="We lose sales when stock sync lags",
     )
+
     assert result is not None
-    assert result.category == "complaint"
-    assert result.severity == "high"
-    assert "billing" in result.summary
+    assert result.is_monetizable is True
+    assert result.willingness_to_pay == 9
+    assert result.niche_category == "E-commerce"
+    assert result.competitor_tags == ["shopify"]
+
+
+async def test_analyze_rejects_invalid_primary_schema(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": "yes", "pain_level": 11, "willingness_to_pay": 9, "niche_category": "X", "summary": "bad", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    result = await client.analyze_post(title="T", body="B")
+    assert result is None
+
+
+async def test_legacy_analysis_returns_result(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"category": "wish", "summary": "Need export feature", "severity": "low"}'
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    result = await client.analyze_legacy_post(title="Wish", body="Need CSV")
+    assert isinstance(result, AnalysisResult)
+    assert result.category == "wish"
+
+
+async def test_deep_dive_analysis_returns_structured_result(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"workarounds": ["manual CSV"], "competitors": ["Tool A"], "feature_wishlist": ["auto sync"], "buying_signals": ["paying now"], "icp_hypothesis": "SMB stores", "actionable_summary": "Build auto inventory sync"}'
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    client = OpenRouterClient(api_key="test-key", model="test-model", deep_dive_model="deep-model")
+    result = await client.analyze_deep_dive(title="T", thread_text="Thread")
+    assert isinstance(result, DeepDiveResult)
+    assert result.actionable_summary.startswith("Build")
 
 
 async def test_analyze_handles_malformed_json(respx_mock):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={
-            "choices": [{"message": {"content": "not valid json at all"}}]
-        })
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "not valid json"}}]},
+        )
     )
+
     client = OpenRouterClient(api_key="test-key", model="test-model")
     result = await client.analyze_post(title="Test", body="Test body")
     assert result is None
@@ -46,63 +126,34 @@ async def test_analyze_handles_api_error(respx_mock):
     assert result is None
 
 
-async def test_analyze_handles_missing_keys_in_response(respx_mock):
-    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={
-            "choices": [{"message": {"content": '{"category": "complaint"}'}}]
-        })
-    )
-    client = OpenRouterClient(api_key="test-key", model="test-model")
-    result = await client.analyze_post(title="Test", body="Test body")
-    assert result is None
-
-
-async def test_analysis_result_fields():
-    result = AnalysisResult(category="wish", summary="User wants feature X", severity="low")
-    assert result.category == "wish"
-    assert result.summary == "User wants feature X"
-    assert result.severity == "low"
-
-
-async def test_body_truncated_to_1000_chars(respx_mock):
-    # Place a unique marker after the 1000-char boundary
-    long_body = "A" * 1000 + "OVERFLOW_MARKER"
+async def test_body_truncated_for_large_prompt(respx_mock):
+    long_body = "A" * 7000 + "OVERFLOW_MARKER"
     captured_requests = []
 
     def capture(request):
         captured_requests.append(request)
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": '{"category": "complaint", "summary": "s", "severity": "low"}'}}]
-        })
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": false, "pain_level": 0, "willingness_to_pay": 0, "niche_category": "", "competitor_tags": [], "summary": "s", "category": "complaint", "severity": "low"}'
+                        }
+                    }
+                ]
+            },
+        )
 
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=capture)
     client = OpenRouterClient(api_key="test-key", model="test-model")
     await client.analyze_post(title="Test", body=long_body)
 
     import json
+
     req_body = json.loads(captured_requests[0].content)
     prompt = req_body["messages"][0]["content"]
     assert "OVERFLOW_MARKER" not in prompt
-
-
-async def test_analyze_rejects_invalid_category(respx_mock):
-    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={
-            "choices": [{"message": {"content": '{"category": "frustration", "summary": "s", "severity": "high"}'}}]
-        })
-    )
-    client = OpenRouterClient(api_key="test-key", model="test-model")
-    result = await client.analyze_post(title="Test", body="Test body")
-    assert result is None
-
-
-async def test_analyze_handles_empty_choices(respx_mock):
-    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    client = OpenRouterClient(api_key="test-key", model="test-model")
-    result = await client.analyze_post(title="Test", body="Test body")
-    assert result is None
 
 
 async def test_analyze_retries_transient_http_errors(respx_mock):
@@ -118,7 +169,7 @@ async def test_analyze_retries_transient_http_errors(respx_mock):
                     "choices": [
                         {
                             "message": {
-                                "content": '{"category": "complaint", "summary": "Retry worked", "severity": "medium"}'
+                                "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "DevOps", "summary": "Retry worked", "category": "complaint", "severity": "medium"}'
                             }
                         }
                     ]
@@ -135,3 +186,162 @@ async def test_analyze_retries_transient_http_errors(respx_mock):
     assert result.summary == "Retry worked"
     assert route.call_count == 3
     assert sleep_mock.await_count == 2
+
+
+async def test_cluster_label_and_gtm_methods(respx_mock):
+    route = respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"label":"QuickBooks API Failures","summary":"Many SMB teams report failed ledger sync.","estimated_monetization_signal":"high","key_complaints":["sync","mapping"]}'
+                            }
+                        }
+                    ]
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"name_options":["SyncPilot","LedgerFlow","ReconMate"],'
+                                    '"hero_h1":"Stop failed accounting sync","hero_h2":"Recover hours every week",'
+                                    '"mvp_features":["Retry queue","Diff checks","Alert routing"],'
+                                    '"pricing_tier":"$49/mo",'
+                                    '"positioning_rationale":"SMB finance teams need reliability first."}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="m1",
+        cluster_model="m2",
+        gtm_model="m3",
+    )
+    label = await client.label_macro_cluster(cluster_text="sample", cluster_size=3)
+    gtm = await client.generate_gtm(context="sample context", post_id="reddit:abc")
+
+    assert label is not None
+    assert label.label == "QuickBooks API Failures"
+    assert gtm is not None
+    assert gtm.name_options[0] == "SyncPilot"
+    assert route.call_count == 2
+
+
+async def test_usage_tracking_calls_budget_guard(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 300},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="m1",
+        pricing_map={"m1": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}},
+        budget_guard=budget,
+    )
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
+
+    assert result is not None
+    budget.ensure_can_spend.assert_awaited_once_with("classify_primary")
+    budget.record_usage.assert_awaited_once()
+    call_kwargs = budget.record_usage.await_args.kwargs
+    assert call_kwargs["model"] == "m1"
+    assert call_kwargs["operation"] == "classify_primary"
+    assert call_kwargs["prompt_tokens"] == 1200
+    assert call_kwargs["completion_tokens"] == 300
+    assert call_kwargs["cost_usd"] == 0.0036
+
+
+def test_safe_json_load_handles_code_fence():
+    raw = """```json
+    {"category":"complaint","summary":"x","severity":"low"}
+    ```"""
+    payload = OpenRouterClient._safe_json_load(raw)
+    assert payload["category"] == "complaint"
+
+
+async def test_retry_bound_derived_from_backoff_tuple_length(respx_mock):
+    """Retry count adjusts automatically when RETRY_BACKOFF_SECONDS length changes."""
+    from unittest.mock import AsyncMock, patch
+
+    import openrouter as or_module
+
+    # Patch backoff to only 2 entries -> should retry once, give up on attempt 2.
+    with patch.object(or_module, "RETRY_BACKOFF_SECONDS", (0.1, 0.2)):
+        route = respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(503),
+            ]
+        )
+        client = OpenRouterClient(api_key="test-key", model="test-model")
+
+        with patch("openrouter.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            result = await client.analyze_post(title="T", body="B")
+
+    # 2-entry backoff: attempt 1 retries (sleep once), attempt 2 raises -> caught -> None
+    assert result is None
+    assert route.call_count == 2
+    assert sleep_mock.await_count == 1
+
+
+async def test_request_error_retries_then_returns_none(respx_mock):
+    """Network-level RequestError is retried up to len(RETRY_BACKOFF_SECONDS) times."""
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    with patch("openrouter.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        result = await client.analyze_post(title="T", body="B")
+
+    from openrouter import RETRY_BACKOFF_SECONDS
+
+    assert result is None
+    assert route.call_count == len(RETRY_BACKOFF_SECONDS)
+    # sleeps happen on all attempts except the last
+    assert sleep_mock.await_count == len(RETRY_BACKOFF_SECONDS) - 1
+
+
+async def test_non_retryable_http_error_does_not_retry(respx_mock):
+    """A 400 Bad Request is not in RETRYABLE_STATUS_CODES and must not be retried."""
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(400)
+    )
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    with patch("openrouter.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        result = await client.analyze_post(title="T", body="B")
+
+    assert result is None
+    assert route.call_count == 1
+    assert sleep_mock.await_count == 0
+
