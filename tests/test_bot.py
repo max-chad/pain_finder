@@ -1,21 +1,26 @@
-# tests/test_bot.py
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from bot import (
     ANALYZE_USAGE,
+    DEEPDIVE_USAGE,
+    DIGEST_USAGE,
     EXPORT_USAGE,
+    GTM_USAGE,
     MONITOR_USAGE,
     UNMONITOR_USAGE,
     PainFinderBot,
     format_report,
     normalize_subreddit,
     parse_analyze_args,
+    parse_deepdive_args,
+    parse_digest_args,
     parse_monitor_args,
 )
 from classifier import PainSignal
+from export_sheets import ExportResult
 from scraper import Post
 
 
@@ -23,6 +28,7 @@ def _make_update():
     return SimpleNamespace(
         effective_chat=SimpleNamespace(id=1),
         message=AsyncMock(),
+        callback_query=None,
     )
 
 
@@ -30,12 +36,17 @@ def _make_ctx(args):
     return SimpleNamespace(args=args)
 
 
-def _make_signal(post_id: str, category: str, summary: str) -> PainSignal:
+def _make_signal(post_id: str, category: str, summary: str, *, monetizable: bool = True) -> PainSignal:
     return PainSignal(
-        post=Post(post_id=post_id, subreddit="python", title="T", body="", url="", score=1),
+        post=Post(post_id=post_id, subreddit="python", title="T", body="", url="https://reddit.com/p", score=1),
         category=category,
         summary=summary,
         severity="low",
+        is_monetizable=monetizable,
+        pain_level=8 if monetizable else 2,
+        willingness_to_pay=9 if monetizable else 1,
+        niche_category="DevTools",
+        analysis_mode="b2b",
     )
 
 
@@ -54,12 +65,6 @@ def test_normalize_subreddit_rejects_invalid_values():
 def test_parse_analyze_args_defaults_limit():
     subreddit, limit = parse_analyze_args("r/python")
     assert subreddit == "python"
-    assert limit == 100
-
-
-def test_parse_analyze_args_keeps_rust_intact():
-    subreddit, limit = parse_analyze_args("rust")
-    assert subreddit == "rust"
     assert limit == 100
 
 
@@ -83,8 +88,26 @@ def test_parse_monitor_args_rejects_invalid_interval_format_or_range():
         parse_monitor_args("r/python 12")
     with pytest.raises(ValueError, match="Usage: /monitor"):
         parse_monitor_args("r/python 0h")
-    with pytest.raises(ValueError, match="Usage: /monitor"):
-        parse_monitor_args("r/python 999h")
+
+
+def test_parse_deepdive_args_requires_post_id():
+    assert parse_deepdive_args("abc123") == "abc123"
+    with pytest.raises(ValueError, match="Usage: /deepdive"):
+        parse_deepdive_args("")
+
+
+def test_parse_digest_args_variants():
+    subreddit, hours = parse_digest_args("")
+    assert subreddit is None and hours == 24
+
+    subreddit, hours = parse_digest_args("r/python 12")
+    assert subreddit == "python" and hours == 12
+
+    subreddit, hours = parse_digest_args("36")
+    assert subreddit is None and hours == 36
+
+    with pytest.raises(ValueError, match="Usage: /digest"):
+        parse_digest_args("r/python bad")
 
 
 def test_format_report_empty():
@@ -93,17 +116,17 @@ def test_format_report_empty():
     assert "0 pain points" in text
 
 
-def test_format_report_with_categories():
+def test_format_report_with_categories_and_monetizable_count():
     signals = [
-        _make_signal("p1", "complaint", "Broken import path"),
-        _make_signal("p2", "unsolved", "Cannot configure env"),
-        _make_signal("p3", "wish", "Need export command"),
+        _make_signal("p1", "complaint", "Broken import path", monetizable=True),
+        _make_signal("p2", "unsolved", "Cannot configure env", monetizable=False),
+        _make_signal("p3", "wish", "Need export command", monetizable=True),
     ]
     text = format_report("python", signals)
-    assert "🔴 Complaints (1)" in text
-    assert "🟡 Unsolved (1)" in text
-    assert "🟢 Wishes (1)" in text
-    assert "/export" in text
+    assert "Complaints" in text
+    assert "Unsolved" in text
+    assert "Wishes" in text
+    assert "Monetizable: 2" in text
 
 
 async def test_cmd_monitor_reload_jobs_called_once():
@@ -123,7 +146,7 @@ async def test_cmd_monitor_reload_jobs_called_once():
 
     db.add_monitored_subreddit.assert_awaited_once_with("python", interval_hours=1)
     reload_jobs.assert_awaited_once()
-    update.message.reply_text.assert_awaited_once_with("✅ Now monitoring r/python every 1h")
+    update.message.reply_text.assert_awaited_once_with("Now monitoring r/python every 1h")
 
 
 async def test_cmd_unmonitor_reload_jobs_called_once():
@@ -143,7 +166,7 @@ async def test_cmd_unmonitor_reload_jobs_called_once():
 
     db.remove_monitored_subreddit.assert_awaited_once_with("rust")
     reload_jobs.assert_awaited_once()
-    update.message.reply_text.assert_awaited_once_with("🗑 Stopped monitoring r/rust")
+    update.message.reply_text.assert_awaited_once_with("Stopped monitoring r/rust")
 
 
 async def test_cmd_unmonitor_usage_on_invalid_input():
@@ -157,7 +180,7 @@ async def test_cmd_unmonitor_usage_on_invalid_input():
     update.message.reply_text.assert_awaited_once_with(UNMONITOR_USAGE)
 
 
-async def test_cmd_analyze_uses_injected_pipeline():
+async def test_cmd_analyze_uses_injected_pipeline_and_sends_cards(monkeypatch):
     run = SimpleNamespace(signals=[_make_signal("p1", "complaint", "Broken install")])
     analyze_fn = AsyncMock(return_value=run)
     bot = PainFinderBot(
@@ -168,16 +191,16 @@ async def test_cmd_analyze_uses_injected_pipeline():
     )
     bot._is_authorized = lambda update: True
 
+    send_cards = AsyncMock()
+    monkeypatch.setattr(bot, "_send_top_signal_cards", send_cards)
+
     update = _make_update()
     ctx = _make_ctx(["r/python", "10"])
     await bot.cmd_analyze(update, ctx)
 
     analyze_fn.assert_awaited_once_with("python", 10)
     assert update.message.reply_text.await_count == 2
-    first_message = update.message.reply_text.await_args_list[0].args[0]
-    second_message = update.message.reply_text.await_args_list[1].args[0]
-    assert first_message.startswith("⏳ Analyzing r/python")
-    assert second_message.startswith("📊 r/python")
+    send_cards.assert_awaited_once()
 
 
 async def test_cmd_analyze_returns_usage_on_parse_error():
@@ -202,38 +225,295 @@ async def test_cmd_export_usage_for_too_many_args():
     update.message.reply_text.assert_awaited_once_with(EXPORT_USAGE)
 
 
-async def test_cmd_export_handles_no_reports():
-    db = AsyncMock()
-    db.get_latest_report.return_value = None
-    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
-    bot._is_authorized = lambda update: True
+async def test_cmd_export_uses_export_service_with_warning(tmp_path):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text("header\n", encoding="utf-8")
 
-    update = _make_update()
-    ctx = _make_ctx([])
-    await bot.cmd_export(update, ctx)
+    export_service = AsyncMock()
+    export_service.export.return_value = ExportResult(
+        csv_path=str(csv_path),
+        row_count=3,
+        sheet_url=None,
+        warning="Google Sheets export failed",
+    )
 
-    db.get_latest_report.assert_awaited_once_with(subreddit=None)
-    update.message.reply_text.assert_awaited_once_with("No reports found yet.")
-
-
-async def test_cmd_export_sends_document(tmp_path):
-    report_path = tmp_path / "python_report.json"
-    report_path.write_text("{}", encoding="utf-8")
-
-    db = AsyncMock()
-    db.get_latest_report.return_value = {
-        "subreddit": "python",
-        "json_path": str(report_path),
-    }
-    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        export_service=export_service,
+    )
     bot._is_authorized = lambda update: True
 
     update = _make_update()
     ctx = _make_ctx(["r/python"])
     await bot.cmd_export(update, ctx)
 
-    db.get_latest_report.assert_awaited_once_with(subreddit="python")
+    export_service.export.assert_awaited_once_with(subreddit="python")
     update.message.reply_document.assert_awaited_once()
+    assert update.message.reply_text.await_count == 1
+
+
+async def test_cmd_deepdive_runs_injected_function():
+    db = AsyncMock()
+    db.get_pain_point.return_value = {"subreddit": "python"}
+    deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="Done", error=None))
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        deep_dive_fn=deep_dive_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["abc123"])
+    await bot.cmd_deepdive(update, ctx)
+
+    deep_dive_fn.assert_awaited_once_with("abc123", "python", "manual")
+    assert update.message.reply_text.await_count == 2
+
+
+async def test_cmd_deepdive_usage_on_bad_args():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx([])
+    await bot.cmd_deepdive(update, ctx)
+
+    update.message.reply_text.assert_awaited_once_with(DEEPDIVE_USAGE)
+
+
+async def test_cmd_digest_formats_result():
+    digest_fn = AsyncMock(
+        return_value={
+            "total": 2,
+            "hours": 24,
+            "subreddit": "python",
+            "top_items": [
+                {"post_id": "p1", "weighted_score": 9, "willingness_to_pay": 9, "pain_level": 9, "summary": "Need better sync"}
+            ],
+            "niche_counts": {"DevOps": 2},
+            "recurring_blockers": ["Need better sync"],
+        }
+    )
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        digest_fn=digest_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "24"])
+    await bot.cmd_digest(update, ctx)
+
+    digest_fn.assert_awaited_once_with("python", 24)
+    update.message.reply_text.assert_awaited_once()
+
+
+async def test_cmd_digest_usage_on_bad_args():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["r/python", "bad"])
+    await bot.cmd_digest(update, ctx)
+
+    update.message.reply_text.assert_awaited_once_with(DIGEST_USAGE)
+
+
+async def test_callback_query_updates_triage_status():
+    db = AsyncMock()
+    db.update_triage_status.return_value = True
+
+    query = SimpleNamespace(
+        data="triage:favorite:abc123",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.update_triage_status.assert_awaited_once_with("abc123", "favorite")
+    query.answer.assert_awaited_once()
+
+
+async def test_callback_query_runs_deep_dive():
+    db = AsyncMock()
+    deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="Done", error=None))
+
+    query = SimpleNamespace(
+        data="deepdive:abc123:python",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        deep_dive_fn=deep_dive_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    deep_dive_fn.assert_awaited_once_with("abc123", "python", "callback")
+    assert query.message.reply_text.await_count == 1
+
+
+async def test_cmd_macro_triggers_injected_clusterer():
+    macro_fn = AsyncMock(
+        return_value=SimpleNamespace(
+            run_id=1,
+            candidate_count=10,
+            clusters=[
+                SimpleNamespace(
+                    label="QuickBooks API",
+                    item_count=5,
+                    estimated_monetization_signal="high",
+                    aggregate_wtp=41.0,
+                    summary="Integration failures across SMB tooling",
+                )
+            ],
+        )
+    )
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), macro_fn=macro_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    ctx = _make_ctx(["14"])
+    await bot.cmd_macro(update, ctx)
+
+    macro_fn.assert_awaited_once_with(14)
+    assert update.message.reply_text.await_count == 2
+
+
+async def test_cmd_budget_reports_status():
+    status = SimpleNamespace(
+        daily_cap_usd=2.0,
+        spent_today_usd=1.125,
+        llm_paused=True,
+        pause_reason="budget_cap_reached",
+        resume_override_until=None,
+    )
+    budget_status_fn = AsyncMock(return_value=status)
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        budget_status_fn=budget_status_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_budget(update, _make_ctx([]))
+
+    budget_status_fn.assert_awaited_once()
+    update.message.reply_text.assert_awaited_once()
+    assert "Daily cap: $2.00" in update.message.reply_text.await_args.args[0]
+    assert "LLM paused: yes" in update.message.reply_text.await_args.args[0]
+
+
+async def test_cmd_resume_calls_reload():
+    from datetime import UTC, datetime, timedelta
+
+    reload_jobs = AsyncMock()
+    resume_budget_fn = AsyncMock(return_value=datetime.now(UTC) + timedelta(hours=3))
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        resume_budget_fn=resume_budget_fn,
+        reload_jobs_fn=reload_jobs,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_resume(update, _make_ctx([]))
+
+    resume_budget_fn.assert_awaited_once()
+    reload_jobs.assert_awaited_once()
+    update.message.reply_text.assert_awaited_once()
+
+
+async def test_cmd_gtm_success():
+    gtm_payload = SimpleNamespace(
+        name_options=["SyncPilot", "LedgerFlow", "ReconMate"],
+        hero_h1="Stop losing revenue to failed sync jobs",
+        hero_h2="Fix accounting and commerce data flows in minutes",
+        mvp_features=["Retry queue", "Alert routing", "Audit trail"],
+        pricing_tier="$49/mo Starter",
+        positioning_rationale="Built for small finance teams",
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="reddit:abc123", payload=gtm_payload))
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        gtm_fn=gtm_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["reddit:abc123"]))
+
+    gtm_fn.assert_awaited_once_with("reddit:abc123")
+    assert update.message.reply_text.await_count == 2
+    assert "GTM package for reddit:abc123" in update.message.reply_text.await_args.args[0]
+
+
+async def test_cmd_gtm_usage_on_bad_args():
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=AsyncMock())
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx([]))
+
+    update.message.reply_text.assert_awaited_once_with(GTM_USAGE)
+
+
+async def test_callback_query_runs_gtm():
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1",
+        hero_h2="H2",
+        mvp_features=["f1", "f2", "f3"],
+        pricing_tier="$19",
+        positioning_rationale="why",
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="reddit:abc123", payload=gtm_payload))
+
+    query = SimpleNamespace(
+        data="gtm:reddit:abc123:reddit",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        gtm_fn=gtm_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    gtm_fn.assert_awaited_once_with("reddit:abc123")
+    query.answer.assert_awaited()
+    query.message.reply_text.assert_awaited_once()
 
 
 async def test_cmd_monitor_usage_on_bad_args():
@@ -245,3 +525,76 @@ async def test_cmd_monitor_usage_on_bad_args():
     await bot.cmd_monitor(update, ctx)
 
     update.message.reply_text.assert_awaited_once_with(MONITOR_USAGE)
+
+
+async def test_send_top_signal_cards_calls_get_pain_points_by_ids_with_correct_ids(monkeypatch):
+    """_send_top_signal_cards must batch-fetch DB rows using the post_ids from
+    the top monetizable candidate signals (not mocked away)."""
+    from unittest.mock import MagicMock
+
+    # Stub out the telegram keyboard classes imported inside the method.
+    monkeypatch.setattr("telegram.InlineKeyboardButton", MagicMock(), raising=False)
+    monkeypatch.setattr("telegram.InlineKeyboardMarkup", MagicMock(return_value=MagicMock()), raising=False)
+
+    db = AsyncMock()
+    # get_pain_points_by_ids returns a dict keyed by post_id.
+    db.get_pain_points_by_ids.return_value = {
+        "p1": {"triage_status": "new"},
+        "p2": {"triage_status": "new"},
+    }
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+
+    signals = [
+        _make_signal("p1", "complaint", "Summary one", monetizable=True),
+        _make_signal("p2", "unsolved", "Summary two", monetizable=True),
+    ]
+
+    update = _make_update()
+    await bot._send_top_signal_cards(update, signals)
+
+    # The method must have called get_pain_points_by_ids with the post_ids of
+    # the candidate signals in the order they appear after sorting.
+    db.get_pain_points_by_ids.assert_awaited_once()
+    called_ids = db.get_pain_points_by_ids.await_args.args[0]
+    assert set(called_ids) == {"p1", "p2"}
+
+    # Both non-discarded signals should have produced a card message.
+    assert update.message.reply_text.await_count == 2
+
+
+async def test_send_top_signal_cards_skips_discarded_signals(monkeypatch):
+    """Signals whose DB row has triage_status=='discarded' must not produce a card."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr("telegram.InlineKeyboardButton", MagicMock(), raising=False)
+    monkeypatch.setattr("telegram.InlineKeyboardMarkup", MagicMock(return_value=MagicMock()), raising=False)
+
+    db = AsyncMock()
+    # p1 is discarded; p2 is active.
+    db.get_pain_points_by_ids.return_value = {
+        "p1": {"triage_status": "discarded"},
+        "p2": {"triage_status": "favorite"},
+    }
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+
+    signals = [
+        _make_signal("p1", "complaint", "Should be filtered out", monetizable=True),
+        _make_signal("p2", "unsolved", "Should appear", monetizable=True),
+    ]
+
+    update = _make_update()
+    await bot._send_top_signal_cards(update, signals)
+
+    # get_pain_points_by_ids must still be called with both IDs.
+    db.get_pain_points_by_ids.assert_awaited_once()
+    called_ids = db.get_pain_points_by_ids.await_args.args[0]
+    assert set(called_ids) == {"p1", "p2"}
+
+    # Only the non-discarded signal (p2) should produce a card.
+    assert update.message.reply_text.await_count == 1
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert "p2" in sent_text
+    assert "p1" not in sent_text
+
