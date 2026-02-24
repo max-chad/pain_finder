@@ -162,7 +162,6 @@ async def test_analyze_retries_transient_http_errors(respx_mock):
     route = respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
         side_effect=[
             httpx.Response(503),
-            httpx.Response(503),
             httpx.Response(
                 200,
                 json={
@@ -184,8 +183,8 @@ async def test_analyze_retries_transient_http_errors(respx_mock):
 
     assert result is not None
     assert result.summary == "Retry worked"
-    assert route.call_count == 3
-    assert sleep_mock.await_count == 2
+    assert route.call_count == 2
+    assert sleep_mock.await_count == 1
 
 
 async def test_cluster_label_and_gtm_methods(respx_mock):

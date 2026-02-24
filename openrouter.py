@@ -15,7 +15,7 @@ VALID_CATEGORIES = {"complaint", "unsolved", "wish"}
 VALID_SEVERITIES = {"low", "medium", "high"}
 VALID_SIGNAL_LEVELS = {"low", "medium", "high"}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
+RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 
 PRIMARY_PROMPT_TEMPLATE = """You are a B2B SaaS product manager analyzing Reddit pain signals.
 
@@ -408,9 +408,9 @@ class OpenRouterClient:
             return None
         if not isinstance(monetizable, bool):
             return None
-        if not isinstance(pain_level, int) or not (0 <= pain_level <= 10):
+        if isinstance(pain_level, bool) or not isinstance(pain_level, int) or not (0 <= pain_level <= 10):
             return None
-        if not isinstance(willingness_to_pay, int) or not (0 <= willingness_to_pay <= 10):
+        if isinstance(willingness_to_pay, bool) or not isinstance(willingness_to_pay, int) or not (0 <= willingness_to_pay <= 10):
             return None
         if not isinstance(niche_category, str):
             return None
