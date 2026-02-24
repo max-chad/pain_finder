@@ -423,3 +423,48 @@ async def test_insert_pain_point_duplicate_post_id_does_not_raise(db):
     assert row is not None
     assert row["title"] == "Second insert"
 
+
+async def test_get_pain_points_by_ids_returns_matching_rows(db):
+    """get_pain_points_by_ids fetches all matching rows in a single query."""
+    for post_id, title in [("batch1", "Alpha"), ("batch2", "Beta"), ("batch3", "Gamma")]:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url="",
+            title=title,
+            body="",
+            category="complaint",
+            summary=title,
+            severity="low",
+            willingness_to_pay=5,
+        )
+
+    result = await db.get_pain_points_by_ids(["batch1", "batch3"])
+    assert set(result.keys()) == {"batch1", "batch3"}
+    assert result["batch1"]["title"] == "Alpha"
+    assert result["batch3"]["title"] == "Gamma"
+
+
+async def test_get_pain_points_by_ids_empty_input_returns_empty_dict(db):
+    """get_pain_points_by_ids with an empty list must return {} without querying the DB."""
+    result = await db.get_pain_points_by_ids([])
+    assert result == {}
+
+
+async def test_get_pain_points_by_ids_missing_ids_not_in_result(db):
+    """post_ids that do not exist in the DB are simply absent from the returned dict."""
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="exists1",
+        url="",
+        title="Existing",
+        body="",
+        category="complaint",
+        summary="exists",
+        severity="low",
+    )
+
+    result = await db.get_pain_points_by_ids(["exists1", "ghost_id"])
+    assert "exists1" in result
+    assert "ghost_id" not in result
+

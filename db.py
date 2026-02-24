@@ -386,6 +386,17 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def get_pain_points_by_ids(self, post_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not post_ids:
+            return {}
+        placeholders = ",".join("?" * len(post_ids))
+        async with self._conn.execute(
+            f"SELECT * FROM pain_points WHERE post_id IN ({placeholders})",
+            tuple(post_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {row["post_id"]: dict(row) for row in rows}
+
     async def get_competitor_pain(self, competitor_tag: str, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
         tag = competitor_tag.strip().lower()
         async with self._conn.execute(
