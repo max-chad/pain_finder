@@ -1,6 +1,6 @@
 ﻿import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -288,4 +288,61 @@ async def test_analyze_posts_respects_llm_pause_without_budget_guard(db, tmp_pat
     )
     with pytest.raises(RuntimeError):
         await pipeline.analyze_external_posts(posts=[], source="hn", run_scope="hn")
+
+
+async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
+    """When deduplicator marks a signal as a dup, DB insert is skipped."""
+    import math
+    from deduplicator import Deduplicator
+    from embedder import Embedder
+
+    post_reddit = Post(
+        post_id="r_post1", subreddit="test", title="Stripe webhooks unreliable",
+        body="They keep failing randomly", url="https://reddit.com/r_post1", score=5,
+    )
+    post_hn = Post(
+        post_id="hn_post1", subreddit="hackernews", title="Stripe reliability is terrible",
+        body="Webhooks drop all the time", url="https://news.ycombinator.com/hn_post1", score=3,
+        source="hn",
+    )
+    signal_reddit = PainSignal(
+        post=post_reddit, category="complaint", summary="Stripe webhook failures",
+        severity="high", is_monetizable=True, pain_level=7, willingness_to_pay=7,
+        niche_category="Payments", analysis_mode="b2b",
+    )
+    signal_hn = PainSignal(
+        post=post_hn, category="complaint", summary="Stripe webhook failures",
+        severity="high", is_monetizable=True, pain_level=7, willingness_to_pay=7,
+        niche_category="Payments", analysis_mode="b2b",
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_posts.return_value = [post_reddit, post_hn]
+    scraper.fetch_full_thread.return_value = []
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[signal_reddit, signal_hn]),
+        openrouter=None,
+    )
+
+    shared_vec = [1.0 / math.sqrt(96)] * 96
+    embedder = MagicMock(spec=Embedder)
+    embedder.embed = AsyncMock(return_value=shared_vec)
+
+    deduplicator = Deduplicator(db=db, embedder=embedder, threshold=0.88)
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,  # disable deep dive
+        deduplicator=deduplicator,
+    )
+
+    await pipeline.analyze_subreddit("test", limit=2)
+
+    rows = await db.get_pain_points(subreddit="test")
+    assert len(rows) == 1
+    assert rows[0]["post_id"] == "r_post1"
+    assert rows[0]["cross_source_count"] == 2
 

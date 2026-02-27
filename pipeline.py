@@ -1,16 +1,21 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from budget import BudgetCapReachedError, BudgetGuard
 from classifier import Classifier, PainSignal
 from db import Database
 from openrouter import DeepDiveResult
 from scraper import Post, RedditScraper
+
+if TYPE_CHECKING:
+    from deduplicator import Deduplicator
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ class AnalysisPipeline:
         deep_dive_wtp_threshold: int = 8,
         deep_dive_max_comments: int = 250,
         budget_guard: BudgetGuard | None = None,
+        deduplicator: Deduplicator | None = None,
     ):
         self.scraper = scraper
         self.classifier = classifier
@@ -58,6 +64,7 @@ class AnalysisPipeline:
         self.deep_dive_wtp_threshold = deep_dive_wtp_threshold
         self.deep_dive_max_comments = deep_dive_max_comments
         self.budget_guard = budget_guard
+        self.deduplicator = deduplicator
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
         posts = await self.scraper.fetch_posts(subreddit, limit=limit)
@@ -102,6 +109,19 @@ class AnalysisPipeline:
         deep_dive_count = 0
 
         for signal in signals:
+            embedding: list[float] | None = None
+
+            if self.deduplicator is not None:
+                text = f"{signal.post.title} {signal.post.body}"
+                embedding = await self.deduplicator.embedder.embed(text)
+                is_dup = await self.deduplicator.find_and_merge(
+                    post_id=signal.post.post_id,
+                    embedding=embedding,
+                    source=signal.post.source,
+                )
+                if is_dup:
+                    continue  # duplicate merged into canonical; skip insert
+
             await self.db.insert_pain_point(
                 subreddit=signal.post.subreddit,
                 post_id=signal.post.post_id,
@@ -119,6 +139,7 @@ class AnalysisPipeline:
                 source=source,
                 analysis_mode=signal.analysis_mode,
                 analysis_payload=signal.analysis_payload,
+                emb_vector=embedding,
             )
 
             if signal.is_monetizable:
