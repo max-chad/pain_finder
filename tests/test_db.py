@@ -487,3 +487,53 @@ async def test_dedup_columns_exist(db):
     assert row["cross_source_ids"] == "[]"
     assert row["emb_vector"] is None
 
+
+async def _insert_test_point(db, post_id, source="reddit"):
+    """Helper to insert a minimal pain point."""
+    await db.insert_pain_point(
+        subreddit="test", post_id=post_id, url="", title="Test title",
+        body="Test body", category="complaint", summary="s", severity="low",
+        source=source,
+    )
+
+
+async def test_store_and_retrieve_embedding(db):
+    await _insert_test_point(db, "emb1")
+    vector = [0.1, 0.2, 0.3]
+    await db.store_embedding("emb1", vector)
+    rows = await db.get_pain_points_with_embeddings()
+    assert len(rows) == 1
+    assert rows[0]["post_id"] == "emb1"
+    assert rows[0]["emb_vector"] == vector
+
+
+async def test_get_pain_points_without_embeddings(db):
+    await _insert_test_point(db, "no_emb1")
+    await _insert_test_point(db, "no_emb2")
+    await db.store_embedding("no_emb1", [0.5, 0.5])
+    rows = await db.get_pain_points_without_embeddings()
+    assert len(rows) == 1
+    assert rows[0]["post_id"] == "no_emb2"
+    assert "title" in rows[0]
+    assert "body" in rows[0]
+
+
+async def test_merge_duplicate_increments_count(db):
+    await _insert_test_point(db, "canonical", source="reddit")
+    await _insert_test_point(db, "dup1", source="hn")
+    dup_vec = [0.9, 0.1]
+    await db.merge_duplicate(
+        canonical_post_id="canonical",
+        dup_post_id="dup1",
+        dup_emb_vector=dup_vec,
+    )
+    canonical = await db.get_pain_point("canonical")
+    assert canonical["cross_source_count"] == 2
+    assert "dup1" in canonical["cross_source_ids"]
+
+    dup = await db.get_pain_point("dup1")
+    assert dup["triage_status"] == "merged"
+    import json
+    stored_vec = json.loads(dup["emb_vector"])
+    assert stored_vec == dup_vec
+

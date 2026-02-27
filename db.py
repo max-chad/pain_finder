@@ -309,6 +309,7 @@ class Database:
         deep_dive_status: str = "not_requested",
         deep_dive_summary: str | None = None,
         analysis_payload: dict[str, Any] | None = None,
+        emb_vector: list[float] | None = None,
     ) -> None:
         if triage_status not in PAIN_POINT_STATUSES:
             triage_status = "new"
@@ -324,8 +325,9 @@ class Database:
                     subreddit, post_id, url, title, body, category, summary, severity,
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
                     competitor_tags, source, triage_status, analysis_mode,
-                    deep_dive_status, deep_dive_summary, analysis_payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    deep_dive_status, deep_dive_summary, analysis_payload_json,
+                    emb_vector
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -368,6 +370,7 @@ class Database:
                     deep_dive_status,
                     deep_dive_summary,
                     json.dumps(analysis_payload, ensure_ascii=False) if analysis_payload else None,
+                    json.dumps(emb_vector) if emb_vector is not None else None,
                 ),
             )
             await self._replace_competitor_tags(post_id, normalized_tags)
@@ -388,6 +391,73 @@ class Database:
         async with self._conn.execute("SELECT * FROM pain_points WHERE post_id = ? LIMIT 1", (post_id,)) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def store_embedding(self, post_id: str, emb_vector: list[float]) -> None:
+        await self._conn.execute(
+            "UPDATE pain_points SET emb_vector = ? WHERE post_id = ?",
+            (json.dumps(emb_vector), post_id),
+        )
+        await self._conn.commit()
+
+    async def get_pain_points_with_embeddings(self) -> list[dict[str, Any]]:
+        """Returns all rows that have a stored embedding (not merged duplicates)."""
+        async with self._conn.execute(
+            "SELECT post_id, source, emb_vector FROM pain_points "
+            "WHERE emb_vector IS NOT NULL AND triage_status != 'merged'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["emb_vector"] = json.loads(d["emb_vector"])
+            result.append(d)
+        return result
+
+    async def get_pain_points_without_embeddings(self) -> list[dict[str, Any]]:
+        """Returns all rows missing an embedding (used for backfill)."""
+        async with self._conn.execute(
+            "SELECT post_id, source, title, body FROM pain_points "
+            "WHERE emb_vector IS NULL AND triage_status != 'merged'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def merge_duplicate(
+        self,
+        *,
+        canonical_post_id: str,
+        dup_post_id: str,
+        dup_emb_vector: list[float],
+    ) -> None:
+        """Merge a duplicate into the canonical record.
+
+        Increments cross_source_count and appends dup_post_id to cross_source_ids
+        on the canonical.  Marks the duplicate row as merged and stores its embedding.
+        """
+        async with self._conn.execute(
+            "SELECT cross_source_ids FROM pain_points WHERE post_id = ?",
+            (canonical_post_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            logger.warning("merge_duplicate: canonical %s not found", canonical_post_id)
+            return
+
+        current_ids: list[str] = json.loads(row["cross_source_ids"] or "[]")
+        if dup_post_id not in current_ids:
+            current_ids.append(dup_post_id)
+
+        await self._conn.execute(
+            "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
+            "cross_source_ids = ? WHERE post_id = ?",
+            (json.dumps(current_ids), canonical_post_id),
+        )
+        await self._conn.execute(
+            "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
+            (json.dumps(dup_emb_vector), dup_post_id),
+        )
+        await self._conn.commit()
+        logger.info("merge_duplicate: merged %s -> canonical %s", dup_post_id, canonical_post_id)
 
     async def get_pain_points_by_ids(self, post_ids: list[str]) -> dict[str, dict[str, Any]]:
         if not post_ids:
