@@ -391,7 +391,7 @@ class Database:
             return {}
         placeholders = ",".join("?" * len(post_ids))
         async with self._conn.execute(
-            f"SELECT * FROM pain_points WHERE post_id IN ({placeholders})",
+            f"SELECT * FROM pain_points WHERE post_id IN ({placeholders})",  # nosec B608
             tuple(post_ids),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -509,8 +509,8 @@ class Database:
             conditions.append("willingness_to_pay >= ?")
             params.append(min_wtp)
 
-        query = "SELECT * FROM pain_points WHERE " + " AND ".join(conditions)
-        query += " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, willingness_to_pay DESC, pain_level DESC, created_at DESC"
+        query = "SELECT * FROM pain_points WHERE " + " AND ".join(conditions)  # nosec B608
+        query += " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, willingness_to_pay DESC, pain_level DESC, created_at DESC"  # nosec B608
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]

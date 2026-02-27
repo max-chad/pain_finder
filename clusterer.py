@@ -32,6 +32,17 @@ TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 # replace _embed() with a proper embedding model (e.g. sentence-transformers or
 # an OpenRouter embeddings endpoint) and raise EMBED_DIM to match its output
 # dimensionality.
+#
+# PYTHONHASHSEED note
+# -------------------
+# Python randomises hash() output for strings once per process start (controlled
+# by the PYTHONHASHSEED environment variable).  This means the same token maps
+# to a different EMBED_DIM bucket across process restarts, so cosine-similarity
+# scores — and therefore the cluster assignments produced by _cluster_indices —
+# are non-reproducible between runs.  Set PYTHONHASHSEED=0 to disable this
+# randomisation and obtain deterministic results.  For the current use case
+# (ephemeral, per-run macro-trend snapshots) non-reproducibility is acceptable,
+# but it is worth knowing when debugging unexpected cluster differences.
 EMBED_DIM = 96
 
 

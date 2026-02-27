@@ -1,0 +1,11 @@
+﻿services:
+  pain_finder:
+    build: .
+    container_name: pain_finder
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./pain_finder.db:/app/pain_finder.db
+      - ./reports:/app/reports
+

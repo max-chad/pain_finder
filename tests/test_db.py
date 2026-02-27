@@ -1,6 +1,6 @@
 ﻿import pytest_asyncio
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from db import Database
 import json
