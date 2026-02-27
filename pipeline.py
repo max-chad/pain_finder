@@ -117,7 +117,7 @@ class AnalysisPipeline:
                 is_dup = await self.deduplicator.find_and_merge(
                     post_id=signal.post.post_id,
                     embedding=embedding,
-                    source=signal.post.source,
+                    source=source,
                 )
                 if is_dup:
                     continue  # duplicate merged into canonical; skip insert

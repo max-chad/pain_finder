@@ -291,7 +291,12 @@ async def test_analyze_posts_respects_llm_pause_without_budget_guard(db, tmp_pat
 
 
 async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
-    """When deduplicator marks a signal as a dup, DB insert is skipped."""
+    """When deduplicator marks a signal as a dup, DB insert is skipped.
+
+    Two separate ingestion runs simulate real cross-source dedup: a Reddit post
+    is ingested first, then a semantically-identical HN post is processed and
+    should be merged into the canonical reddit row rather than inserted.
+    """
     import math
     from deduplicator import Deduplicator
     from embedder import Embedder
@@ -317,12 +322,7 @@ async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
     )
 
     scraper = AsyncMock()
-    scraper.fetch_posts.return_value = [post_reddit, post_hn]
     scraper.fetch_full_thread.return_value = []
-    classifier = SimpleNamespace(
-        classify_batch=AsyncMock(return_value=[signal_reddit, signal_hn]),
-        openrouter=None,
-    )
 
     shared_vec = [1.0 / math.sqrt(96)] * 96
     embedder = MagicMock(spec=Embedder)
@@ -332,17 +332,26 @@ async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
 
     pipeline = AnalysisPipeline(
         scraper=scraper,
-        classifier=classifier,
+        classifier=SimpleNamespace(classify_batch=AsyncMock(return_value=[signal_reddit]), openrouter=None),
         db=db,
         reports_dir=str(tmp_path / "reports"),
         deep_dive_wtp_threshold=99,  # disable deep dive
         deduplicator=deduplicator,
     )
 
-    await pipeline.analyze_subreddit("test", limit=2)
+    # First ingestion: Reddit post → inserted as canonical, source="reddit"
+    await pipeline.analyze_external_posts(posts=[post_reddit], source="reddit", run_scope="test")
 
-    rows = await db.get_pain_points(subreddit="test")
-    assert len(rows) == 1
-    assert rows[0]["post_id"] == "r_post1"
-    assert rows[0]["cross_source_count"] == 2
+    # Second ingestion: HN post (source="hn") → semantically identical, should merge
+    pipeline.classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[signal_hn]), openrouter=None)
+    await pipeline.analyze_external_posts(posts=[post_hn], source="hn", run_scope="hackernews")
+
+    # Only the canonical reddit row should exist; HN post was never inserted
+    canonical = await db.get_pain_point("r_post1")
+    assert canonical is not None
+    assert canonical["cross_source_count"] == 2
+
+    # The HN post was detected as a dup and skipped entirely — not in DB
+    hn_row = await db.get_pain_point("hn_post1")
+    assert hn_row is None
 
