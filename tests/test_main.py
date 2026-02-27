@@ -41,6 +41,12 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
         async def is_llm_paused(self):
             return False
 
+        async def get_pain_points_without_embeddings(self):
+            return []
+
+        async def get_pain_points_with_embeddings(self):
+            return []
+
     class FakeScraper:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -66,6 +72,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             deep_dive_wtp_threshold=8,
             deep_dive_max_comments=250,
             budget_guard=None,
+            deduplicator=None,
         ):
             self.scraper = scraper
             self.classifier = classifier
@@ -287,6 +294,12 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
 
         async def is_llm_paused(self):
             return False
+
+        async def get_pain_points_without_embeddings(self):
+            return []
+
+        async def get_pain_points_with_embeddings(self):
+            return []
 
     class FakeScraper:
         def __init__(self, **kwargs):

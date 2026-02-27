@@ -7,6 +7,8 @@ from budget import BudgetGuard
 from classifier import Classifier
 from clusterer import MacroTrendClusterer
 from db import Database
+from deduplicator import Deduplicator
+from embedder import Embedder
 from export_sheets import ExportService
 from generator_gtm import GTMGenerator
 from openrouter import OpenRouterClient
@@ -42,6 +44,11 @@ async def run() -> None:
     db = Database(config.DB_PATH)
     await db.init()
 
+    embedder = Embedder(api_key=config.OPENROUTER_API_KEY, model=config.EMBED_MODEL)
+    deduplicator = Deduplicator(db=db, embedder=embedder, threshold=config.DEDUP_SIMILARITY_THRESHOLD)
+    dedup_merged = await deduplicator.backfill()
+    logger.info("Dedup backfill complete: %d cross-source duplicates merged", dedup_merged)
+
     budget_guard = BudgetGuard(db=db, daily_cap_usd=config.DAILY_BUDGET_USD)
 
     scraper = RedditScraper(
@@ -70,6 +77,7 @@ async def run() -> None:
         deep_dive_wtp_threshold=config.DEEP_DIVE_WTP_THRESHOLD,
         deep_dive_max_comments=config.DEEP_DIVE_MAX_COMMENTS,
         budget_guard=budget_guard,
+        deduplicator=deduplicator,
     )
     clusterer = MacroTrendClusterer(
         db=db,
