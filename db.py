@@ -7,7 +7,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-PAIN_POINT_STATUSES = {"new", "favorite", "discarded"}
+PAIN_POINT_STATUSES = {"new", "favorite", "discarded", "merged"}
 DEEP_DIVE_STATUSES = {"not_requested", "queued", "running", "completed", "failed"}
 
 CREATE_PAIN_POINTS = """
@@ -627,7 +627,7 @@ class Database:
 
     async def get_recent_pain_points(self, *, hours: int = 24, subreddit: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         params: list[Any] = [f"-{hours} hours"]
-        query = "SELECT * FROM pain_points WHERE datetime(created_at) >= datetime('now', ?) AND triage_status != 'discarded'"
+        query = "SELECT * FROM pain_points WHERE datetime(created_at) >= datetime('now', ?) AND triage_status NOT IN ('discarded', 'merged')"
         if subreddit:
             query += " AND subreddit = ?"
             params.append(subreddit)
