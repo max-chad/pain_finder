@@ -41,7 +41,11 @@ class TestOpenRouterEmbed:
         mock_model = MagicMock()
         mock_model.encode.return_value = MagicMock(tolist=lambda: fake_st_vec)
 
-        with patch("embedder.SentenceTransformer", return_value=mock_model):
+        import sys
+        with (
+            patch.dict(sys.modules, {"sentence_transformers": MagicMock()}),
+            patch("embedder.SentenceTransformer", return_value=mock_model),
+        ):
             e = _make_embedder()
             result = await e.embed("test text")
 
