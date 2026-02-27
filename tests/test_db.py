@@ -468,3 +468,22 @@ async def test_get_pain_points_by_ids_missing_ids_not_in_result(db):
     assert "exists1" in result
     assert "ghost_id" not in result
 
+
+async def test_dedup_columns_exist(db):
+    """New columns exist after init."""
+    row = await db.get_pain_point("nonexistent")
+    assert row is None  # DB initialised cleanly
+
+    await db.insert_pain_point(
+        subreddit="test", post_id="col_check", url="", title="t", body="b",
+        category="complaint", summary="s", severity="low",
+    )
+    row = await db.get_pain_point("col_check")
+    assert row is not None
+    assert "emb_vector" in row
+    assert "cross_source_count" in row
+    assert "cross_source_ids" in row
+    assert row["cross_source_count"] == 1
+    assert row["cross_source_ids"] == "[]"
+    assert row["emb_vector"] is None
+

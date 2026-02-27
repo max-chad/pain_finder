@@ -184,6 +184,9 @@ PAIN_POINT_COLUMNS = {
     "deep_dive_status": "TEXT DEFAULT 'not_requested'",
     "deep_dive_summary": "TEXT",
     "analysis_payload_json": "TEXT",
+    "emb_vector": "TEXT",
+    "cross_source_count": "INTEGER DEFAULT 1",
+    "cross_source_ids": "TEXT DEFAULT '[]'",
 }
 
 
@@ -225,7 +228,7 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON;")
 
     async def _run_migrations(self) -> None:
-        migration_names = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion"]
+        migration_names = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
         for migration_name in migration_names:
             if await self._is_migration_applied(migration_name):
                 continue
@@ -497,7 +500,7 @@ class Database:
         min_wtp: int = 8,
         include_favorites: bool = True,
     ) -> list[dict[str, Any]]:
-        conditions = ["triage_status != 'discarded'"]
+        conditions = ["triage_status NOT IN ('discarded', 'merged')"]
         params: list[Any] = []
         if subreddit:
             conditions.append("subreddit = ?")
@@ -613,7 +616,7 @@ class Database:
             """
             SELECT * FROM pain_points
             WHERE datetime(created_at) >= datetime('now', ?)
-              AND triage_status != 'discarded'
+              AND triage_status NOT IN ('discarded', 'merged')
               AND (triage_status = 'favorite' OR willingness_to_pay >= ?)
             ORDER BY willingness_to_pay DESC, pain_level DESC, created_at DESC
             """,
