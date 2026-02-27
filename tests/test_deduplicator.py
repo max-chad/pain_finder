@@ -2,7 +2,6 @@ import json
 import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import pytest_asyncio
 
 from db import Database

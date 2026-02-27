@@ -2,7 +2,6 @@ import math
 from unittest.mock import MagicMock, patch
 
 import httpx
-import pytest
 import respx
 
 from embedder import Embedder
