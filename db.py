@@ -447,16 +447,20 @@ class Database:
         if dup_post_id not in current_ids:
             current_ids.append(dup_post_id)
 
-        await self._conn.execute(
-            "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
-            "cross_source_ids = ? WHERE post_id = ?",
-            (json.dumps(current_ids), canonical_post_id),
-        )
-        await self._conn.execute(
-            "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
-            (json.dumps(dup_emb_vector), dup_post_id),
-        )
-        await self._conn.commit()
+        try:
+            await self._conn.execute(
+                "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
+                "cross_source_ids = ? WHERE post_id = ?",
+                (json.dumps(current_ids), canonical_post_id),
+            )
+            await self._conn.execute(
+                "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
+                (json.dumps(dup_emb_vector), dup_post_id),
+            )
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
         logger.info("merge_duplicate: merged %s -> canonical %s", dup_post_id, canonical_post_id)
 
     async def get_pain_points_by_ids(self, post_ids: list[str]) -> dict[str, dict[str, Any]]:

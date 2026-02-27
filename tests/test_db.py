@@ -529,11 +529,10 @@ async def test_merge_duplicate_increments_count(db):
     )
     canonical = await db.get_pain_point("canonical")
     assert canonical["cross_source_count"] == 2
-    assert "dup1" in canonical["cross_source_ids"]
+    assert "dup1" in json.loads(canonical["cross_source_ids"])
 
     dup = await db.get_pain_point("dup1")
     assert dup["triage_status"] == "merged"
-    import json
     stored_vec = json.loads(dup["emb_vector"])
     assert stored_vec == dup_vec
 
