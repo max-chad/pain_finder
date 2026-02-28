@@ -637,6 +637,7 @@ class PainFinderBot:
                 try:
                     await query.edit_message_text(text, reply_markup=keyboard)
                 except Exception:
+                    logger.warning("edit_message_text failed", exc_info=True)
                     await query.answer("Could not update message \u2014 try again.", show_alert=True)
                     return
                 await query.answer()
@@ -654,6 +655,7 @@ class PainFinderBot:
                 try:
                     await query.edit_message_text(text, reply_markup=keyboard)
                 except Exception:
+                    logger.warning("edit_message_text failed", exc_info=True)
                     await query.answer("Could not update message \u2014 try again.", show_alert=True)
                     return
                 await query.answer()
@@ -669,6 +671,7 @@ class PainFinderBot:
                 try:
                     await query.edit_message_text(text, reply_markup=keyboard)
                 except Exception:
+                    logger.warning("edit_message_text failed", exc_info=True)
                     await query.answer("Could not update message \u2014 try again.", show_alert=True)
                     return
                 await query.answer()

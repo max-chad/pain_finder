@@ -821,3 +821,17 @@ async def test_unknown_token_shows_expired_toast():
     call = update.callback_query.answer.call_args
     assert "expired" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
     assert call.kwargs.get("show_alert") is True
+
+
+async def test_sel_callback_edit_fails_shows_error_toast():
+    bot = _make_bot()
+    signals = [_make_signal("p1", "complaint", "x")]
+    token = bot._create_session(signals, "r/python")
+    update = _make_callback_update(f"sel:{token}:0")
+    update.callback_query.edit_message_text.side_effect = Exception("Telegram error")
+
+    await bot.on_callback_query(update, None)
+
+    call = update.callback_query.answer.call_args
+    assert "try again" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
+    assert call.kwargs.get("show_alert") is True
