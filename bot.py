@@ -187,6 +187,7 @@ class PainFinderBot:
         self.gtm_fn = gtm_fn
         self.export_service = export_service
         self.app = None
+        self._sessions: dict[str, dict] = {}
 
     def _is_authorized(self, update) -> bool:
         import config
@@ -194,6 +195,27 @@ class PainFinderBot:
         if update.effective_chat is None:
             return False
         return update.effective_chat.id == config.TELEGRAM_CHAT_ID
+
+    def _evict_old_sessions(self) -> None:
+        import time
+        cutoff = time.time() - 86400  # 24 hours
+        expired = [t for t, s in self._sessions.items() if s["created_at"] < cutoff]
+        for t in expired:
+            del self._sessions[t]
+
+    def _create_session(self, signals: list["PainSignal"], label: str) -> str:
+        import time
+        import uuid
+        self._evict_old_sessions()
+        token = uuid.uuid4().hex[:8]
+        sorted_signals = sorted(signals, key=lambda s: (s.willingness_to_pay, s.pain_level), reverse=True)
+        self._sessions[token] = {
+            "signals": sorted_signals,
+            "label": label,
+            "created_at": time.time(),
+            "shown_count": min(5, len(sorted_signals)),
+        }
+        return token
 
     async def cmd_analyze(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:

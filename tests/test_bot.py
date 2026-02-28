@@ -598,3 +598,58 @@ async def test_send_top_signal_cards_skips_discarded_signals(monkeypatch):
     assert "p2" in sent_text
     assert "p1" not in sent_text
 
+
+import time as _time
+
+
+def _make_bot() -> PainFinderBot:
+    """Minimal PainFinderBot for unit tests (no Telegram app)."""
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
+    bot._is_authorized = lambda update: True
+    return bot
+
+
+def test_sessions_dict_initialized_empty():
+    bot = _make_bot()
+    assert bot._sessions == {}
+
+
+def test_create_session_returns_8char_token_and_stores_session():
+    bot = _make_bot()
+    signals = [_make_signal("p1", "complaint", "Something is broken")]
+    token = bot._create_session(signals, "r/python")
+    assert len(token) == 8
+    assert token in bot._sessions
+    session = bot._sessions[token]
+    assert session["label"] == "r/python"
+    assert len(session["signals"]) == 1
+    assert session["shown_count"] == 1  # min(5, 1)
+
+
+def test_create_session_sorts_signals_by_wtp_desc():
+    bot = _make_bot()
+    low = _make_signal("p_low", "complaint", "Low WTP")
+    high = _make_signal("p_high", "complaint", "High WTP")
+    low.willingness_to_pay = 3
+    high.willingness_to_pay = 9
+    token = bot._create_session([low, high], "r/python")
+    assert bot._sessions[token]["signals"][0].post.post_id == "p_high"
+
+
+def test_evict_old_sessions_removes_expired():
+    bot = _make_bot()
+    signals = [_make_signal("p1", "complaint", "x")]
+    token = bot._create_session(signals, "r/python")
+    # Backdate the session
+    bot._sessions[token]["created_at"] = _time.time() - 86401
+    # Trigger eviction by creating a new session
+    bot._create_session(signals, "r/python")
+    assert token not in bot._sessions
+
+
+def test_evict_old_sessions_keeps_recent():
+    bot = _make_bot()
+    signals = [_make_signal("p1", "complaint", "x")]
+    token = bot._create_session(signals, "r/python")
+    bot._create_session(signals, "r/python")  # trigger eviction
+    assert token in bot._sessions  # recent session kept
