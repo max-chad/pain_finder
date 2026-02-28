@@ -203,6 +203,8 @@ async def test_cmd_analyze_uses_grouped_notification(monkeypatch):
     grouped.assert_awaited_once()
     call_kwargs = grouped.call_args
     assert call_kwargs.args[0] is update or call_kwargs.kwargs.get("update") is update
+    assert call_kwargs.args[1] is run.signals
+    assert call_kwargs.args[2] == "r/python"
 
 
 async def test_cmd_analyze_returns_usage_on_parse_error():
