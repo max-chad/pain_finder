@@ -615,6 +615,65 @@ class PainFinderBot:
             return
         data = query.data or ""
         try:
+            if data.startswith("sel:"):
+                parts = data.split(":", 2)
+                if len(parts) != 3:
+                    await query.answer("Malformed callback", show_alert=False)
+                    return
+                _, token, idx_str = parts
+                session = self._sessions.get(token)
+                if session is None:
+                    await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                    return
+                try:
+                    idx = int(idx_str)
+                except ValueError:
+                    await query.answer("Malformed callback", show_alert=False)
+                    return
+                if not (0 <= idx < len(session["signals"])):
+                    await query.answer("Item out of range", show_alert=False)
+                    return
+                text, keyboard = self._render_card_view(token, session, idx)
+                try:
+                    await query.edit_message_text(text, reply_markup=keyboard)
+                except Exception:
+                    await query.answer("Could not update message \u2014 try again.", show_alert=True)
+                    return
+                await query.answer()
+                return
+
+            if data.startswith("loadmore:"):
+                token = data[len("loadmore:"):]
+                session = self._sessions.get(token)
+                if session is None:
+                    await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                    return
+                total = len(session["signals"])
+                session["shown_count"] = min(session["shown_count"] + 5, total)
+                text, keyboard = self._render_list_view(token, session)
+                try:
+                    await query.edit_message_text(text, reply_markup=keyboard)
+                except Exception:
+                    await query.answer("Could not update message \u2014 try again.", show_alert=True)
+                    return
+                await query.answer()
+                return
+
+            if data.startswith("back:"):
+                token = data[len("back:"):]
+                session = self._sessions.get(token)
+                if session is None:
+                    await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                    return
+                text, keyboard = self._render_list_view(token, session)
+                try:
+                    await query.edit_message_text(text, reply_markup=keyboard)
+                except Exception:
+                    await query.answer("Could not update message \u2014 try again.", show_alert=True)
+                    return
+                await query.answer()
+                return
+
             if data.startswith("triage:"):
                 _, action, post_id = data.split(":", 2)
                 status_map = {"favorite": "favorite", "discard": "discarded"}

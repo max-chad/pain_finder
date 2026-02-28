@@ -758,3 +758,66 @@ async def test_send_grouped_notification_reply_sends_list_view():
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args.args[0]
     assert "r/python" in text
+
+
+def _make_callback_update(data: str):
+    msg = AsyncMock()
+    query = AsyncMock()
+    query.data = data
+    query.message = msg
+    return SimpleNamespace(
+        effective_chat=SimpleNamespace(id=1),
+        message=None,
+        callback_query=query,
+    )
+
+
+async def test_sel_callback_edits_message_to_card_view():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(5)]
+    token = bot._create_session(signals, "r/python")
+
+    update = _make_callback_update(f"sel:{token}:0")
+    await bot.on_callback_query(update, None)
+
+    update.callback_query.edit_message_text.assert_awaited_once()
+    text = update.callback_query.edit_message_text.call_args.args[0]
+    assert "Item 1 of 5" in text
+
+
+async def test_loadmore_callback_shows_more_items():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(8)]
+    token = bot._create_session(signals, "r/python")
+    assert bot._sessions[token]["shown_count"] == 5
+
+    update = _make_callback_update(f"loadmore:{token}")
+    await bot.on_callback_query(update, None)
+
+    assert bot._sessions[token]["shown_count"] == 8  # min(5+5, 8)
+    update.callback_query.edit_message_text.assert_awaited_once()
+
+
+async def test_back_callback_returns_to_list_view():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(5)]
+    token = bot._create_session(signals, "r/python")
+
+    update = _make_callback_update(f"back:{token}")
+    await bot.on_callback_query(update, None)
+
+    update.callback_query.edit_message_text.assert_awaited_once()
+    text = update.callback_query.edit_message_text.call_args.args[0]
+    assert "r/python" in text
+    assert "Tap a number" in text
+
+
+async def test_unknown_token_shows_expired_toast():
+    bot = _make_bot()
+    update = _make_callback_update("sel:deadbeef:0")
+    await bot.on_callback_query(update, None)
+
+    update.callback_query.answer.assert_awaited_once()
+    call = update.callback_query.answer.call_args
+    assert "expired" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
+    assert call.kwargs.get("show_alert") is True
