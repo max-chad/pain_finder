@@ -291,6 +291,41 @@ class PainFinderBot:
         ]
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
+    async def send_grouped_notification(
+        self, *, chat_id: int, signals: list["PainSignal"], label: str
+    ) -> None:
+        if not self.app:
+            return
+        if not signals:
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=f"\U0001f4ca {label} \u2014 No pain points found.",
+            )
+            return
+        token = self._create_session(signals, label)
+        session = self._sessions[token]
+        if len(session["signals"]) == 1:
+            text, keyboard = self._render_card_view(token, session, 0)
+        else:
+            text, keyboard = self._render_list_view(token, session)
+        await self.app.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+
+    async def _send_grouped_notification_reply(
+        self, update, signals: list["PainSignal"], label: str
+    ) -> None:
+        if update.message is None:
+            return
+        if not signals:
+            await update.message.reply_text(f"\U0001f4ca {label} \u2014 No pain points found.")
+            return
+        token = self._create_session(signals, label)
+        session = self._sessions[token]
+        if len(session["signals"]) == 1:
+            text, keyboard = self._render_card_view(token, session, 0)
+        else:
+            text, keyboard = self._render_list_view(token, session)
+        await update.message.reply_text(text, reply_markup=keyboard)
+
     async def cmd_analyze(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
             return

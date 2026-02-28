@@ -715,3 +715,46 @@ def test_sel_callback_data_format():
     cb = keyboard.inline_keyboard[0][0].callback_data
     assert cb.startswith("sel:")
     assert len(cb.encode()) <= 64
+
+
+async def test_send_grouped_notification_creates_session_and_sends_message():
+    bot = _make_bot()
+    bot.app = SimpleNamespace(bot=AsyncMock())
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(6)]
+    await bot.send_grouped_notification(chat_id=42, signals=signals, label="r/python")
+    assert len(bot._sessions) == 1
+    bot.app.bot.send_message.assert_awaited_once()
+    call_kwargs = bot.app.bot.send_message.call_args
+    assert call_kwargs.kwargs["chat_id"] == 42
+    assert "r/python" in call_kwargs.kwargs["text"]
+
+
+async def test_send_grouped_notification_empty_signals_sends_plain_text():
+    bot = _make_bot()
+    bot.app = SimpleNamespace(bot=AsyncMock())
+    await bot.send_grouped_notification(chat_id=42, signals=[], label="HN")
+    assert len(bot._sessions) == 0
+    bot.app.bot.send_message.assert_awaited_once()
+    text = bot.app.bot.send_message.call_args.kwargs["text"]
+    assert "No pain points" in text
+
+
+async def test_send_grouped_notification_single_signal_sends_card_directly():
+    bot = _make_bot()
+    bot.app = SimpleNamespace(bot=AsyncMock())
+    signals = [_make_signal("p1", "complaint", "Only one issue")]
+    await bot.send_grouped_notification(chat_id=42, signals=signals, label="r/rust")
+    # Card view has "Item 1 of 1"
+    text = bot.app.bot.send_message.call_args.kwargs["text"]
+    assert "Item 1 of 1" in text
+
+
+async def test_send_grouped_notification_reply_sends_list_view():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(6)]
+    update = _make_update()
+    await bot._send_grouped_notification_reply(update, signals, "r/python")
+    assert len(bot._sessions) == 1
+    update.message.reply_text.assert_awaited_once()
+    text = update.message.reply_text.call_args.args[0]
+    assert "r/python" in text
