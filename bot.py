@@ -216,6 +216,80 @@ class PainFinderBot:
         }
         return token
 
+    def _render_list_view(self, token: str, session: dict) -> tuple[str, "InlineKeyboardMarkup"]:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        signals: list[PainSignal] = session["signals"]
+        shown: int = session["shown_count"]
+        label: str = session["label"]
+        total = len(signals)
+        monetizable = sum(1 for s in signals if s.is_monetizable)
+        divider = "\u2500" * 42
+
+        lines = [
+            f"\U0001f4ca {label} \u2014 {total} pain point{'s' if total != 1 else ''} ({monetizable} monetizable)",
+            divider,
+        ]
+        for i, signal in enumerate(signals[:shown], start=1):
+            icon = _signal_icon(signal)
+            summary = signal.summary[:55] + "\u2026" if len(signal.summary) > 55 else signal.summary
+            lines.append(f"{i}. {icon} WTP:{signal.willingness_to_pay} | {summary}")
+        lines += [divider, "Tap a number to see full details."]
+
+        num_buttons = [
+            InlineKeyboardButton(str(i), callback_data=f"sel:{token}:{i - 1}")
+            for i in range(1, shown + 1)
+        ]
+        keyboard_rows: list[list] = [num_buttons]
+        remaining = total - shown
+        if remaining > 0:
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    f"Load more \u2193  ({remaining} remaining)",
+                    callback_data=f"loadmore:{token}",
+                )
+            ])
+        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+    def _render_card_view(self, token: str, session: dict, idx: int) -> tuple[str, "InlineKeyboardMarkup"]:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        signals: list[PainSignal] = session["signals"]
+        label: str = session["label"]
+        signal = signals[idx]
+        total = len(signals)
+        icon = _signal_icon(signal)
+        competitors = ", ".join(signal.competitor_tags[:3]) if signal.competitor_tags else "none"
+        divider = "\u2500" * 42
+
+        lines = [
+            f"\U0001f4ca {label} \u2192 Item {idx + 1} of {total}",
+            divider,
+            f"{icon} [{signal.post.source}] {signal.post.title}",
+            f"WTP: {signal.willingness_to_pay}/10 | Pain: {signal.pain_level}/10",
+            f"Niche: {signal.niche_category or 'Uncategorized'} | Competitors: {competitors}",
+            signal.summary,
+            signal.post.url,
+        ]
+        keyboard_rows = [
+            [
+                InlineKeyboardButton("\u2b50 Favorite", callback_data=f"triage:favorite:{signal.post.post_id}"),
+                InlineKeyboardButton("\u2717 Discard", callback_data=f"triage:discard:{signal.post.post_id}"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "\U0001f48e Deep Dive",
+                    callback_data=f"deepdive:{signal.post.post_id}:{signal.post.subreddit}",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4e6 GTM",
+                    callback_data=f"gtm:{signal.post.post_id}:{signal.post.source}",
+                ),
+            ],
+            [InlineKeyboardButton("\u2190 Back to list", callback_data=f"back:{token}")],
+        ]
+        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
     async def cmd_analyze(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
             return

@@ -651,3 +651,65 @@ def test_evict_old_sessions_keeps_recent():
     token = bot._create_session(signals, "r/python")
     bot._create_session(signals, "r/python")  # trigger eviction
     assert token in bot._sessions  # recent session kept
+
+
+def test_render_list_view_contains_label_and_items():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue number {i}") for i in range(7)]
+    for i, s in enumerate(signals):
+        s.willingness_to_pay = 9 - i
+    token = bot._create_session(signals, "r/python")
+    session = bot._sessions[token]
+    text, keyboard = bot._render_list_view(token, session)
+    assert "r/python" in text
+    assert "7 pain points" in text
+    assert "1." in text
+    assert "5." in text
+    assert "6." not in text  # only 5 shown initially
+    # Load more button present
+    buttons_flat = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert any("Load more" in b for b in buttons_flat)
+    # 5 numbered buttons
+    assert any(b == "1" for b in buttons_flat)
+    assert any(b == "5" for b in buttons_flat)
+
+
+def test_render_list_view_no_load_more_when_all_shown():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(3)]
+    token = bot._create_session(signals, "HN")
+    session = bot._sessions[token]
+    text, keyboard = bot._render_list_view(token, session)
+    buttons_flat = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert not any("Load more" in b for b in buttons_flat)
+
+
+def test_render_card_view_contains_post_details():
+    bot = _make_bot()
+    signal = _make_signal("post_abc", "complaint", "Really annoying bug")
+    signal.willingness_to_pay = 8
+    signal.pain_level = 9
+    token = bot._create_session([signal], "r/python")
+    session = bot._sessions[token]
+    text, keyboard = bot._render_card_view(token, session, 0)
+    assert "Really annoying bug" in text
+    assert "WTP: 8/10" in text
+    assert "Pain: 9/10" in text
+    # Back button present
+    buttons_flat = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert any("Back" in b for b in buttons_flat)
+    # Favorite and Discard buttons present
+    assert any("Favorite" in b for b in buttons_flat)
+    assert any("Discard" in b for b in buttons_flat)
+
+
+def test_sel_callback_data_format():
+    """sel: callback_data stays within Telegram's 64-byte limit."""
+    bot = _make_bot()
+    signal = _make_signal("p1", "complaint", "x")
+    token = bot._create_session([signal], "r/python")
+    session = bot._sessions[token]
+    _, keyboard = bot._render_list_view(token, session)
+    cb = keyboard.inline_keyboard[0][0].callback_data
+    assert cb.startswith("sel:")
+    assert len(cb.encode()) <= 64
