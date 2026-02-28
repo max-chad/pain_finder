@@ -363,8 +363,7 @@ class PainFinderBot:
                         analysis_mode=signal.analysis_mode,
                         analysis_payload=signal.analysis_payload,
                     )
-            await update.message.reply_text(format_report(subreddit, signals))
-            await self._send_top_signal_cards(update, signals)
+            await self._send_grouped_notification_reply(update, signals, f"r/{subreddit}")
         except Exception as e:
             logger.exception("Analyze command failed")
             await update.message.reply_text(f"Error: {e}")

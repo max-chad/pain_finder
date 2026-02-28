@@ -181,7 +181,7 @@ async def test_cmd_unmonitor_usage_on_invalid_input():
     update.message.reply_text.assert_awaited_once_with(UNMONITOR_USAGE)
 
 
-async def test_cmd_analyze_uses_injected_pipeline_and_sends_cards(monkeypatch):
+async def test_cmd_analyze_uses_grouped_notification(monkeypatch):
     run = SimpleNamespace(signals=[_make_signal("p1", "complaint", "Broken install")])
     analyze_fn = AsyncMock(return_value=run)
     bot = PainFinderBot(
@@ -192,16 +192,17 @@ async def test_cmd_analyze_uses_injected_pipeline_and_sends_cards(monkeypatch):
     )
     bot._is_authorized = lambda update: True
 
-    send_cards = AsyncMock()
-    monkeypatch.setattr(bot, "_send_top_signal_cards", send_cards)
+    grouped = AsyncMock()
+    monkeypatch.setattr(bot, "_send_grouped_notification_reply", grouped)
 
     update = _make_update()
     ctx = _make_ctx(["r/python", "10"])
     await bot.cmd_analyze(update, ctx)
 
     analyze_fn.assert_awaited_once_with("python", 10)
-    assert update.message.reply_text.await_count == 2
-    send_cards.assert_awaited_once()
+    grouped.assert_awaited_once()
+    call_kwargs = grouped.call_args
+    assert call_kwargs.args[0] is update or call_kwargs.kwargs.get("update") is update
 
 
 async def test_cmd_analyze_returns_usage_on_parse_error():
