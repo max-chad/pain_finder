@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 import config
-from bot import PainFinderBot, format_report
+from bot import PainFinderBot
 from budget import BudgetGuard
 from classifier import Classifier
 from clusterer import MacroTrendClusterer
@@ -142,11 +142,11 @@ async def run() -> None:
 
     async def analyze_and_notify(subreddit: str) -> None:
         run_result = await pipeline.analyze_subreddit(subreddit=subreddit, limit=100)
-        if bot.app:
-            await bot.app.bot.send_message(
-                chat_id=config.TELEGRAM_CHAT_ID,
-                text=format_report(subreddit, run_result.signals),
-            )
+        await bot.send_grouped_notification(
+            chat_id=config.TELEGRAM_CHAT_ID,
+            signals=run_result.signals,
+            label=f"r/{subreddit}",
+        )
 
     async def run_macro_job() -> None:
         result = await clusterer.run(window_days=config.TREND_LOOKBACK_DAYS)
@@ -172,10 +172,11 @@ async def run() -> None:
         if not posts:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="hn", run_scope="hackernews")
-        if bot.app and run_result.pain_count:
-            await bot.app.bot.send_message(
+        if run_result.pain_count:
+            await bot.send_grouped_notification(
                 chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"HN ingestion: {run_result.post_count} posts scanned, {run_result.pain_count} pain points found.",
+                signals=run_result.signals,
+                label="HN",
             )
 
     async def run_reviews_job() -> None:
@@ -188,10 +189,11 @@ async def run() -> None:
         if not posts:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="reviews", run_scope="reviews")
-        if bot.app and run_result.pain_count:
-            await bot.app.bot.send_message(
+        if run_result.pain_count:
+            await bot.send_grouped_notification(
                 chat_id=config.TELEGRAM_CHAT_ID,
-                text=f"Review ingestion: {run_result.post_count} reviews scanned, {run_result.pain_count} pain points found.",
+                signals=run_result.signals,
+                label="Reviews",
             )
 
     scheduler = MonitoringScheduler(

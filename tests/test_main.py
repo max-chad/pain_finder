@@ -184,11 +184,15 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             self.gtm_fn = gtm_fn
             self.export_service = export_service
             self.app = None
+            self.grouped_notifications: list[dict] = []
             FakeBot.instances.append(self)
 
         def build_app(self):
             self.app = FakeTelegramApp()
             return self.app
+
+        async def send_grouped_notification(self, *, chat_id: int, signals: list, label: str) -> None:
+            self.grouped_notifications.append({"chat_id": chat_id, "signals": signals, "label": label})
 
     class FakeScheduler:
         instances = []
@@ -252,7 +256,9 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert telegram_app.updater.stop_called is True
     assert telegram_app.stop_called is True
     assert pipeline.calls[-1] == ("python", 100)
-    assert len(telegram_app.bot.send_message.calls) == 1
+    bot = FakeBot.instances[-1]
+    assert len(bot.grouped_notifications) == 1
+    assert bot.grouped_notifications[0]["label"] == "r/python"
 
 
 @pytest.mark.asyncio
@@ -329,7 +335,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
 
         async def analyze_external_posts(self, posts, source, run_scope):
             self.external_calls.append((source, run_scope, len(posts)))
-            return SimpleNamespace(post_count=len(posts), pain_count=1)
+            return SimpleNamespace(post_count=len(posts), pain_count=1, signals=[])
 
         async def run_deep_dive(self, **kwargs):
             return SimpleNamespace(status="completed", summary="ok", error=None)
@@ -431,11 +437,15 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             self.reload_jobs_fn = kwargs.get("reload_jobs_fn")
             self.app = None
+            self.grouped_notifications: list[dict] = []
             FakeBot.instances.append(self)
 
         def build_app(self):
             self.app = FakeTelegramApp()
             return self.app
+
+        async def send_grouped_notification(self, *, chat_id: int, signals: list, label: str) -> None:
+            self.grouped_notifications.append({"chat_id": chat_id, "signals": signals, "label": label})
 
     class FakeScheduler:
         instances = []
@@ -494,5 +504,10 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
     assert ("python", 100) in pipeline.calls
     assert ("hn", "hackernews", 1) in pipeline.external_calls
     assert ("reviews", "reviews", 1) in pipeline.external_calls
-    assert len(messages_sent) >= 3
+    assert len(messages_sent) >= 1  # macro job still uses send_message directly
+    bot = FakeBot.instances[-1]
+    grouped_labels = [n["label"] for n in bot.grouped_notifications]
+    assert "r/python" in grouped_labels
+    assert "HN" in grouped_labels
+    assert "Reviews" in grouped_labels
 
