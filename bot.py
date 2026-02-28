@@ -1,6 +1,8 @@
 import logging
 import os
 import re
+import time
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -197,15 +199,12 @@ class PainFinderBot:
         return update.effective_chat.id == config.TELEGRAM_CHAT_ID
 
     def _evict_old_sessions(self) -> None:
-        import time
         cutoff = time.time() - 86400  # 24 hours
         expired = [t for t, s in self._sessions.items() if s["created_at"] < cutoff]
         for t in expired:
             del self._sessions[t]
 
     def _create_session(self, signals: list["PainSignal"], label: str) -> str:
-        import time
-        import uuid
         self._evict_old_sessions()
         token = uuid.uuid4().hex[:8]
         sorted_signals = sorted(signals, key=lambda s: (s.willingness_to_pay, s.pain_level), reverse=True)

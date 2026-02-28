@@ -1,4 +1,5 @@
-﻿from types import SimpleNamespace
+﻿import time as _time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -597,9 +598,6 @@ async def test_send_top_signal_cards_skips_discarded_signals(monkeypatch):
     sent_text = update.message.reply_text.await_args.args[0]
     assert "p2" in sent_text
     assert "p1" not in sent_text
-
-
-import time as _time
 
 
 def _make_bot() -> PainFinderBot:
