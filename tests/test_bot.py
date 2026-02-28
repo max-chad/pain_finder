@@ -701,6 +701,8 @@ def test_render_card_view_contains_post_details():
     # Favorite and Discard buttons present
     assert any("Favorite" in b for b in buttons_flat)
     assert any("Discard" in b for b in buttons_flat)
+    assert any("Deep Dive" in b for b in buttons_flat)
+    assert any("GTM" in b for b in buttons_flat)
 
 
 def test_sel_callback_data_format():

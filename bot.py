@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from clusterer import MacroTrendRunResult
     from generator_gtm import GTMResult
     from pipeline import AnalysisRun, DeepDiveRun
+    from telegram import InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
