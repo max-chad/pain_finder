@@ -142,11 +142,12 @@ async def run() -> None:
 
     async def analyze_and_notify(subreddit: str) -> None:
         run_result = await pipeline.analyze_subreddit(subreddit=subreddit, limit=100)
-        await bot.send_grouped_notification(
-            chat_id=config.TELEGRAM_CHAT_ID,
-            signals=run_result.signals,
-            label=f"r/{subreddit}",
-        )
+        if run_result.pain_count:
+            await bot.send_grouped_notification(
+                chat_id=config.TELEGRAM_CHAT_ID,
+                signals=run_result.signals,
+                label=f"r/{subreddit}",
+            )
 
     async def run_macro_job() -> None:
         result = await clusterer.run(window_days=config.TREND_LOOKBACK_DAYS)

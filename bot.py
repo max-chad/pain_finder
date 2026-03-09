@@ -241,7 +241,8 @@ class PainFinderBot:
             InlineKeyboardButton(str(i), callback_data=f"sel:{token}:{i - 1}")
             for i in range(1, shown + 1)
         ]
-        keyboard_rows: list[list] = [num_buttons]
+        chunk_size = 5
+        keyboard_rows: list[list] = [num_buttons[i:i + chunk_size] for i in range(0, len(num_buttons), chunk_size)]
         remaining = total - shown
         if remaining > 0:
             keyboard_rows.append([
@@ -719,51 +720,6 @@ class PainFinderBot:
         except Exception:
             logger.exception("Callback processing failed")
             await query.answer("Action failed", show_alert=False)
-
-    async def _send_top_signal_cards(self, update, signals: list[PainSignal]) -> None:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-        if update.message is None:
-            return
-
-        candidate_signals = [signal for signal in signals if signal.is_monetizable and signal.willingness_to_pay >= 1]
-        candidate_signals.sort(key=lambda signal: (signal.willingness_to_pay, signal.pain_level), reverse=True)
-
-        rows = await self.db.get_pain_points_by_ids([s.post.post_id for s in candidate_signals[:5]])
-
-        for signal in candidate_signals[:5]:
-            row = rows.get(signal.post.post_id)
-            if row and row.get("triage_status") == "discarded":
-                continue
-            icon = _signal_icon(signal)
-            competitors = ", ".join(signal.competitor_tags[:3]) if signal.competitor_tags else "none"
-            card = (
-                f"{icon} source={signal.post.source} post={signal.post.post_id}\n"
-                f"WTP: {signal.willingness_to_pay}/10 | Pain: {signal.pain_level}/10\n"
-                f"Niche: {signal.niche_category or 'Uncategorized'}\n"
-                f"Competitors: {competitors}\n"
-                f"{signal.summary}\n"
-                f"{signal.post.url}"
-            )
-            keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("Save to Favorites", callback_data=f"triage:favorite:{signal.post.post_id}"),
-                        InlineKeyboardButton("Discard", callback_data=f"triage:discard:{signal.post.post_id}"),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "Deep Dive",
-                            callback_data=f"deepdive:{signal.post.post_id}:{signal.post.subreddit}",
-                        ),
-                        InlineKeyboardButton(
-                            "Generate GTM",
-                            callback_data=f"gtm:{signal.post.post_id}:{signal.post.source}",
-                        ),
-                    ],
-                ]
-            )
-            await update.message.reply_text(card, reply_markup=keyboard)
 
     @staticmethod
     def _format_gtm_result(result: "GTMResult") -> str:

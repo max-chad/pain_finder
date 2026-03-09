@@ -86,7 +86,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
 
         async def analyze_subreddit(self, subreddit, limit=100):
             self.calls.append((subreddit, limit))
-            return SimpleNamespace(signals=[])
+            return SimpleNamespace(signals=[], post_count=1, pain_count=1)
 
         async def run_deep_dive(self, **kwargs):
             self.deep_dive_calls.append(kwargs)
@@ -331,7 +331,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
 
         async def analyze_subreddit(self, subreddit, limit=100):
             self.calls.append((subreddit, limit))
-            return SimpleNamespace(signals=[], post_count=0, pain_count=0)
+            return SimpleNamespace(signals=[], post_count=1, pain_count=1)
 
         async def analyze_external_posts(self, posts, source, run_scope):
             self.external_calls.append((source, run_scope, len(posts)))

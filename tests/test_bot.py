@@ -531,77 +531,6 @@ async def test_cmd_monitor_usage_on_bad_args():
     update.message.reply_text.assert_awaited_once_with(MONITOR_USAGE)
 
 
-async def test_send_top_signal_cards_calls_get_pain_points_by_ids_with_correct_ids(monkeypatch):
-    """_send_top_signal_cards must batch-fetch DB rows using the post_ids from
-    the top monetizable candidate signals (not mocked away)."""
-    from unittest.mock import MagicMock
-
-    # Stub out the telegram keyboard classes imported inside the method.
-    monkeypatch.setattr("telegram.InlineKeyboardButton", MagicMock(), raising=False)
-    monkeypatch.setattr("telegram.InlineKeyboardMarkup", MagicMock(return_value=MagicMock()), raising=False)
-
-    db = AsyncMock()
-    # get_pain_points_by_ids returns a dict keyed by post_id.
-    db.get_pain_points_by_ids.return_value = {
-        "p1": {"triage_status": "new"},
-        "p2": {"triage_status": "new"},
-    }
-
-    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
-
-    signals = [
-        _make_signal("p1", "complaint", "Summary one", monetizable=True),
-        _make_signal("p2", "unsolved", "Summary two", monetizable=True),
-    ]
-
-    update = _make_update()
-    await bot._send_top_signal_cards(update, signals)
-
-    # The method must have called get_pain_points_by_ids with the post_ids of
-    # the candidate signals in the order they appear after sorting.
-    db.get_pain_points_by_ids.assert_awaited_once()
-    called_ids = db.get_pain_points_by_ids.await_args.args[0]
-    assert set(called_ids) == {"p1", "p2"}
-
-    # Both non-discarded signals should have produced a card message.
-    assert update.message.reply_text.await_count == 2
-
-
-async def test_send_top_signal_cards_skips_discarded_signals(monkeypatch):
-    """Signals whose DB row has triage_status=='discarded' must not produce a card."""
-    from unittest.mock import MagicMock
-
-    monkeypatch.setattr("telegram.InlineKeyboardButton", MagicMock(), raising=False)
-    monkeypatch.setattr("telegram.InlineKeyboardMarkup", MagicMock(return_value=MagicMock()), raising=False)
-
-    db = AsyncMock()
-    # p1 is discarded; p2 is active.
-    db.get_pain_points_by_ids.return_value = {
-        "p1": {"triage_status": "discarded"},
-        "p2": {"triage_status": "favorite"},
-    }
-
-    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
-
-    signals = [
-        _make_signal("p1", "complaint", "Should be filtered out", monetizable=True),
-        _make_signal("p2", "unsolved", "Should appear", monetizable=True),
-    ]
-
-    update = _make_update()
-    await bot._send_top_signal_cards(update, signals)
-
-    # get_pain_points_by_ids must still be called with both IDs.
-    db.get_pain_points_by_ids.assert_awaited_once()
-    called_ids = db.get_pain_points_by_ids.await_args.args[0]
-    assert set(called_ids) == {"p1", "p2"}
-
-    # Only the non-discarded signal (p2) should produce a card.
-    assert update.message.reply_text.await_count == 1
-    sent_text = update.message.reply_text.await_args.args[0]
-    assert "p2" in sent_text
-    assert "p1" not in sent_text
-
 
 def _make_bot() -> PainFinderBot:
     """Minimal PainFinderBot for unit tests (no Telegram app)."""
@@ -838,3 +767,63 @@ async def test_sel_callback_edit_fails_shows_error_toast():
     call = update.callback_query.answer.call_args
     assert "try again" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
     assert call.kwargs.get("show_alert") is True
+
+
+async def test_loadmore_callback_expired_token_shows_toast():
+    bot = _make_bot()
+    update = _make_callback_update("loadmore:deadbeef")
+    await bot.on_callback_query(update, None)
+
+    call = update.callback_query.answer.call_args
+    assert "expired" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
+    assert call.kwargs.get("show_alert") is True
+
+
+async def test_back_callback_expired_token_shows_toast():
+    bot = _make_bot()
+    update = _make_callback_update("back:deadbeef")
+    await bot.on_callback_query(update, None)
+
+    call = update.callback_query.answer.call_args
+    assert "expired" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
+    assert call.kwargs.get("show_alert") is True
+
+
+async def test_loadmore_callback_edit_fails_shows_error_toast():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(8)]
+    token = bot._create_session(signals, "r/python")
+    update = _make_callback_update(f"loadmore:{token}")
+    update.callback_query.edit_message_text.side_effect = Exception("Telegram error")
+
+    await bot.on_callback_query(update, None)
+
+    call = update.callback_query.answer.call_args
+    assert "try again" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
+    assert call.kwargs.get("show_alert") is True
+
+
+async def test_back_callback_edit_fails_shows_error_toast():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(5)]
+    token = bot._create_session(signals, "r/python")
+    update = _make_callback_update(f"back:{token}")
+    update.callback_query.edit_message_text.side_effect = Exception("Telegram error")
+
+    await bot.on_callback_query(update, None)
+
+    call = update.callback_query.answer.call_args
+    assert "try again" in (call.args[0] if call.args else call.kwargs.get("text", "")).lower()
+    assert call.kwargs.get("show_alert") is True
+
+
+async def test_render_list_view_buttons_chunked_into_rows_of_5():
+    bot = _make_bot()
+    signals = [_make_signal(f"p{i}", "complaint", f"Issue {i}") for i in range(12)]
+    token = bot._create_session(signals, "r/python")
+    session = bot._sessions[token]
+    session["shown_count"] = 12
+    _, keyboard = bot._render_list_view(token, session)
+    num_rows = [row for row in keyboard.inline_keyboard if len(row) > 0 and row[0].callback_data.startswith("sel:")]
+    assert all(len(row) <= 5 for row in num_rows)
+    assert len(num_rows) == 3  # ceil(12 / 5) = 3 rows
