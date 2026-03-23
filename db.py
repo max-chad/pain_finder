@@ -444,15 +444,22 @@ class Database:
             return
 
         current_ids: list[str] = json.loads(row["cross_source_ids"] or "[]")
-        if dup_post_id not in current_ids:
+        should_increment_count = dup_post_id not in current_ids
+        if should_increment_count:
             current_ids.append(dup_post_id)
 
         try:
-            await self._conn.execute(
-                "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
-                "cross_source_ids = ? WHERE post_id = ?",
-                (json.dumps(current_ids), canonical_post_id),
-            )
+            if should_increment_count:
+                await self._conn.execute(
+                    "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
+                    "cross_source_ids = ? WHERE post_id = ?",
+                    (json.dumps(current_ids), canonical_post_id),
+                )
+            else:
+                await self._conn.execute(
+                    "UPDATE pain_points SET cross_source_ids = ? WHERE post_id = ?",
+                    (json.dumps(current_ids), canonical_post_id),
+                )
             await self._conn.execute(
                 "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
                 (json.dumps(dup_emb_vector), dup_post_id),

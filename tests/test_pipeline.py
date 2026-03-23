@@ -340,11 +340,31 @@ async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
     )
 
     # First ingestion: Reddit post → inserted as canonical, source="reddit"
-    await pipeline.analyze_external_posts(posts=[post_reddit], source="reddit", run_scope="test")
+    first_run = await pipeline.analyze_external_posts(posts=[post_reddit], source="reddit", run_scope="test")
 
     # Second ingestion: HN post (source="hn") → semantically identical, should merge
     pipeline.classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[signal_hn]), openrouter=None)
-    await pipeline.analyze_external_posts(posts=[post_hn], source="hn", run_scope="hackernews")
+    second_run = await pipeline.analyze_external_posts(posts=[post_hn], source="hn", run_scope="hackernews")
+
+    # Regression: run-level pain accounting must exclude dedup-merged non-persisted items.
+    # Previously this run incorrectly reported pain_count=1 with one returned signal.
+    assert first_run.pain_count == 1
+    assert len(first_run.signals) == 1
+    assert second_run.post_count == 1
+    assert second_run.pain_count == 0
+    assert second_run.signals == []
+
+    with open(second_run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    assert report_payload == []
+
+    latest_report = await db.get_latest_report(subreddit="hackernews")
+    assert latest_report is not None
+    assert latest_report["pain_count"] == 0
+
+    latest_analysis_run = await db.get_latest_analysis_run("hackernews")
+    assert latest_analysis_run is not None
+    assert latest_analysis_run["pain_count"] == 0
 
     # Only the canonical reddit row should exist; HN post was never inserted
     canonical = await db.get_pain_point("r_post1")
@@ -355,3 +375,249 @@ async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
     hn_row = await db.get_pain_point("hn_post1")
     assert hn_row is None
 
+
+async def test_analyze_external_posts_mixed_outcomes_contract(db, tmp_path):
+    """Mixed batch contract: only persisted canonical inserts count as pain."""
+    import math
+    from deduplicator import Deduplicator
+    from embedder import Embedder
+
+    canonical = Post(
+        post_id="reddit_seed",
+        subreddit="test",
+        title="Stripe webhooks fail often",
+        body="Production incidents every week",
+        url="https://reddit.com/reddit_seed",
+        score=10,
+        source="reddit",
+    )
+    merge_candidate = Post(
+        post_id="hn_dup2",
+        subreddit="hackernews",
+        title="Stripe webhook outages are frequent",
+        body="Teams hit reliability issues repeatedly",
+        url="https://news.ycombinator.com/item?id=dup2",
+        score=4,
+        source="hn",
+    )
+    inserted_post = Post(
+        post_id="hn_new_insert",
+        subreddit="hackernews",
+        title="Need better vendor invoice reconciliation",
+        body="Manual CSV work is painful",
+        url="https://news.ycombinator.com/item?id=new_insert",
+        score=6,
+        source="hn",
+    )
+    non_pain_post = Post(
+        post_id="hn_non_pain",
+        subreddit="hackernews",
+        title="Show and tell",
+        body="Not a pain point",
+        url="https://news.ycombinator.com/item?id=non_pain",
+        score=1,
+        source="hn",
+    )
+
+    canonical_signal = PainSignal(
+        post=canonical,
+        category="complaint",
+        summary="Webhook reliability pain",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Payments",
+        analysis_mode="b2b",
+    )
+    merge_signal = PainSignal(
+        post=merge_candidate,
+        category="complaint",
+        summary="Webhook reliability pain",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Payments",
+        analysis_mode="b2b",
+    )
+    inserted_signal = PainSignal(
+        post=inserted_post,
+        category="complaint",
+        summary="Invoice reconciliation is manual",
+        severity="medium",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=7,
+        niche_category="FinOps",
+        analysis_mode="b2b",
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = []
+
+    shared_vec = [1.0 / math.sqrt(96)] * 96
+    unique_vec = [0.0] * 96
+    unique_vec[0] = 1.0
+
+    embedder = MagicMock(spec=Embedder)
+
+    async def embed_for_text(text: str) -> list[float]:
+        if "webhook" in text.lower():
+            return shared_vec
+        return unique_vec
+
+    embedder.embed = AsyncMock(side_effect=embed_for_text)
+    deduplicator = Deduplicator(db=db, embedder=embedder, threshold=0.88)
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=SimpleNamespace(classify_batch=AsyncMock(return_value=[canonical_signal]), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+        deduplicator=deduplicator,
+    )
+
+    seed_run = await pipeline.analyze_external_posts(posts=[canonical], source="reddit", run_scope="test")
+    assert seed_run.pain_count == 1
+
+    pipeline.classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[merge_signal, inserted_signal]),
+        openrouter=None,
+    )
+
+    mixed_run = await pipeline.analyze_external_posts(
+        posts=[merge_candidate, inserted_post, non_pain_post],
+        source="hn",
+        run_scope="hackernews",
+    )
+
+    assert mixed_run.post_count == 3
+    assert mixed_run.pain_count == 1
+    assert [signal.post.post_id for signal in mixed_run.signals] == ["hn_new_insert"]
+
+    with open(mixed_run.json_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert len(payload) == 1
+    assert payload[0]["post_id"] == "hn_new_insert"
+
+    latest_report = await db.get_latest_report(subreddit="hackernews")
+    assert latest_report is not None
+    assert latest_report["pain_count"] == 1
+
+    latest_analysis_run = await db.get_latest_analysis_run("hackernews")
+    assert latest_analysis_run is not None
+    assert latest_analysis_run["pain_count"] == 1
+
+    canonical_row = await db.get_pain_point("reddit_seed")
+    assert canonical_row is not None
+    assert canonical_row["cross_source_count"] == 2
+
+    inserted_row = await db.get_pain_point("hn_new_insert")
+    assert inserted_row is not None
+
+    merged_row = await db.get_pain_point("hn_dup2")
+    assert merged_row is None
+
+    non_pain_row = await db.get_pain_point("hn_non_pain")
+    assert non_pain_row is None
+
+
+async def test_analyze_external_posts_logs_dedup_outcome_metrics(db, tmp_path, caplog):
+    """Completion log includes inserted/dedup/discarded counters."""
+    import math
+    from deduplicator import Deduplicator
+    from embedder import Embedder
+
+    post_reddit = Post(
+        post_id="r_metrics", subreddit="test", title="API keeps failing", body="Broken often", url="https://reddit.com/r_metrics", score=5
+    )
+    post_hn_dup = Post(
+        post_id="hn_metrics_dup", subreddit="hackernews", title="API failures are frequent", body="Broken often", url="https://news.ycombinator.com/dup", score=3, source="hn"
+    )
+    post_hn_new = Post(
+        post_id="hn_metrics_new", subreddit="hackernews", title="Need onboarding automation", body="Manual setup takes hours", url="https://news.ycombinator.com/new", score=4, source="hn"
+    )
+    post_non_pain = Post(
+        post_id="hn_metrics_non_pain", subreddit="hackernews", title="Launch post", body="No issue", url="https://news.ycombinator.com/non_pain", score=1, source="hn"
+    )
+
+    signal_reddit = PainSignal(
+        post=post_reddit,
+        category="complaint",
+        summary="API reliability issue",
+        severity="high",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=7,
+        niche_category="DevTools",
+        analysis_mode="b2b",
+    )
+    signal_hn_dup = PainSignal(
+        post=post_hn_dup,
+        category="complaint",
+        summary="API reliability issue",
+        severity="high",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=7,
+        niche_category="DevTools",
+        analysis_mode="b2b",
+    )
+    signal_hn_new = PainSignal(
+        post=post_hn_new,
+        category="wish",
+        summary="Needs onboarding automation",
+        severity="medium",
+        is_monetizable=True,
+        pain_level=6,
+        willingness_to_pay=6,
+        niche_category="Operations",
+        analysis_mode="b2b",
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = []
+
+    shared_vec = [1.0 / math.sqrt(96)] * 96
+    unique_vec = [0.0] * 96
+    unique_vec[1] = 1.0
+
+    embedder = MagicMock(spec=Embedder)
+
+    async def embed_for_text(text: str) -> list[float]:
+        if "api" in text.lower():
+            return shared_vec
+        return unique_vec
+
+    embedder.embed = AsyncMock(side_effect=embed_for_text)
+    deduplicator = Deduplicator(db=db, embedder=embedder, threshold=0.88)
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=SimpleNamespace(classify_batch=AsyncMock(return_value=[signal_reddit]), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+        deduplicator=deduplicator,
+    )
+
+    await pipeline.analyze_external_posts(posts=[post_reddit], source="reddit", run_scope="test")
+
+    pipeline.classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[signal_hn_dup, signal_hn_new]),
+        openrouter=None,
+    )
+
+    with caplog.at_level("INFO"):
+        await pipeline.analyze_external_posts(
+            posts=[post_hn_dup, post_hn_new, post_non_pain],
+            source="hn",
+            run_scope="hackernews",
+        )
+
+    completion_logs = [rec.message for rec in caplog.records if "analysis_complete stage=analyze" in rec.message]
+    assert any("inserted_count=1" in message for message in completion_logs)
+    assert any("dedup_merged_count=1" in message for message in completion_logs)
+    assert any("discarded_non_pain_count=1" in message for message in completion_logs)

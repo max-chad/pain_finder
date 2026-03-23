@@ -529,10 +529,78 @@ async def test_merge_duplicate_increments_count(db):
     )
     canonical = await db.get_pain_point("canonical")
     assert canonical["cross_source_count"] == 2
-    assert "dup1" in json.loads(canonical["cross_source_ids"])
+    cross_source_ids = json.loads(canonical["cross_source_ids"])
+    assert "dup1" in cross_source_ids
+    assert canonical["cross_source_count"] == len(cross_source_ids) + 1
+    assert len(cross_source_ids) == len(set(cross_source_ids))
 
     dup = await db.get_pain_point("dup1")
     assert dup["triage_status"] == "merged"
     stored_vec = json.loads(dup["emb_vector"])
     assert stored_vec == dup_vec
 
+
+async def test_merge_duplicate_same_id_is_idempotent_for_count(db):
+    await _insert_test_point(db, "canonical_idem", source="reddit")
+    await _insert_test_point(db, "dup_idem", source="hn")
+    dup_vec = [0.3, 0.7]
+
+    await db.merge_duplicate(
+        canonical_post_id="canonical_idem",
+        dup_post_id="dup_idem",
+        dup_emb_vector=dup_vec,
+    )
+    await db.merge_duplicate(
+        canonical_post_id="canonical_idem",
+        dup_post_id="dup_idem",
+        dup_emb_vector=dup_vec,
+    )
+
+    canonical = await db.get_pain_point("canonical_idem")
+    assert canonical is not None
+    assert canonical["cross_source_count"] == 2
+    cross_source_ids = json.loads(canonical["cross_source_ids"])
+    assert cross_source_ids == ["dup_idem"]
+    assert canonical["cross_source_count"] == len(cross_source_ids) + 1
+    assert len(cross_source_ids) == len(set(cross_source_ids))
+
+    dup = await db.get_pain_point("dup_idem")
+    assert dup is not None
+    assert dup["triage_status"] == "merged"
+    assert json.loads(dup["emb_vector"]) == dup_vec
+
+
+async def test_merge_duplicate_multistep_sequence_preserves_invariants(db):
+    await _insert_test_point(db, "canonical_multi", source="reddit")
+    await _insert_test_point(db, "dup_a", source="hn")
+    await _insert_test_point(db, "dup_b", source="twitter")
+
+    await db.merge_duplicate(
+        canonical_post_id="canonical_multi",
+        dup_post_id="dup_a",
+        dup_emb_vector=[0.11, 0.89],
+    )
+    await db.merge_duplicate(
+        canonical_post_id="canonical_multi",
+        dup_post_id="dup_b",
+        dup_emb_vector=[0.22, 0.78],
+    )
+    await db.merge_duplicate(
+        canonical_post_id="canonical_multi",
+        dup_post_id="dup_a",
+        dup_emb_vector=[0.11, 0.89],
+    )
+
+    canonical = await db.get_pain_point("canonical_multi")
+    assert canonical is not None
+    cross_source_ids = json.loads(canonical["cross_source_ids"])
+    assert set(cross_source_ids) == {"dup_a", "dup_b"}
+    assert canonical["cross_source_count"] == len(cross_source_ids) + 1
+    assert len(cross_source_ids) == len(set(cross_source_ids))
+
+    dup_a = await db.get_pain_point("dup_a")
+    dup_b = await db.get_pain_point("dup_b")
+    assert dup_a is not None
+    assert dup_b is not None
+    assert dup_a["triage_status"] == "merged"
+    assert dup_b["triage_status"] == "merged"

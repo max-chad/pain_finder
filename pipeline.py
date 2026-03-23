@@ -103,12 +103,17 @@ class AnalysisPipeline:
             raise RuntimeError("LLM operations are paused. Use /resume to override.")
 
         start = perf_counter()
-        signals = await self.classifier.classify_batch(posts)
+        classified_signals = await self.classifier.classify_batch(posts)
+        persisted_signals: list[PainSignal] = []
+        classified_count = len(classified_signals)
+        inserted_count = 0
+        dedup_merged_count = 0
+        discarded_non_pain_count = max(0, len(posts) - classified_count)
 
         monetizable_count = 0
         deep_dive_count = 0
 
-        for signal in signals:
+        for signal in classified_signals:
             embedding: list[float] | None = None
 
             if self.deduplicator is not None:
@@ -120,6 +125,7 @@ class AnalysisPipeline:
                     source=source,
                 )
                 if is_dup:
+                    dedup_merged_count += 1
                     continue  # duplicate merged into canonical; skip insert
 
             await self.db.insert_pain_point(
@@ -141,6 +147,8 @@ class AnalysisPipeline:
                 analysis_payload=signal.analysis_payload,
                 emb_vector=embedding,
             )
+            persisted_signals.append(signal)
+            inserted_count += 1
 
             if signal.is_monetizable:
                 monetizable_count += 1
@@ -159,20 +167,20 @@ class AnalysisPipeline:
                 if deep_dive.status == "completed":
                     deep_dive_count += 1
 
-        report_data = self._build_report_payload(signals=signals, source=source)
+        report_data = self._build_report_payload(signals=persisted_signals, source=source)
         json_path = await self._write_report(run_label=run_label, payload=report_data)
 
         report_id = await self.db.save_report(
             subreddit=run_scope,
             post_count=len(posts),
-            pain_count=len(signals),
+            pain_count=inserted_count,
             json_path=json_path,
         )
         duration_ms = int((perf_counter() - start) * 1000)
         analysis_run_id = await self.db.record_analysis_run(
             subreddit=run_scope,
             post_count=len(posts),
-            pain_count=len(signals),
+            pain_count=inserted_count,
             monetizable_count=monetizable_count,
             deep_dive_count=deep_dive_count,
             duration_ms=duration_ms,
@@ -180,24 +188,27 @@ class AnalysisPipeline:
         )
 
         logger.info(
-            "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s post_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d duration_ms=%d",
+            "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s post_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d duration_ms=%d",
             source,
             run_scope,
             analysis_run_id,
             len(posts),
-            len(signals),
+            inserted_count,
             monetizable_count,
             deep_dive_count,
+            inserted_count,
+            dedup_merged_count,
+            discarded_non_pain_count,
             duration_ms,
         )
 
         return AnalysisRun(
             subreddit=run_scope,
             post_count=len(posts),
-            pain_count=len(signals),
+            pain_count=inserted_count,
             monetizable_count=monetizable_count,
             deep_dive_count=deep_dive_count,
-            signals=signals,
+            signals=persisted_signals,
             json_path=json_path,
             report_id=report_id,
             analysis_run_id=analysis_run_id,

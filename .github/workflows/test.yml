@@ -21,6 +21,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run critical pipeline/db tests (fast feedback)
+        run: pytest tests/test_db.py tests/test_pipeline.py -q
+
       - name: Ruff
         run: ruff check .
 

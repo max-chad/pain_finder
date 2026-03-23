@@ -4,7 +4,7 @@ import re
 import time
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable, Literal, TypedDict
 
 from classifier import PainSignal
 from export_sheets import ExportResult
@@ -14,7 +14,35 @@ if TYPE_CHECKING:
     from clusterer import MacroTrendRunResult
     from generator_gtm import GTMResult
     from pipeline import AnalysisRun, DeepDiveRun
-    from telegram import InlineKeyboardMarkup
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from telegram.ext import Application
+
+
+class DigestItem(TypedDict, total=False):
+    post_id: str
+    weighted_score: int
+    willingness_to_pay: int
+    summary: str
+
+
+class DigestPayload(TypedDict, total=False):
+    hours: int
+    subreddit: str | None
+    total: int
+    top_items: list[DigestItem]
+    niche_counts: dict[str, int]
+    source_counts: dict[str, int]
+    recurring_blockers: list[str]
+
+
+class SessionState(TypedDict):
+    signals: list[PainSignal]
+    label: str
+    created_at: float
+    shown_count: int
+
+
+TriageStatus = Literal["favorite", "discarded"]
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +159,22 @@ def parse_macro_args(text: str) -> int:
     return days
 
 
+def parse_sel_callback_data(data: str) -> tuple[str, int]:
+    parts = data.split(":", 2)
+    if len(parts) != 3:
+        raise ValueError("Malformed callback data")
+    _, token, idx_str = parts
+    return token, int(idx_str)
+
+
+def parse_scoped_callback_data(data: str, prefix: str) -> tuple[str, str]:
+    payload = data[len(prefix) :]
+    parts = payload.rsplit(":", 1)
+    if len(parts) != 2:
+        raise ValueError("Malformed callback data")
+    return parts[0], parts[1]
+
+
 def _signal_icon(signal: PainSignal) -> str:
     if signal.is_monetizable and signal.willingness_to_pay >= 8:
         return "[money]"
@@ -170,7 +214,7 @@ class PainFinderBot:
         reload_jobs_fn: Callable[[], Awaitable[None]] | None = None,
         analyze_fn: Callable[[str, int], Awaitable["AnalysisRun"]] | None = None,
         deep_dive_fn: Callable[[str, str, str], Awaitable["DeepDiveRun"]] | None = None,
-        digest_fn: Callable[[str | None, int], Awaitable[dict]] | None = None,
+        digest_fn: Callable[[str | None, int], Awaitable[DigestPayload]] | None = None,
         macro_fn: Callable[[int], Awaitable["MacroTrendRunResult"]] | None = None,
         budget_status_fn: Callable[[], Awaitable["BudgetStatus"]] | None = None,
         resume_budget_fn: Callable[[], Awaitable[datetime]] | None = None,
@@ -189,10 +233,10 @@ class PainFinderBot:
         self.resume_budget_fn = resume_budget_fn
         self.gtm_fn = gtm_fn
         self.export_service = export_service
-        self.app = None
-        self._sessions: dict[str, dict] = {}
+        self.app: "Application | None" = None
+        self._sessions: dict[str, SessionState] = {}
 
-    def _is_authorized(self, update) -> bool:
+    def _is_authorized(self, update: "Update") -> bool:
         import config
 
         if update.effective_chat is None:
@@ -217,7 +261,7 @@ class PainFinderBot:
         }
         return token
 
-    def _render_list_view(self, token: str, session: dict) -> tuple[str, "InlineKeyboardMarkup"]:
+    def _render_list_view(self, token: str, session: SessionState) -> tuple[str, "InlineKeyboardMarkup"]:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         signals: list[PainSignal] = session["signals"]
@@ -242,7 +286,9 @@ class PainFinderBot:
             for i in range(1, shown + 1)
         ]
         chunk_size = 5
-        keyboard_rows: list[list] = [num_buttons[i:i + chunk_size] for i in range(0, len(num_buttons), chunk_size)]
+        keyboard_rows: list[list["InlineKeyboardButton"]] = [
+            num_buttons[i:i + chunk_size] for i in range(0, len(num_buttons), chunk_size)
+        ]
         remaining = total - shown
         if remaining > 0:
             keyboard_rows.append([
@@ -253,7 +299,7 @@ class PainFinderBot:
             ])
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
-    def _render_card_view(self, token: str, session: dict, idx: int) -> tuple[str, "InlineKeyboardMarkup"]:
+    def _render_card_view(self, token: str, session: SessionState, idx: int) -> tuple[str, "InlineKeyboardMarkup"]:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         signals: list[PainSignal] = session["signals"]
@@ -607,7 +653,7 @@ class PainFinderBot:
         result = await self.gtm_fn(post_id)
         await update.message.reply_text(self._format_gtm_result(result))
 
-    async def on_callback_query(self, update, ctx):
+    async def on_callback_query(self, update: "Update", ctx) -> None:
         if not self._is_authorized(update):
             return
         query = update.callback_query
@@ -616,19 +662,14 @@ class PainFinderBot:
         data = query.data or ""
         try:
             if data.startswith("sel:"):
-                parts = data.split(":", 2)
-                if len(parts) != 3:
+                try:
+                    token, idx = parse_sel_callback_data(data)
+                except ValueError:
                     await query.answer("Malformed callback", show_alert=False)
                     return
-                _, token, idx_str = parts
                 session = self._sessions.get(token)
                 if session is None:
                     await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
-                    return
-                try:
-                    idx = int(idx_str)
-                except ValueError:
-                    await query.answer("Malformed callback", show_alert=False)
                     return
                 if not (0 <= idx < len(session["signals"])):
                     await query.answer("Item out of range", show_alert=False)
@@ -678,8 +719,11 @@ class PainFinderBot:
                 return
 
             if data.startswith("triage:"):
-                _, action, post_id = data.split(":", 2)
-                status_map = {"favorite": "favorite", "discard": "discarded"}
+                triage_parts = data.split(":", 2)
+                if len(triage_parts) != 3:
+                    raise ValueError("Malformed callback data")
+                _, action, post_id = triage_parts
+                status_map: dict[str, TriageStatus] = {"favorite": "favorite", "discard": "discarded"}
                 status = status_map.get(action)
                 if not status:
                     await query.answer("Unknown action", show_alert=False)
@@ -692,8 +736,7 @@ class PainFinderBot:
                 return
 
             if data.startswith("deepdive:"):
-                payload = data[len("deepdive:") :]
-                post_id, subreddit = payload.rsplit(":", 1)
+                post_id, subreddit = parse_scoped_callback_data(data, "deepdive:")
                 if not self.deep_dive_fn:
                     await query.answer("Deep dive not configured", show_alert=False)
                     return
@@ -706,8 +749,7 @@ class PainFinderBot:
                 return
 
             if data.startswith("gtm:"):
-                payload = data[len("gtm:") :]
-                post_id, _scope = payload.rsplit(":", 1)
+                post_id, _scope = parse_scoped_callback_data(data, "gtm:")
                 if not self.gtm_fn:
                     await query.answer("GTM not configured", show_alert=False)
                     return
