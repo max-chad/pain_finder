@@ -192,7 +192,10 @@ class AnalysisPipeline:
         )
 
         logger.info(
-            "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s post_count=%d fresh_post_count=%d skipped_existing_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d duration_ms=%d",
+            "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
+            "post_count=%d fresh_post_count=%d skipped_existing_count=%d pain_count=%d "
+            "monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d "
+            "discarded_non_pain_count=%d duration_ms=%d",
             source,
             run_scope,
             analysis_run_id,

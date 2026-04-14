@@ -20,7 +20,7 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
 
 - `main.py`: wires services, scheduler jobs, Telegram app lifecycle.
 - `db.py`: async SQLite layer, PRAGMAs, additive migrations, analytics helpers.
-- `scraper.py`: Reddit scraping with PRAW + JSON fallback, top comments, full thread extraction, retry/backoff.
+- `scraper.py`: Reddit scraping with PRAW + OAuth JSON + public JSON fallback, mixed feed ingestion (`new+rising+top`), top comments, full thread extraction, retry/backoff.
 - `scraper_hn.py`: Hacker News Algolia ingestion.
 - `scraper_reviews.py`: review-source scraping for negative (1-2 star) reviews.
 - `openrouter.py`: LLM client, strict schema parsing, usage/cost accounting.

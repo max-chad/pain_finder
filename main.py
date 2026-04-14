@@ -58,6 +58,7 @@ async def run() -> None:
         top_comments_limit=config.SCRAPER_TOP_COMMENTS,
         retry_max_attempts=config.SCRAPER_RETRY_MAX_ATTEMPTS,
         retry_base_delay=config.SCRAPER_RETRY_BASE_DELAY,
+        feed_mix=["new", "rising", "top"],
     )
     openrouter = OpenRouterClient(
         api_key=config.OPENROUTER_API_KEY,
