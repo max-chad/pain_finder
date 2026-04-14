@@ -1,4 +1,5 @@
-﻿from unittest.mock import AsyncMock
+﻿import asyncio
+from unittest.mock import AsyncMock
 
 from classifier import Classifier
 from openrouter import AnalysisResult
@@ -123,6 +124,29 @@ async def test_classify_batch_filters_nones():
     assert "p1" not in pain_ids
 
 
+async def test_classify_batch_respects_max_concurrency():
+    clf = Classifier(openrouter=None, mode="legacy", max_concurrency=2)
+    posts = [make_post(title="I can't do this", post_id=f"p{i}") for i in range(6)]
+
+    in_flight = 0
+    peak_in_flight = 0
+
+    async def classify_stub(post):
+        nonlocal in_flight, peak_in_flight
+        in_flight += 1
+        peak_in_flight = max(peak_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return None
+
+    clf.classify = classify_stub  # type: ignore[assignment]
+
+    signals = await clf.classify_batch(posts)
+
+    assert signals == []
+    assert peak_in_flight <= 2
+
+
 async def test_competitor_tags_are_propagated_and_normalized():
     mock_llm = AsyncMock()
     mock_llm.analyze_post.return_value = AnalysisResult(
@@ -139,4 +163,3 @@ async def test_competitor_tags_are_propagated_and_normalized():
     signal = await clf.classify(make_post(title="Shopify sync broken"))
     assert signal is not None
     assert signal.competitor_tags == ["shopify", "jira"]
-
