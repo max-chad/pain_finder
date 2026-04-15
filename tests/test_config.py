@@ -11,6 +11,7 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("REPORTS_DIR", "custom-reports")
     monkeypatch.setenv("CLASSIFIER_MODE", "dual")
     monkeypatch.setenv("CLASSIFIER_MAX_CONCURRENCY", "5")
+    monkeypatch.setenv("LLM_MAX_CLASSIFICATIONS_PER_RUN", "33")
     monkeypatch.setenv("DEEP_DIVE_WTP_THRESHOLD", "9")
     monkeypatch.setenv("DEEP_DIVE_MAX_COMMENTS", "300")
     monkeypatch.setenv("SCRAPER_TOP_COMMENTS", "7")
@@ -35,6 +36,7 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.REPORTS_DIR == "custom-reports"
     assert config_module.CLASSIFIER_MODE == "dual"
     assert config_module.CLASSIFIER_MAX_CONCURRENCY == 5
+    assert config_module.LLM_MAX_CLASSIFICATIONS_PER_RUN == 33
     assert config_module.DEEP_DIVE_WTP_THRESHOLD == 9
     assert config_module.DEEP_DIVE_MAX_COMMENTS == 300
     assert config_module.SCRAPER_TOP_COMMENTS == 7

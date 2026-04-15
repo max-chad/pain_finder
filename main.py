@@ -85,6 +85,7 @@ async def run() -> None:
         deep_dive_max_comments=config.DEEP_DIVE_MAX_COMMENTS,
         budget_guard=budget_guard,
         deduplicator=deduplicator,
+        llm_max_classifications_per_run=config.LLM_MAX_CLASSIFICATIONS_PER_RUN,
     )
     clusterer = MacroTrendClusterer(
         db=db,

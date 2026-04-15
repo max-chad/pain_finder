@@ -56,6 +56,7 @@ class AnalysisPipeline:
         deep_dive_max_comments: int = 250,
         budget_guard: BudgetGuard | None = None,
         deduplicator: Deduplicator | None = None,
+        llm_max_classifications_per_run: int = 0,
     ):
         self.scraper = scraper
         self.classifier = classifier
@@ -65,6 +66,7 @@ class AnalysisPipeline:
         self.deep_dive_max_comments = deep_dive_max_comments
         self.budget_guard = budget_guard
         self.deduplicator = deduplicator
+        self.llm_max_classifications_per_run = max(0, int(llm_max_classifications_per_run))
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
         posts = await self.scraper.fetch_posts(subreddit, limit=limit)
@@ -106,6 +108,10 @@ class AnalysisPipeline:
         existing_ids = await self.db.get_pain_points_by_ids([post.post_id for post in posts])
         fresh_posts = [post for post in posts if post.post_id not in existing_ids]
         skipped_existing_count = len(posts) - len(fresh_posts)
+        llm_capped_count = 0
+        if self.llm_max_classifications_per_run > 0 and len(fresh_posts) > self.llm_max_classifications_per_run:
+            llm_capped_count = len(fresh_posts) - self.llm_max_classifications_per_run
+            fresh_posts = fresh_posts[: self.llm_max_classifications_per_run]
 
         classified_signals = await self.classifier.classify_batch(fresh_posts)
         persisted_signals: list[PainSignal] = []
@@ -195,7 +201,7 @@ class AnalysisPipeline:
 
         logger.info(
             "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
-            "post_count=%d fresh_post_count=%d skipped_existing_count=%d pain_count=%d "
+            "post_count=%d fresh_post_count=%d skipped_existing_count=%d llm_capped_count=%d pain_count=%d "
             "monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d "
             "discarded_non_pain_count=%d duration_ms=%d",
             source,
@@ -204,6 +210,7 @@ class AnalysisPipeline:
             len(posts),
             len(fresh_posts),
             skipped_existing_count,
+            llm_capped_count,
             inserted_count,
             monetizable_count,
             deep_dive_count,

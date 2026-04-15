@@ -74,12 +74,14 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             deep_dive_max_comments=250,
             budget_guard=None,
             deduplicator=None,
+            llm_max_classifications_per_run=0,
         ):
             self.scraper = scraper
             self.classifier = classifier
             self.db = db
             self.reports_dir = reports_dir
             self.budget_guard = budget_guard
+            self.llm_max_classifications_per_run = llm_max_classifications_per_run
             self.calls = []
             self.deep_dive_calls = []
             self.digest_calls = []
@@ -260,6 +262,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert bot.scraper.kwargs["feed_mix"] == main.config.SCRAPER_FEED_MIX
     assert bot.scraper.kwargs["comment_fetch_concurrency"] == main.config.SCRAPER_COMMENT_FETCH_CONCURRENCY
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
+    assert pipeline.llm_max_classifications_per_run == main.config.LLM_MAX_CLASSIFICATIONS_PER_RUN
     bot = FakeBot.instances[-1]
     assert len(bot.grouped_notifications) == 1
     assert bot.grouped_notifications[0]["label"] == "r/python"
@@ -332,6 +335,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             self.calls = []
             self.external_calls = []
+            self.llm_max_classifications_per_run = kwargs.get("llm_max_classifications_per_run", 0)
             FakePipeline.instances.append(self)
 
         async def analyze_subreddit(self, subreddit, limit=100):
