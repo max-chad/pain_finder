@@ -165,6 +165,12 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Optional local embedding model fallback (heavier install):
+
+```bash
+pip install -r requirements-ml.txt
+```
+
 ## Docker
 
 ```bash
