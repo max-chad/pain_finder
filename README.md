@@ -90,7 +90,7 @@ Scraper controls:
 - `SCRAPER_COMMENT_FETCH_CONCURRENCY` (default `8`)
 - `SCRAPER_RETRY_MAX_ATTEMPTS` (default `5`)
 - `SCRAPER_RETRY_BASE_DELAY` (default `1.0`)
-- `SCRAPER_FEED_MIX_JSON` (default `['new', 'rising', 'top']`)
+- `SCRAPER_FEED_MIX_JSON` (default `["new", "rising", "top"]`)
 
 Trend clustering:
 

@@ -294,6 +294,85 @@ async def test_openrouter_stores_successful_response_in_cache():
     assert kwargs["payload"]["summary"] == "Need retry flow"
 
 
+@respx.mock
+async def test_openrouter_does_not_cache_invalid_primary_payload():
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"is_monetizable": "yes", "pain_level": 11, "willingness_to_pay": 9, "niche_category": "X", "summary": "bad", "category": "complaint", "severity": "high"}'
+                            }
+                        }
+                    ]
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "valid", "category": "complaint", "severity": "high"}'
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    cache_db = AsyncMock()
+    cache_db.get_cached_llm_payload.return_value = None
+    client = OpenRouterClient(api_key="test-key", model="m1", cache_db=cache_db)
+
+    first = await client.analyze_post(title="Title", body="Body", post_id="reddit:1")
+    second = await client.analyze_post(title="Title", body="Body", post_id="reddit:1")
+
+    assert first is None
+    assert second is not None
+    assert second.summary == "valid"
+    assert route.call_count == 2
+    cache_db.set_cached_llm_payload.assert_awaited_once()
+
+
+@respx.mock
+async def test_openrouter_bypasses_invalid_cached_payload():
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "from api", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    cache_db = AsyncMock()
+    cache_db.get_cached_llm_payload.return_value = {
+        "is_monetizable": "yes",
+        "pain_level": 11,
+        "willingness_to_pay": 9,
+        "niche_category": "X",
+        "summary": "bad",
+        "category": "complaint",
+        "severity": "high",
+    }
+    client = OpenRouterClient(api_key="test-key", model="m1", cache_db=cache_db)
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:1")
+
+    assert result is not None
+    assert result.summary == "from api"
+    cache_db.set_cached_llm_payload.assert_awaited_once()
+
+
 async def test_usage_tracking_calls_budget_guard(respx_mock):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
         return_value=httpx.Response(

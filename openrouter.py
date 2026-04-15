@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -197,6 +198,7 @@ class OpenRouterClient:
             model=self.model,
             operation="classify_primary",
             post_id=post_id,
+            validate_payload=self._is_valid_primary_payload,
         )
         if payload is None:
             return None
@@ -212,6 +214,7 @@ class OpenRouterClient:
             model=self.model,
             operation="classify_legacy",
             post_id=post_id,
+            validate_payload=self._is_valid_legacy_payload,
         )
         if payload is None:
             return None
@@ -227,6 +230,7 @@ class OpenRouterClient:
             model=self.deep_dive_model,
             operation="deep_dive",
             post_id=post_id,
+            validate_payload=self._is_valid_deep_dive_payload,
         )
         if payload is None:
             return None
@@ -250,6 +254,7 @@ class OpenRouterClient:
             model=self.cluster_model,
             operation="cluster_label",
             post_id=post_id,
+            validate_payload=self._is_valid_cluster_label_payload,
         )
         if payload is None:
             return None
@@ -265,6 +270,7 @@ class OpenRouterClient:
             model=self.gtm_model,
             operation="generate_gtm",
             post_id=post_id,
+            validate_payload=self._is_valid_gtm_payload,
         )
         if payload is None:
             return None
@@ -280,12 +286,21 @@ class OpenRouterClient:
         model: str,
         operation: str,
         post_id: str | None,
+        validate_payload: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any] | None:
         cache_key = self._build_cache_key(model=model, operation=operation, prompt=prompt)
         cached_payload = await self._get_cached_payload(cache_key)
         if cached_payload is not None:
-            logger.info("openrouter_cache_hit model=%s operation=%s", model, operation)
-            return cached_payload
+            if validate_payload is not None and not validate_payload(cached_payload):
+                logger.warning(
+                    "openrouter_cache_invalid model=%s operation=%s key=%s",
+                    model,
+                    operation,
+                    cache_key,
+                )
+            else:
+                logger.info("openrouter_cache_hit model=%s operation=%s", model, operation)
+                return cached_payload
 
         if self.budget_guard is not None:
             await self.budget_guard.ensure_can_spend(operation)
@@ -311,7 +326,16 @@ class OpenRouterClient:
                         response_json = response.json()
                         content = response_json["choices"][0]["message"]["content"]
                         payload = self._safe_json_load(content)
-                        await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
+                        is_valid_payload = validate_payload(payload) if validate_payload is not None else True
+                        if is_valid_payload:
+                            await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
+                        else:
+                            logger.warning(
+                                "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
+                                model,
+                                operation,
+                                cache_key,
+                            )
                         await self._record_usage_from_response(
                             response_json=response_json,
                             model=model,
@@ -434,6 +458,21 @@ class OpenRouterClient:
         if not isinstance(parsed, dict):
             raise json.JSONDecodeError("Response is not JSON object", content, 0)
         return parsed
+
+    def _is_valid_primary_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_primary_result(payload) is not None
+
+    def _is_valid_legacy_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_legacy_result(payload) is not None
+
+    def _is_valid_deep_dive_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_deep_dive_result(payload) is not None
+
+    def _is_valid_cluster_label_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_cluster_label(payload) is not None
+
+    def _is_valid_gtm_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_gtm_result(payload) is not None
 
     def _parse_primary_result(self, payload: dict[str, Any]) -> AnalysisResult | None:
         category = payload.get("category")
