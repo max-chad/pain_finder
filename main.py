@@ -56,9 +56,10 @@ async def run() -> None:
         client_secret=config.REDDIT_CLIENT_SECRET,
         user_agent=config.REDDIT_USER_AGENT,
         top_comments_limit=config.SCRAPER_TOP_COMMENTS,
+        comment_fetch_concurrency=config.SCRAPER_COMMENT_FETCH_CONCURRENCY,
         retry_max_attempts=config.SCRAPER_RETRY_MAX_ATTEMPTS,
         retry_base_delay=config.SCRAPER_RETRY_BASE_DELAY,
-        feed_mix=["new", "rising", "top"],
+        feed_mix=config.SCRAPER_FEED_MIX,
     )
     openrouter = OpenRouterClient(
         api_key=config.OPENROUTER_API_KEY,
@@ -69,7 +70,11 @@ async def run() -> None:
         pricing_map=config.OPENROUTER_MODEL_PRICING,
         budget_guard=budget_guard,
     )
-    classifier = Classifier(openrouter=openrouter, mode=config.CLASSIFIER_MODE)
+    classifier = Classifier(
+        openrouter=openrouter,
+        mode=config.CLASSIFIER_MODE,
+        max_concurrency=config.CLASSIFIER_MAX_CONCURRENCY,
+    )
     pipeline = AnalysisPipeline(
         scraper=scraper,
         classifier=classifier,

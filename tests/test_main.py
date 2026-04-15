@@ -56,9 +56,10 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             self.kwargs = kwargs
 
     class FakeClassifier:
-        def __init__(self, openrouter, mode="dual"):
+        def __init__(self, openrouter, mode="dual", max_concurrency=8):
             self.openrouter = openrouter
             self.mode = mode
+            self.max_concurrency = max_concurrency
 
     class FakePipeline:
         instances = []
@@ -256,6 +257,9 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert telegram_app.updater.stop_called is True
     assert telegram_app.stop_called is True
     assert pipeline.calls[-1] == ("python", 100)
+    assert bot.scraper.kwargs["feed_mix"] == main.config.SCRAPER_FEED_MIX
+    assert bot.scraper.kwargs["comment_fetch_concurrency"] == main.config.SCRAPER_COMMENT_FETCH_CONCURRENCY
+    assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
     bot = FakeBot.instances[-1]
     assert len(bot.grouped_notifications) == 1
     assert bot.grouped_notifications[0]["label"] == "r/python"
@@ -317,9 +321,10 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             self.gtm_model = "gpt-test"
 
     class FakeClassifier:
-        def __init__(self, openrouter, mode="dual"):
+        def __init__(self, openrouter, mode="dual", max_concurrency=8):
             self.openrouter = openrouter
             self.mode = mode
+            self.max_concurrency = max_concurrency
 
     class FakePipeline:
         instances = []

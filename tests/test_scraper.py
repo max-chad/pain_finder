@@ -29,6 +29,16 @@ async def test_scraper_with_credentials_sets_use_praw_true():
     assert scraper._use_praw is True
 
 
+async def test_scraper_comment_fetch_concurrency_is_clamped_to_at_least_one():
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test",
+        comment_fetch_concurrency=0,
+    )
+    assert scraper.comment_fetch_concurrency == 1
+
+
 async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
     respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
         return_value=httpx.Response(

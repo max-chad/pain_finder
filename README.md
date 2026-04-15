@@ -79,14 +79,17 @@ Core models:
 Classifier/deep dive controls:
 
 - `CLASSIFIER_MODE` (`legacy|b2b|dual`, default `dual`)
+- `CLASSIFIER_MAX_CONCURRENCY` (default `8`)
 - `DEEP_DIVE_WTP_THRESHOLD` (default `8`)
 - `DEEP_DIVE_MAX_COMMENTS` (default `250`)
 
 Scraper controls:
 
 - `SCRAPER_TOP_COMMENTS` (default `5`)
+- `SCRAPER_COMMENT_FETCH_CONCURRENCY` (default `8`)
 - `SCRAPER_RETRY_MAX_ATTEMPTS` (default `5`)
 - `SCRAPER_RETRY_BASE_DELAY` (default `1.0`)
+- `SCRAPER_FEED_MIX_JSON` (default `['new', 'rising', 'top']`)
 
 Trend clustering:
 

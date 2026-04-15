@@ -34,6 +34,7 @@ class RedditScraper:
         client_secret: str,
         user_agent: str,
         top_comments_limit: int = 5,
+        comment_fetch_concurrency: int = 8,
         retry_max_attempts: int = 5,
         retry_base_delay: float = 1.0,
         feed_mix: list[str] | tuple[str, ...] | None = None,
@@ -42,6 +43,7 @@ class RedditScraper:
         self.client_secret = client_secret
         self.user_agent = user_agent
         self.top_comments_limit = max(0, top_comments_limit)
+        self.comment_fetch_concurrency = max(1, comment_fetch_concurrency)
         self.retry_max_attempts = max(1, retry_max_attempts)
         self.retry_base_delay = max(0.1, retry_base_delay)
         self._use_praw = bool(client_id and client_secret)
@@ -209,7 +211,7 @@ class RedditScraper:
             if self.top_comments_limit <= 0 or not base_posts:
                 return base_posts
 
-            semaphore = asyncio.Semaphore(8)
+            semaphore = asyncio.Semaphore(self.comment_fetch_concurrency)
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:
@@ -261,7 +263,7 @@ class RedditScraper:
             if self.top_comments_limit <= 0 or not base_posts:
                 return base_posts
 
-            semaphore = asyncio.Semaphore(8)
+            semaphore = asyncio.Semaphore(self.comment_fetch_concurrency)
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:
