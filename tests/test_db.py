@@ -338,6 +338,16 @@ async def test_macro_tables_persist_and_query(db):
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
 
 
+async def test_llm_response_cache_roundtrip(db):
+    cache_key = "classify_primary:test-model:abc123"
+    payload = {"category": "complaint", "summary": "Cached summary", "severity": "low"}
+
+    await db.set_cached_llm_payload(cache_key=cache_key, model="test-model", operation="classify_primary", payload=payload)
+
+    cached = await db.get_cached_llm_payload(cache_key)
+    assert cached == payload
+
+
 async def test_usage_ledger_and_runtime_flags(db):
     await db.record_llm_usage(
         model="model-a",

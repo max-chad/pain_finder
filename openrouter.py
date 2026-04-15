@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -175,6 +176,7 @@ class OpenRouterClient:
         gtm_model: str | None = None,
         pricing_map: dict[str, dict[str, float]] | None = None,
         budget_guard: "BudgetGuard | None" = None,
+        cache_db: Any | None = None,
     ):
         self.api_key = api_key
         self.model = model
@@ -183,6 +185,7 @@ class OpenRouterClient:
         self.gtm_model = gtm_model or model
         self.pricing_map = pricing_map or {}
         self.budget_guard = budget_guard
+        self.cache_db = cache_db
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -278,6 +281,12 @@ class OpenRouterClient:
         operation: str,
         post_id: str | None,
     ) -> dict[str, Any] | None:
+        cache_key = self._build_cache_key(model=model, operation=operation, prompt=prompt)
+        cached_payload = await self._get_cached_payload(cache_key)
+        if cached_payload is not None:
+            logger.info("openrouter_cache_hit model=%s operation=%s", model, operation)
+            return cached_payload
+
         if self.budget_guard is not None:
             await self.budget_guard.ensure_can_spend(operation)
 
@@ -302,6 +311,7 @@ class OpenRouterClient:
                         response_json = response.json()
                         content = response_json["choices"][0]["message"]["content"]
                         payload = self._safe_json_load(content)
+                        await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
                         await self._record_usage_from_response(
                             response_json=response_json,
                             model=model,
@@ -343,6 +353,41 @@ class OpenRouterClient:
         except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError) as e:
             logger.warning("OpenRouter request failed: %s", e)
             return None
+
+    @staticmethod
+    def _build_cache_key(*, model: str, operation: str, prompt: str) -> str:
+        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        return f"{operation}:{model}:{digest}"
+
+    async def _get_cached_payload(self, cache_key: str) -> dict[str, Any] | None:
+        if self.cache_db is None:
+            return None
+        get_fn = getattr(self.cache_db, "get_cached_llm_payload", None)
+        if get_fn is None:
+            return None
+        try:
+            return await get_fn(cache_key)
+        except Exception as e:
+            logger.warning("OpenRouter cache lookup failed for key=%s: %s", cache_key, e)
+            return None
+
+    async def _set_cached_payload(
+        self,
+        *,
+        cache_key: str,
+        model: str,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if self.cache_db is None:
+            return
+        set_fn = getattr(self.cache_db, "set_cached_llm_payload", None)
+        if set_fn is None:
+            return
+        try:
+            await set_fn(cache_key=cache_key, model=model, operation=operation, payload=payload)
+        except Exception as e:
+            logger.warning("OpenRouter cache write failed for key=%s: %s", cache_key, e)
 
     async def _record_usage_from_response(
         self,

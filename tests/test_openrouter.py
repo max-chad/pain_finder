@@ -1,6 +1,7 @@
 ﻿from unittest.mock import AsyncMock
 
 import httpx
+import respx
 
 from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient
 
@@ -236,6 +237,61 @@ async def test_cluster_label_and_gtm_methods(respx_mock):
     assert gtm is not None
     assert gtm.name_options[0] == "SyncPilot"
     assert route.call_count == 2
+
+
+async def test_openrouter_uses_cache_hit_without_http_call():
+    cache_db = AsyncMock()
+    cache_db.get_cached_llm_payload.return_value = {
+        "is_monetizable": True,
+        "pain_level": 7,
+        "willingness_to_pay": 8,
+        "niche_category": "DevOps",
+        "competitor_tags": ["jira"],
+        "summary": "Cached payload",
+        "category": "complaint",
+        "severity": "high",
+    }
+
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget, cache_db=cache_db)
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:cached")
+
+    assert result is not None
+    assert result.summary == "Cached payload"
+    budget.ensure_can_spend.assert_not_called()
+    cache_db.get_cached_llm_payload.assert_awaited_once()
+
+
+@respx.mock
+async def test_openrouter_stores_successful_response_in_cache():
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    cache_db = AsyncMock()
+    cache_db.get_cached_llm_payload.return_value = None
+    client = OpenRouterClient(api_key="test-key", model="m1", cache_db=cache_db)
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
+
+    assert result is not None
+    cache_db.set_cached_llm_payload.assert_awaited_once()
+    kwargs = cache_db.set_cached_llm_payload.await_args.kwargs
+    assert kwargs["model"] == "m1"
+    assert kwargs["operation"] == "classify_primary"
+    assert kwargs["payload"]["summary"] == "Need retry flow"
 
 
 async def test_usage_tracking_calls_budget_guard(respx_mock):

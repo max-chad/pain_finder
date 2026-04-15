@@ -69,6 +69,7 @@ async def run() -> None:
         gtm_model=config.OPENROUTER_GTM_MODEL,
         pricing_map=config.OPENROUTER_MODEL_PRICING,
         budget_guard=budget_guard,
+        cache_db=db,
     )
     classifier = Classifier(
         openrouter=openrouter,

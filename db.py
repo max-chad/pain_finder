@@ -144,6 +144,16 @@ CREATE TABLE IF NOT EXISTS runtime_flags (
     updated_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_LLM_RESPONSE_CACHE = """
+CREATE TABLE IF NOT EXISTS llm_response_cache (
+    cache_key TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+)"""
+
 CREATE_GTM_ASSETS = """
 CREATE TABLE IF NOT EXISTS gtm_assets (
     id INTEGER PRIMARY KEY,
@@ -171,6 +181,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_run ON macro_trend_clusters(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_run ON macro_trend_members(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created ON llm_usage_events(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_gtm_assets_post ON gtm_assets(post_id, created_at DESC)",
 ]
 
@@ -218,6 +229,7 @@ class Database:
         await self._conn.execute(CREATE_MACRO_TREND_MEMBERS)
         await self._conn.execute(CREATE_LLM_USAGE_EVENTS)
         await self._conn.execute(CREATE_RUNTIME_FLAGS)
+        await self._conn.execute(CREATE_LLM_RESPONSE_CACHE)
         await self._conn.execute(CREATE_GTM_ASSETS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
@@ -770,6 +782,45 @@ class Database:
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
+
+    async def get_cached_llm_payload(self, cache_key: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT payload_json FROM llm_response_cache WHERE cache_key = ? LIMIT 1",
+            (cache_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("Invalid cached payload for key=%s, dropping cache row", cache_key)
+            await self._conn.execute("DELETE FROM llm_response_cache WHERE cache_key = ?", (cache_key,))
+            await self._conn.commit()
+            return None
+
+    async def set_cached_llm_payload(
+        self,
+        *,
+        cache_key: str,
+        model: str,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> None:
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        await self._conn.execute(
+            """
+            INSERT INTO llm_response_cache (cache_key, model, operation, payload_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                model = excluded.model,
+                operation = excluded.operation,
+                payload_json = excluded.payload_json,
+                updated_at = datetime('now')
+            """,
+            (cache_key, model, operation, payload_json),
+        )
+        await self._conn.commit()
 
     async def get_daily_spend_usd(self, day_utc: date | None = None) -> float:
         if day_utc is None:
