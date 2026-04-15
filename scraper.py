@@ -175,15 +175,20 @@ class RedditScraper:
 
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
-            for feed, params in self._iter_feed_requests(limit=limit, timeframe=timeframe):
+            feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+
+            async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
                 url = f"https://www.reddit.com/r/{subreddit}/{feed}.json"
-                payload = await self._request_json_with_retries(
+                return await self._request_json_with_retries(
                     client=client,
                     url=url,
                     params=params,
                     headers=headers,
                 )
 
+            payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+
+            for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
                     post_data = child.get("data", {})
                     post_id = post_data.get("id")
@@ -230,13 +235,18 @@ class RedditScraper:
     async def _fetch_oauth_json(self, subreddit: str, limit: int, timeframe: str = "day") -> list[Post]:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
-            for feed, params in self._iter_feed_requests(limit=limit, timeframe=timeframe):
-                payload = await self._request_oauth_json(
+            feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+
+            async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
+                return await self._request_oauth_json(
                     client=client,
                     path=f"/r/{subreddit}/{feed}.json",
                     params=params,
                 )
 
+            payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+
+            for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
                     post_data = child.get("data", {})
                     post_id = post_data.get("id")

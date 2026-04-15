@@ -1,4 +1,7 @@
-﻿import pytest
+import asyncio
+import time
+
+import pytest
 import httpx
 
 from scraper import Post, RedditScraper
@@ -353,6 +356,54 @@ async def test_request_json_with_retries_retries_request_error_then_succeeds(res
     assert posts == []
     assert route.call_count == 2
     sleep_mock.assert_awaited_once()
+
+
+async def test_fetch_public_json_requests_feeds_concurrently():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new", "rising"],
+    )
+
+    async def delayed_payload(*, client, url, params, headers):
+        await asyncio.sleep(0.05)
+        return {"data": {"children": []}}
+
+    with patch.object(scraper, "_request_json_with_retries", side_effect=delayed_payload):
+        started = time.perf_counter()
+        posts = await scraper._fetch_public_json("python", limit=30)
+        elapsed = time.perf_counter() - started
+
+    assert posts == []
+    assert elapsed < 0.12
+
+
+async def test_fetch_oauth_json_requests_feeds_concurrently():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new", "rising"],
+    )
+
+    async def delayed_payload(*, client, path, params):
+        await asyncio.sleep(0.05)
+        return {"data": {"children": []}}
+
+    with patch.object(scraper, "_request_oauth_json", side_effect=delayed_payload):
+        started = time.perf_counter()
+        posts = await scraper._fetch_oauth_json("python", limit=30)
+        elapsed = time.perf_counter() - started
+
+    assert posts == []
+    assert elapsed < 0.12
 
 
 async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
