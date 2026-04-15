@@ -94,6 +94,69 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert rows[0]["deep_dive_status"] == "completed"
 
 
+async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):
+    existing_post = Post(
+        post_id="existing1",
+        subreddit="python",
+        title="Already processed",
+        body="still broken",
+        url="https://reddit.com/existing1",
+        score=7,
+    )
+    fresh_post = Post(
+        post_id="fresh1",
+        subreddit="python",
+        title="Need better deploy rollback",
+        body="current process is manual",
+        url="https://reddit.com/fresh1",
+        score=12,
+    )
+
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="existing1",
+        url="https://reddit.com/existing1",
+        title="Already processed",
+        body="still broken",
+        category="complaint",
+        summary="existing",
+        severity="medium",
+    )
+
+    signal = PainSignal(
+        post=fresh_post,
+        category="complaint",
+        summary="Rollback process is painful",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="DevOps",
+        analysis_mode="b2b",
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_posts.return_value = [existing_post, fresh_post]
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[signal]),
+        openrouter=AsyncMock(),
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    run = await pipeline.analyze_subreddit("python", limit=10)
+
+    classify_arg = classifier.classify_batch.await_args.args[0]
+    assert [post.post_id for post in classify_arg] == ["fresh1"]
+    assert run.post_count == 2
+    assert run.pain_count == 1
+
+
 async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_path, monkeypatch):
     post = Post(
         post_id="p2",

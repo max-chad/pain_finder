@@ -131,6 +131,105 @@ async def test_fetch_posts_falls_back_to_public_json_on_praw_failure(respx_mock)
     assert isinstance(posts, list)
 
 
+async def test_fetch_posts_falls_back_to_oauth_before_public_json():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test")
+    oauth_posts = [
+        Post(
+            post_id="reddit:o1",
+            subreddit="python",
+            title="OAuth post",
+            body="",
+            url="",
+            score=1,
+        )
+    ]
+
+    with (
+        patch.object(scraper, "_fetch_praw", new=AsyncMock(side_effect=Exception("PRAW down"))),
+        patch.object(scraper, "_fetch_oauth_json", new=AsyncMock(return_value=oauth_posts)) as oauth_mock,
+        patch.object(scraper, "_fetch_public_json", new=AsyncMock(return_value=[])) as public_mock,
+    ):
+        posts = await scraper.fetch_posts("python", limit=5)
+
+    assert posts == oauth_posts
+    oauth_mock.assert_awaited_once()
+    public_mock.assert_not_called()
+
+
+async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "same",
+                                "title": "Top duplicate",
+                                "selftext": "body",
+                                "url": "https://reddit.com/same",
+                                "score": 10,
+                                "permalink": "/r/python/comments/same/top/",
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    respx_mock.get("https://www.reddit.com/r/python/new.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "same",
+                                "title": "New duplicate",
+                                "selftext": "body",
+                                "url": "https://reddit.com/same",
+                                "score": 11,
+                                "permalink": "/r/python/comments/same/new/",
+                            }
+                        },
+                        {
+                            "data": {
+                                "id": "fresh",
+                                "title": "Fresh post",
+                                "selftext": "body2",
+                                "url": "https://reddit.com/fresh",
+                                "score": 8,
+                                "permalink": "/r/python/comments/fresh/new/",
+                            }
+                        },
+                    ]
+                }
+            },
+        )
+    )
+    respx_mock.get("https://www.reddit.com/comments/same.json").mock(
+        return_value=httpx.Response(200, json=[{}, {"data": {"children": []}}])
+    )
+    respx_mock.get("https://www.reddit.com/comments/fresh.json").mock(
+        return_value=httpx.Response(200, json=[{}, {"data": {"children": []}}])
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=1,
+        feed_mix=["top", "new"],
+    )
+    posts = await scraper._fetch_public_json("python", limit=5)
+
+    assert {post.post_id for post in posts} == {"reddit:same", "reddit:fresh"}
+
+
 async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_mock):
     from unittest.mock import AsyncMock, patch
 

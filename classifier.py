@@ -121,10 +121,11 @@ class PainSignal:
 class Classifier:
     VALID_MODES = {"legacy", "b2b", "dual"}
 
-    def __init__(self, openrouter: OpenRouterClient | None, mode: str = "dual"):
+    def __init__(self, openrouter: OpenRouterClient | None, mode: str = "dual", max_concurrency: int = 8):
         self.openrouter = openrouter
         normalized_mode = mode.lower().strip()
         self.mode = normalized_mode if normalized_mode in self.VALID_MODES else "dual"
+        self.max_concurrency = max(1, max_concurrency)
 
     def keyword_score(self, post: Post) -> int:
         text = f"{post.title} {post.body}".lower()
@@ -250,5 +251,11 @@ class Classifier:
         )
 
     async def classify_batch(self, posts: list[Post]) -> list[PainSignal]:
-        signals = await asyncio.gather(*(self.classify(post) for post in posts))
+        semaphore = asyncio.Semaphore(self.max_concurrency)
+
+        async def _classify_with_limit(post: Post) -> PainSignal | None:
+            async with semaphore:
+                return await self.classify(post)
+
+        signals = await asyncio.gather(*(_classify_with_limit(post) for post in posts))
         return [s for s in signals if s is not None]

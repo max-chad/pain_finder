@@ -103,12 +103,16 @@ class AnalysisPipeline:
             raise RuntimeError("LLM operations are paused. Use /resume to override.")
 
         start = perf_counter()
-        classified_signals = await self.classifier.classify_batch(posts)
+        existing_ids = await self.db.get_pain_points_by_ids([post.post_id for post in posts])
+        fresh_posts = [post for post in posts if post.post_id not in existing_ids]
+        skipped_existing_count = len(posts) - len(fresh_posts)
+
+        classified_signals = await self.classifier.classify_batch(fresh_posts)
         persisted_signals: list[PainSignal] = []
         classified_count = len(classified_signals)
         inserted_count = 0
         dedup_merged_count = 0
-        discarded_non_pain_count = max(0, len(posts) - classified_count)
+        discarded_non_pain_count = max(0, len(fresh_posts) - classified_count)
 
         monetizable_count = 0
         deep_dive_count = 0
@@ -188,11 +192,16 @@ class AnalysisPipeline:
         )
 
         logger.info(
-            "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s post_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d duration_ms=%d",
+            "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
+            "post_count=%d fresh_post_count=%d skipped_existing_count=%d pain_count=%d "
+            "monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d "
+            "discarded_non_pain_count=%d duration_ms=%d",
             source,
             run_scope,
             analysis_run_id,
             len(posts),
+            len(fresh_posts),
+            skipped_existing_count,
             inserted_count,
             monetizable_count,
             deep_dive_count,
