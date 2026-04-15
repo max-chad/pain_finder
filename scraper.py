@@ -34,6 +34,7 @@ class RedditScraper:
         client_secret: str,
         user_agent: str,
         top_comments_limit: int = 5,
+        comment_fetch_concurrency: int = 8,
         retry_max_attempts: int = 5,
         retry_base_delay: float = 1.0,
         feed_mix: list[str] | tuple[str, ...] | None = None,
@@ -42,6 +43,7 @@ class RedditScraper:
         self.client_secret = client_secret
         self.user_agent = user_agent
         self.top_comments_limit = max(0, top_comments_limit)
+        self.comment_fetch_concurrency = max(1, comment_fetch_concurrency)
         self.retry_max_attempts = max(1, retry_max_attempts)
         self.retry_base_delay = max(0.1, retry_base_delay)
         self._use_praw = bool(client_id and client_secret)
@@ -173,15 +175,20 @@ class RedditScraper:
 
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
-            for feed, params in self._iter_feed_requests(limit=limit, timeframe=timeframe):
+            feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+
+            async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
                 url = f"https://www.reddit.com/r/{subreddit}/{feed}.json"
-                payload = await self._request_json_with_retries(
+                return await self._request_json_with_retries(
                     client=client,
                     url=url,
                     params=params,
                     headers=headers,
                 )
 
+            payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+
+            for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
                     post_data = child.get("data", {})
                     post_id = post_data.get("id")
@@ -209,7 +216,7 @@ class RedditScraper:
             if self.top_comments_limit <= 0 or not base_posts:
                 return base_posts
 
-            semaphore = asyncio.Semaphore(8)
+            semaphore = asyncio.Semaphore(self.comment_fetch_concurrency)
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:
@@ -228,13 +235,18 @@ class RedditScraper:
     async def _fetch_oauth_json(self, subreddit: str, limit: int, timeframe: str = "day") -> list[Post]:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
-            for feed, params in self._iter_feed_requests(limit=limit, timeframe=timeframe):
-                payload = await self._request_oauth_json(
+            feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+
+            async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
+                return await self._request_oauth_json(
                     client=client,
                     path=f"/r/{subreddit}/{feed}.json",
                     params=params,
                 )
 
+            payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+
+            for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
                     post_data = child.get("data", {})
                     post_id = post_data.get("id")
@@ -261,7 +273,7 @@ class RedditScraper:
             if self.top_comments_limit <= 0 or not base_posts:
                 return base_posts
 
-            semaphore = asyncio.Semaphore(8)
+            semaphore = asyncio.Semaphore(self.comment_fetch_concurrency)
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:

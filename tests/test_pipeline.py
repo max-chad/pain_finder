@@ -156,6 +156,59 @@ async def test_analyze_subreddit_skips_already_persisted_posts_before_classifica
     assert run.post_count == 2
     assert run.pain_count == 1
 
+    latest_run = await db.get_latest_analysis_run("python")
+    assert latest_run is not None
+    assert latest_run["skipped_existing_count"] == 1
+    assert latest_run["dedup_merged_count"] == 0
+
+
+async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_path):
+    posts = [
+        Post(
+            post_id=f"fresh{i}",
+            subreddit="python",
+            title=f"pain {i}",
+            body="manual process",
+            url=f"https://reddit.com/fresh{i}",
+            score=10 - i,
+        )
+        for i in range(3)
+    ]
+
+    capped_signal = PainSignal(
+        post=posts[0],
+        category="complaint",
+        summary="Manual process hurts",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="DevOps",
+        analysis_mode="b2b",
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_posts.return_value = posts
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[capped_signal]),
+        openrouter=AsyncMock(),
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        llm_max_classifications_per_run=1,
+    )
+
+    run = await pipeline.analyze_subreddit("python", limit=10)
+
+    classify_arg = classifier.classify_batch.await_args.args[0]
+    assert [post.post_id for post in classify_arg] == ["fresh0"]
+    assert run.post_count == 3
+    assert run.pain_count == 1
+
 
 async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_path, monkeypatch):
     post = Post(

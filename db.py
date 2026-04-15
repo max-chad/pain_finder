@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     pain_count INTEGER NOT NULL,
     monetizable_count INTEGER NOT NULL,
     deep_dive_count INTEGER NOT NULL,
+    skipped_existing_count INTEGER DEFAULT 0,
+    dedup_merged_count INTEGER DEFAULT 0,
     duration_ms INTEGER,
     report_id INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
@@ -142,6 +144,16 @@ CREATE TABLE IF NOT EXISTS runtime_flags (
     updated_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_LLM_RESPONSE_CACHE = """
+CREATE TABLE IF NOT EXISTS llm_response_cache (
+    cache_key TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+)"""
+
 CREATE_GTM_ASSETS = """
 CREATE TABLE IF NOT EXISTS gtm_assets (
     id INTEGER PRIMARY KEY,
@@ -169,6 +181,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_run ON macro_trend_clusters(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_run ON macro_trend_members(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created ON llm_usage_events(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_gtm_assets_post ON gtm_assets(post_id, created_at DESC)",
 ]
 
@@ -187,6 +200,11 @@ PAIN_POINT_COLUMNS = {
     "emb_vector": "TEXT",
     "cross_source_count": "INTEGER DEFAULT 1",
     "cross_source_ids": "TEXT DEFAULT '[]'",
+}
+
+ANALYSIS_RUN_COLUMNS = {
+    "skipped_existing_count": "INTEGER DEFAULT 0",
+    "dedup_merged_count": "INTEGER DEFAULT 0",
 }
 
 
@@ -211,6 +229,7 @@ class Database:
         await self._conn.execute(CREATE_MACRO_TREND_MEMBERS)
         await self._conn.execute(CREATE_LLM_USAGE_EVENTS)
         await self._conn.execute(CREATE_RUNTIME_FLAGS)
+        await self._conn.execute(CREATE_LLM_RESPONSE_CACHE)
         await self._conn.execute(CREATE_GTM_ASSETS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
@@ -228,13 +247,19 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON;")
 
     async def _run_migrations(self) -> None:
-        migration_names = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
-        for migration_name in migration_names:
+        pain_point_migrations = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
+        for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
                 continue
             for column_name, ddl in PAIN_POINT_COLUMNS.items():
                 await self._ensure_column("pain_points", column_name, ddl)
             await self._mark_migration_applied(migration_name)
+
+        analysis_run_migration = "2026_04_15_analysis_run_efficiency_metrics"
+        if not await self._is_migration_applied(analysis_run_migration):
+            for column_name, ddl in ANALYSIS_RUN_COLUMNS.items():
+                await self._ensure_column("analysis_runs", column_name, ddl)
+            await self._mark_migration_applied(analysis_run_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -607,12 +632,24 @@ class Database:
         pain_count: int,
         monetizable_count: int,
         deep_dive_count: int,
+        skipped_existing_count: int = 0,
+        dedup_merged_count: int = 0,
         duration_ms: int | None,
         report_id: int | None,
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO analysis_runs (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, duration_ms, report_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, duration_ms, report_id),
+            "INSERT INTO analysis_runs (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, skipped_existing_count, dedup_merged_count, duration_ms, report_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                subreddit,
+                post_count,
+                pain_count,
+                monetizable_count,
+                deep_dive_count,
+                skipped_existing_count,
+                dedup_merged_count,
+                duration_ms,
+                report_id,
+            ),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
@@ -745,6 +782,45 @@ class Database:
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
+
+    async def get_cached_llm_payload(self, cache_key: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT payload_json FROM llm_response_cache WHERE cache_key = ? LIMIT 1",
+            (cache_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("Invalid cached payload for key=%s, dropping cache row", cache_key)
+            await self._conn.execute("DELETE FROM llm_response_cache WHERE cache_key = ?", (cache_key,))
+            await self._conn.commit()
+            return None
+
+    async def set_cached_llm_payload(
+        self,
+        *,
+        cache_key: str,
+        model: str,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> None:
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        await self._conn.execute(
+            """
+            INSERT INTO llm_response_cache (cache_key, model, operation, payload_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                model = excluded.model,
+                operation = excluded.operation,
+                payload_json = excluded.payload_json,
+                updated_at = datetime('now')
+            """,
+            (cache_key, model, operation, payload_json),
+        )
+        await self._conn.commit()
 
     async def get_daily_spend_usd(self, day_utc: date | None = None) -> float:
         if day_utc is None:

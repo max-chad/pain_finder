@@ -26,12 +26,16 @@ DB_PATH = os.getenv("DB_PATH", "pain_finder.db")
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 
 CLASSIFIER_MODE = os.getenv("CLASSIFIER_MODE", "dual").strip().lower()
+CLASSIFIER_MAX_CONCURRENCY = int(os.getenv("CLASSIFIER_MAX_CONCURRENCY", "8"))
+LLM_MAX_CLASSIFICATIONS_PER_RUN = int(os.getenv("LLM_MAX_CLASSIFICATIONS_PER_RUN", "0"))
 DEEP_DIVE_WTP_THRESHOLD = int(os.getenv("DEEP_DIVE_WTP_THRESHOLD", "8"))
 DEEP_DIVE_MAX_COMMENTS = int(os.getenv("DEEP_DIVE_MAX_COMMENTS", "250"))
 
 SCRAPER_TOP_COMMENTS = int(os.getenv("SCRAPER_TOP_COMMENTS", "5"))
+SCRAPER_COMMENT_FETCH_CONCURRENCY = int(os.getenv("SCRAPER_COMMENT_FETCH_CONCURRENCY", "8"))
 SCRAPER_RETRY_MAX_ATTEMPTS = int(os.getenv("SCRAPER_RETRY_MAX_ATTEMPTS", "5"))
 SCRAPER_RETRY_BASE_DELAY = float(os.getenv("SCRAPER_RETRY_BASE_DELAY", "1.0"))
+SCRAPER_FEED_MIX_JSON = os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "top"]')
 
 EXPORT_MIN_WTP = int(os.getenv("EXPORT_MIN_WTP", "8"))
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
@@ -79,3 +83,8 @@ if not isinstance(HN_KEYWORDS, list):
 REVIEW_TARGETS = parse_json_env(REVIEW_TARGETS_JSON, [])
 if not isinstance(REVIEW_TARGETS, list):
     REVIEW_TARGETS = []
+
+SCRAPER_FEED_MIX = parse_json_env(SCRAPER_FEED_MIX_JSON, ["new", "rising", "top"])
+if not isinstance(SCRAPER_FEED_MIX, list):
+    SCRAPER_FEED_MIX = ["new", "rising", "top"]
+SCRAPER_FEED_MIX = [str(feed) for feed in SCRAPER_FEED_MIX]

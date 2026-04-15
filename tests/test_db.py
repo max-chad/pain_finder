@@ -236,6 +236,8 @@ async def test_record_analysis_run_and_get_latest(db):
         pain_count=20,
         monetizable_count=5,
         deep_dive_count=2,
+        skipped_existing_count=11,
+        dedup_merged_count=3,
         duration_ms=1200,
         report_id=10,
     )
@@ -245,6 +247,8 @@ async def test_record_analysis_run_and_get_latest(db):
     assert latest is not None
     assert latest["id"] == run_id
     assert latest["monetizable_count"] == 5
+    assert latest["skipped_existing_count"] == 11
+    assert latest["dedup_merged_count"] == 3
 
 
 async def test_competitor_tags_are_normalized_and_queryable(db):
@@ -332,6 +336,16 @@ async def test_macro_tables_persist_and_query(db):
     candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
     ids = {row["post_id"] for row in candidates}
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
+
+
+async def test_llm_response_cache_roundtrip(db):
+    cache_key = "classify_primary:test-model:abc123"
+    payload = {"category": "complaint", "summary": "Cached summary", "severity": "low"}
+
+    await db.set_cached_llm_payload(cache_key=cache_key, model="test-model", operation="classify_primary", payload=payload)
+
+    cached = await db.get_cached_llm_payload(cache_key)
+    assert cached == payload
 
 
 async def test_usage_ledger_and_runtime_flags(db):
