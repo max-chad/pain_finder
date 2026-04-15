@@ -469,7 +469,7 @@ class PainFinderBot:
         ]
         if latest_run:
             lines.append(
-                f"Last run: r/{latest_run['subreddit']} posts={latest_run['post_count']} pain={latest_run['pain_count']} monetizable={latest_run['monetizable_count']}"
+                f"Last run: r/{latest_run['subreddit']} posts={latest_run['post_count']} pain={latest_run['pain_count']} monetizable={latest_run['monetizable_count']} skipped_existing={latest_run.get('skipped_existing_count', 0)} dedup_merged={latest_run.get('dedup_merged_count', 0)}"
             )
         await update.message.reply_text("\n".join(lines))
 

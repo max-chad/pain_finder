@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     pain_count INTEGER NOT NULL,
     monetizable_count INTEGER NOT NULL,
     deep_dive_count INTEGER NOT NULL,
+    skipped_existing_count INTEGER DEFAULT 0,
+    dedup_merged_count INTEGER DEFAULT 0,
     duration_ms INTEGER,
     report_id INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
@@ -189,6 +191,11 @@ PAIN_POINT_COLUMNS = {
     "cross_source_ids": "TEXT DEFAULT '[]'",
 }
 
+ANALYSIS_RUN_COLUMNS = {
+    "skipped_existing_count": "INTEGER DEFAULT 0",
+    "dedup_merged_count": "INTEGER DEFAULT 0",
+}
+
 
 class Database:
     def __init__(self, path: str = "pain_finder.db"):
@@ -228,13 +235,19 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON;")
 
     async def _run_migrations(self) -> None:
-        migration_names = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
-        for migration_name in migration_names:
+        pain_point_migrations = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
+        for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
                 continue
             for column_name, ddl in PAIN_POINT_COLUMNS.items():
                 await self._ensure_column("pain_points", column_name, ddl)
             await self._mark_migration_applied(migration_name)
+
+        analysis_run_migration = "2026_04_15_analysis_run_efficiency_metrics"
+        if not await self._is_migration_applied(analysis_run_migration):
+            for column_name, ddl in ANALYSIS_RUN_COLUMNS.items():
+                await self._ensure_column("analysis_runs", column_name, ddl)
+            await self._mark_migration_applied(analysis_run_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -607,12 +620,24 @@ class Database:
         pain_count: int,
         monetizable_count: int,
         deep_dive_count: int,
+        skipped_existing_count: int = 0,
+        dedup_merged_count: int = 0,
         duration_ms: int | None,
         report_id: int | None,
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO analysis_runs (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, duration_ms, report_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, duration_ms, report_id),
+            "INSERT INTO analysis_runs (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, skipped_existing_count, dedup_merged_count, duration_ms, report_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                subreddit,
+                post_count,
+                pain_count,
+                monetizable_count,
+                deep_dive_count,
+                skipped_existing_count,
+                dedup_merged_count,
+                duration_ms,
+                report_id,
+            ),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)

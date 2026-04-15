@@ -218,6 +218,30 @@ async def test_cmd_analyze_returns_usage_on_parse_error():
     update.message.reply_text.assert_awaited_once_with(ANALYZE_USAGE)
 
 
+async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
+    db = AsyncMock()
+    db.get_monitoring_summary.return_value = {"monitored": 2, "favorites": 4, "llm_paused": False}
+    db.get_latest_analysis_run.return_value = {
+        "subreddit": "python",
+        "post_count": 100,
+        "pain_count": 20,
+        "monetizable_count": 5,
+        "skipped_existing_count": 12,
+        "dedup_merged_count": 3,
+    }
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_status(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "pain_finder running" in text
+    assert "Monitored subreddits: 2" in text
+    assert "Last run: r/python posts=100 pain=20 monetizable=5 skipped_existing=12 dedup_merged=3" in text
+
+
 async def test_cmd_export_usage_for_too_many_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
     bot._is_authorized = lambda update: True

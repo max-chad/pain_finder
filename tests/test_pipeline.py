@@ -156,6 +156,11 @@ async def test_analyze_subreddit_skips_already_persisted_posts_before_classifica
     assert run.post_count == 2
     assert run.pain_count == 1
 
+    latest_run = await db.get_latest_analysis_run("python")
+    assert latest_run is not None
+    assert latest_run["skipped_existing_count"] == 1
+    assert latest_run["dedup_merged_count"] == 0
+
 
 async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_path, monkeypatch):
     post = Post(

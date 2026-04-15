@@ -187,6 +187,8 @@ class AnalysisPipeline:
             pain_count=inserted_count,
             monetizable_count=monetizable_count,
             deep_dive_count=deep_dive_count,
+            skipped_existing_count=skipped_existing_count,
+            dedup_merged_count=dedup_merged_count,
             duration_ms=duration_ms,
             report_id=report_id,
         )

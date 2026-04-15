@@ -236,6 +236,8 @@ async def test_record_analysis_run_and_get_latest(db):
         pain_count=20,
         monetizable_count=5,
         deep_dive_count=2,
+        skipped_existing_count=11,
+        dedup_merged_count=3,
         duration_ms=1200,
         report_id=10,
     )
@@ -245,6 +247,8 @@ async def test_record_analysis_run_and_get_latest(db):
     assert latest is not None
     assert latest["id"] == run_id
     assert latest["monetizable_count"] == 5
+    assert latest["skipped_existing_count"] == 11
+    assert latest["dedup_merged_count"] == 3
 
 
 async def test_competitor_tags_are_normalized_and_queryable(db):
