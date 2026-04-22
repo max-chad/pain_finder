@@ -1,5 +1,6 @@
 ﻿import pytest_asyncio
 import pytest
+import sqlite3
 from unittest.mock import patch
 
 from db import Database
@@ -29,12 +30,17 @@ async def test_insert_and_fetch_pain_point(db):
         pain_level=8,
         willingness_to_pay=9,
         niche_category="DevTools",
+        source_created_at="2026-04-20T10:00:00+00:00",
+        source_created_ts=1776688800,
+        opportunity_bucket="current_opportunity",
     )
     results = await db.get_pain_points(subreddit="python")
     assert len(results) == 1
     assert results[0]["post_id"] == "abc123"
     assert results[0]["category"] == "complaint"
     assert results[0]["willingness_to_pay"] == 9
+    assert results[0]["source_created_ts"] == 1776688800
+    assert results[0]["opportunity_bucket"] == "current_opportunity"
 
 
 async def test_duplicate_post_id_upserts(db):
@@ -128,6 +134,47 @@ async def test_migrations_are_idempotent(db):
     assert row[0] == 1
 
 
+async def test_init_migrates_legacy_pain_points_before_creating_new_indexes(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE pain_points (
+            id INTEGER PRIMARY KEY,
+            subreddit TEXT NOT NULL,
+            post_id TEXT UNIQUE NOT NULL,
+            url TEXT,
+            title TEXT,
+            body TEXT,
+            category TEXT,
+            summary TEXT,
+            severity TEXT,
+            is_monetizable INTEGER DEFAULT 0,
+            pain_level INTEGER DEFAULT 0,
+            willingness_to_pay INTEGER DEFAULT 0,
+            niche_category TEXT DEFAULT '',
+            competitor_tags TEXT DEFAULT '[]',
+            source TEXT DEFAULT 'reddit',
+            triage_status TEXT DEFAULT 'new',
+            analysis_mode TEXT DEFAULT 'legacy',
+            deep_dive_status TEXT DEFAULT 'not_requested',
+            deep_dive_summary TEXT,
+            analysis_payload_json TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))) ")
+    conn.commit()
+    conn.close()
+
+    database = Database(str(db_path))
+    await database.init()
+    row = await database.get_pain_point("missing")
+    assert row is None
+    await database.close()
+
+
 async def test_triage_and_deep_dive_helpers(db):
     await db.insert_pain_point(
         subreddit="python",
@@ -179,6 +226,8 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         severity="low",
         willingness_to_pay=2,
         pain_level=2,
+        source_created_ts=1776688800,
+        opportunity_bucket="evergreen_pain",
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -192,6 +241,8 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         willingness_to_pay=9,
         pain_level=8,
         is_monetizable=True,
+        source_created_ts=1776775200,
+        opportunity_bucket="current_opportunity",
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -206,6 +257,8 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         pain_level=2,
         is_monetizable=False,
         triage_status="favorite",
+        source_created_ts=1776775201,
+        opportunity_bucket="current_opportunity",
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -219,14 +272,68 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         willingness_to_pay=10,
         pain_level=10,
         triage_status="discarded",
+        source_created_ts=1776775202,
+        opportunity_bucket="current_opportunity",
     )
 
-    rows = await db.list_export_rows(subreddit="python", min_wtp=8, include_favorites=True)
+    rows = await db.list_export_rows(
+        subreddit="python",
+        min_wtp=8,
+        include_favorites=True,
+        opportunity_bucket="current_opportunity",
+    )
     ids = {row["post_id"] for row in rows}
     assert "r2" in ids
     assert "r3" in ids
     assert "r1" not in ids
     assert "r4" not in ids
+
+
+async def test_get_recent_pain_points_filters_by_opportunity_bucket_and_source_age(db):
+    now = datetime.now(UTC)
+    fresh_ts = int((now - timedelta(days=5)).timestamp())
+    stale_ts = int((now - timedelta(days=400)).timestamp())
+
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="fresh-current",
+        url="",
+        title="Need better approvals",
+        body="",
+        category="complaint",
+        summary="fresh",
+        severity="high",
+        willingness_to_pay=9,
+        pain_level=8,
+        is_monetizable=True,
+        source_created_ts=fresh_ts,
+        source_created_at=datetime.fromtimestamp(fresh_ts, UTC).isoformat(),
+        opportunity_bucket="current_opportunity",
+    )
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="stale-evergreen",
+        url="",
+        title="Still migrating QuickBooks",
+        body="",
+        category="complaint",
+        summary="stale",
+        severity="high",
+        willingness_to_pay=8,
+        pain_level=8,
+        is_monetizable=True,
+        source_created_ts=stale_ts,
+        source_created_at=datetime.fromtimestamp(stale_ts, UTC).isoformat(),
+        opportunity_bucket="evergreen_pain",
+    )
+
+    current_rows = await db.get_recent_pain_points(hours=24 * 24, opportunity_bucket="current_opportunity")
+    evergreen_rows = await db.get_recent_pain_points(hours=24 * 24, opportunity_bucket="evergreen_pain")
+    aged_rows = await db.get_recent_pain_points(hours=24 * 24, max_source_age_days=180)
+
+    assert {row["post_id"] for row in current_rows} == {"fresh-current"}
+    assert {row["post_id"] for row in evergreen_rows} == {"stale-evergreen"}
+    assert {row["post_id"] for row in aged_rows} == {"fresh-current"}
 
 
 async def test_record_analysis_run_and_get_latest(db):

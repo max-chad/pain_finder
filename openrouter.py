@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 VALID_CATEGORIES = {"complaint", "unsolved", "wish"}
 VALID_SEVERITIES = {"low", "medium", "high"}
 VALID_SIGNAL_LEVELS = {"low", "medium", "high"}
+VALID_POST_TYPES = {
+    "first_person_pain",
+    "solution_request",
+    "founder_pitch",
+    "news_analysis",
+    "tool_comparison",
+    "advice_thread",
+    "vendor_rant",
+}
+VALID_FIRST_HANDNESS = {"first_hand", "second_hand", "aggregated", "speculative", "unknown"}
+VALID_BUYER_AUTHORITIES = {
+    "intern",
+    "ic",
+    "engineer",
+    "manager",
+    "head_of_ops",
+    "founder_owner",
+    "agency_operator",
+    "unknown",
+}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 
@@ -28,7 +48,10 @@ Task:
 2. Score pain intensity and willingness to pay.
 3. Categorize the niche.
 4. Extract competitor software names mentioned negatively.
-5. Keep compatibility fields (category, severity).
+5. Classify the post type before monetization scoring.
+6. Identify first-handness and buyer authority.
+7. Return 1-3 short evidence spans copied from the post text.
+8. Keep compatibility fields (category, severity).
 
 Reject non-business consumer venting as non-monetizable with low scores.
 
@@ -41,13 +64,21 @@ Return ONLY valid JSON with this exact schema:
   "competitor_tags": ["shopify", "quickbooks"],
   "summary": "One sentence summary",
   "category": "complaint",
-  "severity": "low"
+  "severity": "low",
+  "post_type": "first_person_pain",
+  "first_handness": "first_hand",
+  "buyer_authority": "founder_owner",
+  "evidence_spans": ["copied evidence"]
 }
 
 Rules:
 - pain_level: integer 0..10
 - willingness_to_pay: integer 0..10
 - competitor_tags: array of lowercase software tags, empty array if none
+- post_type: one of first_person_pain, solution_request, founder_pitch, news_analysis, tool_comparison, advice_thread, vendor_rant
+- first_handness: one of first_hand, second_hand, aggregated, speculative, unknown
+- buyer_authority: one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown
+- evidence_spans: array with 1..3 short quotes copied from the post, max 160 chars each
 
 Title: {title}
 Body: {body}
@@ -57,7 +88,11 @@ LEGACY_PROMPT_TEMPLATE = """Analyze this post and extract pain point JSON:
 {
   "category": "complaint",
   "summary": "one sentence summary",
-  "severity": "low"
+  "severity": "low",
+  "post_type": "advice_thread",
+  "first_handness": "unknown",
+  "buyer_authority": "unknown",
+  "evidence_spans": ["copied evidence"]
 }
 
 Title: {title}
@@ -133,6 +168,10 @@ class AnalysisResult:
     willingness_to_pay: int = 0
     niche_category: str = ""
     competitor_tags: list[str] = field(default_factory=list)
+    post_type: str = "advice_thread"
+    first_handness: str = "unknown"
+    buyer_authority: str = "unknown"
+    evidence_spans: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
 
 
@@ -665,6 +704,14 @@ class OpenRouterClient:
     def _is_valid_gtm_payload(self, payload: dict[str, Any]) -> bool:
         return self._parse_gtm_result(payload) is not None
 
+    @staticmethod
+    def _default_post_type_for_category(category: str) -> str:
+        if category == "complaint":
+            return "first_person_pain"
+        if category == "unsolved":
+            return "solution_request"
+        return "advice_thread"
+
     def _parse_primary_result(self, payload: dict[str, Any]) -> AnalysisResult | None:
         category = payload.get("category")
         severity = payload.get("severity")
@@ -674,6 +721,10 @@ class OpenRouterClient:
         willingness_to_pay = payload.get("willingness_to_pay")
         niche_category = payload.get("niche_category")
         competitor_tags = payload.get("competitor_tags", [])
+        post_type = payload.get("post_type", self._default_post_type_for_category(str(category)))
+        first_handness = payload.get("first_handness", "unknown")
+        buyer_authority = payload.get("buyer_authority", "unknown")
+        evidence_spans = payload.get("evidence_spans", [])
 
         if category not in VALID_CATEGORIES:
             return None
@@ -691,6 +742,15 @@ class OpenRouterClient:
             return None
         if not isinstance(competitor_tags, list) or any(not isinstance(item, str) for item in competitor_tags):
             return None
+        if post_type not in VALID_POST_TYPES:
+            return None
+        if first_handness not in VALID_FIRST_HANDNESS:
+            return None
+        if buyer_authority not in VALID_BUYER_AUTHORITIES:
+            return None
+        if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
+            return None
+        cleaned_evidence = [item.strip()[:160] for item in evidence_spans if item.strip()][:3]
 
         return AnalysisResult(
             category=category,
@@ -701,6 +761,10 @@ class OpenRouterClient:
             willingness_to_pay=willingness_to_pay if monetizable else min(willingness_to_pay, 3),
             niche_category=niche_category.strip(),
             competitor_tags=[item.strip().lower() for item in competitor_tags if item.strip()],
+            post_type=post_type,
+            first_handness=first_handness,
+            buyer_authority=buyer_authority,
+            evidence_spans=cleaned_evidence,
             raw_payload=payload,
         )
 
@@ -709,6 +773,10 @@ class OpenRouterClient:
         severity = payload.get("severity")
         summary = payload.get("summary")
         competitor_tags = payload.get("competitor_tags", [])
+        post_type = payload.get("post_type", self._default_post_type_for_category(str(category)))
+        first_handness = payload.get("first_handness", "unknown")
+        buyer_authority = payload.get("buyer_authority", "unknown")
+        evidence_spans = payload.get("evidence_spans", [])
 
         if category not in VALID_CATEGORIES:
             return None
@@ -718,12 +786,24 @@ class OpenRouterClient:
             return None
         if not isinstance(competitor_tags, list) or any(not isinstance(item, str) for item in competitor_tags):
             competitor_tags = []
+        if post_type not in VALID_POST_TYPES:
+            return None
+        if first_handness not in VALID_FIRST_HANDNESS:
+            return None
+        if buyer_authority not in VALID_BUYER_AUTHORITIES:
+            return None
+        if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
+            evidence_spans = []
 
         return AnalysisResult(
             category=category,
             summary=summary.strip(),
             severity=severity,
             competitor_tags=[item.strip().lower() for item in competitor_tags if isinstance(item, str) and item.strip()],
+            post_type=post_type,
+            first_handness=first_handness,
+            buyer_authority=buyer_authority,
+            evidence_spans=[item.strip()[:160] for item in evidence_spans if isinstance(item, str) and item.strip()][:3],
             raw_payload=payload,
         )
 

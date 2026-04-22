@@ -17,9 +17,14 @@ async def test_post_dataclass_fields():
         score=42,
         permalink="/r/python/comments/t3_abc/example/",
         top_comments=["same issue"],
+        source_created_at="2026-04-20T10:00:00Z",
+        source_created_ts=1776688800,
+        author_name="alice",
     )
     assert post.post_id == "t3_abc"
     assert post.top_comments == ["same issue"]
+    assert post.source_created_ts == 1776688800
+    assert post.author_name == "alice"
 
 
 async def test_scraper_no_credentials_sets_use_praw_false():
@@ -56,6 +61,8 @@ async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
                                 "selftext": "body text",
                                 "url": "https://reddit.com/abc1",
                                 "score": 10,
+                                "created_utc": 1713600000,
+                                "author": "alice",
                                 "subreddit": "python",
                                 "permalink": "/r/python/comments/abc1/test_post/",
                             }
@@ -89,6 +96,64 @@ async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
     assert posts[0].post_id == "reddit:abc1"
     assert posts[0].top_comments == ["first top comment", "second top comment"]
     assert "Top comments:" in posts[0].body
+    assert posts[0].source_created_ts == 1713600000
+    assert posts[0].source_created_at == "2024-04-20T08:00:00+00:00"
+    assert posts[0].author_name == "alice"
+
+
+def test_parse_rss_entries_preserves_source_timestamp_and_author():
+    xml_text = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>tag:reddit.com,2005:comments/abc123</id>
+        <title>Manual payroll process still breaks</title>
+        <published>2026-04-19T08:15:00+00:00</published>
+        <updated>2026-04-21T08:15:00+00:00</updated>
+        <author><name>ops_owner</name></author>
+        <summary>We still export CSV files every Friday.</summary>
+        <link href="https://old.reddit.com/r/smallbusiness/comments/abc123/payroll/" />
+      </entry>
+    </feed>
+    """
+
+    posts = RedditScraper._parse_rss_entries("smallbusiness", xml_text)
+
+    assert len(posts) == 1
+    assert posts[0].post_id == "reddit:abc123"
+    assert posts[0].source_created_at == "2026-04-19T08:15:00+00:00"
+    assert posts[0].source_created_ts == 1776586500
+    assert posts[0].author_name == "ops_owner"
+
+
+def test_merge_post_keeps_earliest_source_timestamp():
+    posts_by_id = {
+        "reddit:abc123": Post(
+            post_id="reddit:abc123",
+            subreddit="smallbusiness",
+            title="Older",
+            body="",
+            url="https://reddit.com/r/smallbusiness/comments/abc123/older/",
+            score=5,
+            source_created_at="2026-04-19T08:15:00+00:00",
+            source_created_ts=1776586500,
+        )
+    }
+    newer_variant = Post(
+        post_id="reddit:abc123",
+        subreddit="smallbusiness",
+        title="Newer",
+        body="",
+        url="https://reddit.com/r/smallbusiness/comments/abc123/newer/",
+        score=10,
+        source_created_at="2026-04-21T08:15:00+00:00",
+        source_created_ts=1776759300,
+    )
+
+    RedditScraper._merge_post(posts_by_id, newer_variant)
+
+    assert posts_by_id["reddit:abc123"].score == 10
+    assert posts_by_id["reddit:abc123"].source_created_at == "2026-04-19T08:15:00+00:00"
+    assert posts_by_id["reddit:abc123"].source_created_ts == 1776586500
 
 
 async def test_fetch_public_json_handles_http_error(respx_mock):

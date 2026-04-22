@@ -36,8 +36,12 @@ class DailyDigestDocumentService:
         if not filtered_rows:
             return DigestDocumentResult(docx_path=None, total_items=0, group_count=0, group_sizes={})
 
-        grouped = self._group_rows(filtered_rows, group_by=group_by)
-        ordered_groups = self._order_groups(grouped)
+        current_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "current_opportunity"]
+        evergreen_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "evergreen_pain"]
+        unknown_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "unknown_age"]
+        current_groups = self._order_groups(self._group_rows(current_rows, group_by=group_by)) if current_rows else []
+        evergreen_groups = self._order_groups(self._group_rows(evergreen_rows, group_by=group_by)) if evergreen_rows else []
+        unknown_groups = self._order_groups(self._group_rows(unknown_rows, group_by=group_by)) if unknown_rows else []
 
         document = Document()
         document.add_heading("Pain Finder Daily Digest", level=0)
@@ -46,13 +50,23 @@ class DailyDigestDocumentService:
                 f"Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
                 f"Window: last {hours}h\n"
                 f"Grouping: {group_by}\n"
-                f"Included items: {sum(len(items) for _, items in ordered_groups)}"
+                f"Current opportunities: {sum(len(items) for _, items in current_groups)}\n"
+                f"Evergreen pain index: {sum(len(items) for _, items in evergreen_groups)}\n"
+                f"Unknown age review queue: {sum(len(items) for _, items in unknown_groups)}"
             )
         )
 
         overview = document.add_paragraph()
-        overview.add_run("Groups: ").bold = True
-        overview.add_run(", ".join(f"{label} ({len(items)})" for label, items in ordered_groups[:8]))
+        overview.add_run("Current opportunity groups: ").bold = True
+        overview.add_run(", ".join(f"{label} ({len(items)})" for label, items in current_groups[:8]) or "none")
+
+        evergreen_overview = document.add_paragraph()
+        evergreen_overview.add_run("Evergreen groups: ").bold = True
+        evergreen_overview.add_run(", ".join(f"{label} ({len(items)})" for label, items in evergreen_groups[:8]) or "none")
+
+        unknown_overview = document.add_paragraph()
+        unknown_overview.add_run("Unknown-age groups: ").bold = True
+        unknown_overview.add_run(", ".join(f"{label} ({len(items)})" for label, items in unknown_groups[:8]) or "none")
 
         blockers = self._recurring_blockers(filtered_rows)
         if blockers:
@@ -60,31 +74,15 @@ class DailyDigestDocumentService:
             blockers_paragraph.add_run("Recurring blockers: ").bold = True
             blockers_paragraph.add_run(" | ".join(blockers))
 
-        for label, items in ordered_groups:
-            document.add_heading(f"{label} ({len(items)})", level=1)
-            for row in items[:max_items_per_group]:
-                title = (row.get("title") or "Untitled").strip() or "Untitled"
-                summary = (row.get("summary") or "No summary available.").strip() or "No summary available."
-                source = (row.get("source") or "unknown").strip() or "unknown"
-                subreddit = (row.get("subreddit") or "n/a").strip() or "n/a"
-                url = (row.get("url") or "").strip()
-                wtp = int(row.get("willingness_to_pay") or 0)
-                pain_level = int(row.get("pain_level") or 0)
-                competitors = ", ".join(self._competitor_tags(row)) or "none"
-                deep_dive_summary = (row.get("deep_dive_summary") or "").strip()
-
-                header = document.add_paragraph()
-                header.add_run(title).bold = True
-                metrics = document.add_paragraph(
-                    f"WTP {wtp}/10 | Pain {pain_level}/10 | Source {source} | Scope {subreddit}"
-                )
-                metrics.style = "Intense Quote"
-                document.add_paragraph(summary)
-                document.add_paragraph(f"Competitors/tags: {competitors}")
-                if deep_dive_summary:
-                    document.add_paragraph(f"Deep dive: {deep_dive_summary}")
-                if url:
-                    document.add_paragraph(f"Link: {url}")
+        if current_groups:
+            document.add_heading("Current opportunities", level=1)
+            self._render_grouped_section(document, current_groups, max_items_per_group=max_items_per_group)
+        if evergreen_groups:
+            document.add_heading("Evergreen pain index", level=1)
+            self._render_grouped_section(document, evergreen_groups, max_items_per_group=max_items_per_group)
+        if unknown_groups:
+            document.add_heading("Unknown age review queue", level=1)
+            self._render_grouped_section(document, unknown_groups, max_items_per_group=max_items_per_group)
 
         os.makedirs(self.reports_dir, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -98,11 +96,12 @@ class DailyDigestDocumentService:
                 os.remove(tmp_path)
             raise
 
+        all_groups = current_groups + evergreen_groups + unknown_groups
         return DigestDocumentResult(
             docx_path=final_path,
-            total_items=sum(len(items[:max_items_per_group]) for _, items in ordered_groups),
-            group_count=len(ordered_groups),
-            group_sizes={label: len(items) for label, items in ordered_groups},
+            total_items=sum(len(items[:max_items_per_group]) for _, items in all_groups),
+            group_count=len(all_groups),
+            group_sizes={label: len(items) for label, items in all_groups},
         )
 
     @staticmethod
@@ -127,6 +126,48 @@ class DailyDigestDocumentService:
         return grouped
 
     @staticmethod
+    def _opportunity_bucket(row: dict[str, Any]) -> str:
+        bucket = str(row.get("opportunity_bucket") or "").strip().lower()
+        if bucket == "current_opportunity":
+            return "current_opportunity"
+        if bucket == "evergreen_pain":
+            return "evergreen_pain"
+        return "unknown_age"
+
+    def _render_grouped_section(
+        self,
+        document: Document,
+        ordered_groups: list[tuple[str, list[dict[str, Any]]]],
+        *,
+        max_items_per_group: int,
+    ) -> None:
+        for label, items in ordered_groups:
+            document.add_heading(f"{label} ({len(items)})", level=2)
+            for row in items[:max_items_per_group]:
+                title = (row.get("title") or "Untitled").strip() or "Untitled"
+                summary = (row.get("summary") or "No summary available.").strip() or "No summary available."
+                source = (row.get("source") or "unknown").strip() or "unknown"
+                subreddit = (row.get("subreddit") or "n/a").strip() or "n/a"
+                url = (row.get("url") or "").strip()
+                wtp = int(row.get("willingness_to_pay") or 0)
+                pain_level = int(row.get("pain_level") or 0)
+                competitors = ", ".join(self._competitor_tags(row)) or "none"
+                deep_dive_summary = (row.get("deep_dive_summary") or "").strip()
+
+                header = document.add_paragraph()
+                header.add_run(title).bold = True
+                metrics = document.add_paragraph(
+                    f"WTP {wtp}/10 | Pain {pain_level}/10 | Source {source} | Scope {subreddit}"
+                )
+                metrics.style = "Intense Quote"
+                document.add_paragraph(summary)
+                document.add_paragraph(f"Competitors/tags: {competitors}")
+                if deep_dive_summary:
+                    document.add_paragraph(f"Deep dive: {deep_dive_summary}")
+                if url:
+                    document.add_paragraph(f"Link: {url}")
+
+    @staticmethod
     def _order_groups(grouped: dict[str, list[dict[str, Any]]]) -> list[tuple[str, list[dict[str, Any]]]]:
         def _group_score(item: tuple[str, list[dict[str, Any]]]) -> tuple[int, int, str]:
             label, rows = item
@@ -139,7 +180,7 @@ class DailyDigestDocumentService:
                 key=lambda row: (
                     int(row.get("willingness_to_pay") or 0),
                     int(row.get("pain_level") or 0),
-                    str(row.get("created_at") or ""),
+                    str(row.get("source_created_at") or row.get("created_at") or ""),
                 ),
                 reverse=True,
             )

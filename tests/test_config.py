@@ -39,6 +39,8 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("DIGEST_MINUTE_UTC", "15")
     monkeypatch.setenv("DIGEST_MIN_WTP", "6")
     monkeypatch.setenv("DIGEST_MAX_ITEMS_PER_GROUP", "12")
+    monkeypatch.setenv("CURRENT_OPPORTUNITY_MAX_AGE_DAYS", "180")
+    monkeypatch.setenv("EVERGREEN_MAX_AGE_DAYS", "365")
 
     config_module = importlib.import_module("config")
     config_module = importlib.reload(config_module)
@@ -81,6 +83,8 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.DIGEST_MINUTE_UTC == 15
     assert config_module.DIGEST_MIN_WTP == 6
     assert config_module.DIGEST_MAX_ITEMS_PER_GROUP == 12
+    assert config_module.CURRENT_OPPORTUNITY_MAX_AGE_DAYS == 180
+    assert config_module.EVERGREEN_MAX_AGE_DAYS == 365
     assert config_module.DSPY_REDDIT_PARSER_ENABLED is True
     assert config_module.DSPY_PROVIDER == "codex"
     assert config_module.DSPY_MODEL == "gpt-5.3-spark"

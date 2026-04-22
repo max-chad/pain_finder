@@ -113,6 +113,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             budget_guard=None,
             deduplicator=None,
             llm_max_classifications_per_run=0,
+            current_opportunity_max_age_days=180,
         ):
             self.scraper = scraper
             self.classifier = classifier

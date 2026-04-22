@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 PAIN_POINT_STATUSES = {"new", "favorite", "discarded", "merged"}
 DEEP_DIVE_STATUSES = {"not_requested", "queued", "running", "completed", "failed"}
+OPPORTUNITY_BUCKETS = {"current_opportunity", "evergreen_pain", "unknown_age"}
 
 CREATE_PAIN_POINTS = """
 CREATE TABLE IF NOT EXISTS pain_points (
@@ -27,6 +28,14 @@ CREATE TABLE IF NOT EXISTS pain_points (
     niche_category TEXT DEFAULT '',
     competitor_tags TEXT DEFAULT '[]',
     source TEXT DEFAULT 'reddit',
+    source_created_at TEXT,
+    source_created_ts INTEGER,
+    author_name TEXT,
+    opportunity_bucket TEXT DEFAULT 'unknown_age',
+    post_type TEXT DEFAULT 'advice_thread',
+    first_handness TEXT DEFAULT 'unknown',
+    buyer_authority TEXT DEFAULT 'unknown',
+    evidence_spans_json TEXT DEFAULT '[]',
     triage_status TEXT DEFAULT 'new',
     analysis_mode TEXT DEFAULT 'legacy',
     deep_dive_status TEXT DEFAULT 'not_requested',
@@ -174,6 +183,8 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pain_points_wtp ON pain_points(willingness_to_pay DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_triage_status ON pain_points(triage_status)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_source ON pain_points(source)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_bucket ON pain_points(opportunity_bucket)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_source_created_ts ON pain_points(source_created_ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_reports_subreddit_run_at ON reports(subreddit, run_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_deep_dives_post_id ON deep_dives(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_runs_created_at ON analysis_runs(created_at DESC)",
@@ -192,6 +203,14 @@ PAIN_POINT_COLUMNS = {
     "niche_category": "TEXT DEFAULT ''",
     "competitor_tags": "TEXT DEFAULT '[]'",
     "source": "TEXT DEFAULT 'reddit'",
+    "source_created_at": "TEXT",
+    "source_created_ts": "INTEGER",
+    "author_name": "TEXT",
+    "opportunity_bucket": "TEXT DEFAULT 'unknown_age'",
+    "post_type": "TEXT DEFAULT 'advice_thread'",
+    "first_handness": "TEXT DEFAULT 'unknown'",
+    "buyer_authority": "TEXT DEFAULT 'unknown'",
+    "evidence_spans_json": "TEXT DEFAULT '[]'",
     "triage_status": "TEXT DEFAULT 'new'",
     "analysis_mode": "TEXT DEFAULT 'legacy'",
     "deep_dive_status": "TEXT DEFAULT 'not_requested'",
@@ -233,10 +252,9 @@ class Database:
         await self._conn.execute(CREATE_GTM_ASSETS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
+        await self._run_migrations()
         for query in CREATE_INDEXES:
             await self._conn.execute(query)
-
-        await self._run_migrations()
         await self._ensure_runtime_flags_row()
         await self._conn.commit()
 
@@ -247,7 +265,12 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON;")
 
     async def _run_migrations(self) -> None:
-        pain_point_migrations = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
+        pain_point_migrations = [
+            "2026_02_24_expand_pain_points",
+            "2026_02_25_phase_5_8_expansion",
+            "2026_02_27_cross_source_dedup",
+            "2026_04_22_source_context_and_opportunity_bucket",
+        ]
         for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
                 continue
@@ -329,6 +352,14 @@ class Database:
         niche_category: str = "",
         competitor_tags: list[str] | None = None,
         source: str = "reddit",
+        source_created_at: str | None = None,
+        source_created_ts: int | None = None,
+        author_name: str | None = None,
+        opportunity_bucket: str = "unknown_age",
+        post_type: str = "advice_thread",
+        first_handness: str = "unknown",
+        buyer_authority: str = "unknown",
+        evidence_spans: list[str] | None = None,
         triage_status: str = "new",
         analysis_mode: str = "legacy",
         deep_dive_status: str = "not_requested",
@@ -342,6 +373,13 @@ class Database:
             deep_dive_status = "not_requested"
 
         normalized_tags = self._normalize_competitor_tags(competitor_tags)
+        if opportunity_bucket not in OPPORTUNITY_BUCKETS:
+            opportunity_bucket = "unknown_age"
+        normalized_evidence_spans = [
+            str(item).strip()[:160]
+            for item in (evidence_spans or [])
+            if isinstance(item, str) and str(item).strip()
+        ][:3]
 
         try:
             await self._conn.execute(
@@ -349,10 +387,12 @@ class Database:
                 INSERT INTO pain_points (
                     subreddit, post_id, url, title, body, category, summary, severity,
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
-                    competitor_tags, source, triage_status, analysis_mode,
+                    competitor_tags, source, source_created_at, source_created_ts, author_name,
+                    opportunity_bucket, post_type, first_handness, buyer_authority, evidence_spans_json,
+                    triage_status, analysis_mode,
                     deep_dive_status, deep_dive_summary, analysis_payload_json,
                     emb_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -367,6 +407,14 @@ class Database:
                     niche_category = excluded.niche_category,
                     competitor_tags = excluded.competitor_tags,
                     source = excluded.source,
+                    source_created_at = COALESCE(excluded.source_created_at, pain_points.source_created_at),
+                    source_created_ts = COALESCE(excluded.source_created_ts, pain_points.source_created_ts),
+                    author_name = COALESCE(excluded.author_name, pain_points.author_name),
+                    opportunity_bucket = excluded.opportunity_bucket,
+                    post_type = excluded.post_type,
+                    first_handness = excluded.first_handness,
+                    buyer_authority = excluded.buyer_authority,
+                    evidence_spans_json = excluded.evidence_spans_json,
                     analysis_mode = excluded.analysis_mode,
                     analysis_payload_json = excluded.analysis_payload_json,
                     deep_dive_summary = COALESCE(excluded.deep_dive_summary, pain_points.deep_dive_summary),
@@ -390,6 +438,14 @@ class Database:
                     niche_category,
                     json.dumps(normalized_tags, ensure_ascii=False),
                     source,
+                    source_created_at,
+                    source_created_ts,
+                    author_name,
+                    opportunity_bucket,
+                    post_type,
+                    first_handness,
+                    buyer_authority,
+                    json.dumps(normalized_evidence_spans, ensure_ascii=False),
                     triage_status,
                     analysis_mode,
                     deep_dive_status,
@@ -605,12 +661,21 @@ class Database:
         subreddit: str | None = None,
         min_wtp: int = 8,
         include_favorites: bool = True,
+        opportunity_bucket: str | None = None,
+        max_source_age_days: int | None = None,
     ) -> list[dict[str, Any]]:
         conditions = ["triage_status NOT IN ('discarded', 'merged')"]
         params: list[Any] = []
         if subreddit:
             conditions.append("subreddit = ?")
             params.append(subreddit)
+        if opportunity_bucket:
+            conditions.append("opportunity_bucket = ?")
+            params.append(opportunity_bucket)
+        if max_source_age_days is not None:
+            cutoff_ts = int((datetime.now(timezone.utc).timestamp()) - max(0, max_source_age_days) * 86400)
+            conditions.append("source_created_ts IS NOT NULL AND source_created_ts >= ?")
+            params.append(cutoff_ts)
         if include_favorites:
             conditions.append("(willingness_to_pay >= ? OR triage_status = 'favorite')")
             params.append(min_wtp)
@@ -743,13 +808,28 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def get_recent_pain_points(self, *, hours: int = 24, subreddit: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    async def get_recent_pain_points(
+        self,
+        *,
+        hours: int = 24,
+        subreddit: str | None = None,
+        limit: int = 200,
+        opportunity_bucket: str | None = None,
+        max_source_age_days: int | None = None,
+    ) -> list[dict[str, Any]]:
         params: list[Any] = [f"-{hours} hours"]
         query = "SELECT * FROM pain_points WHERE datetime(created_at) >= datetime('now', ?) AND triage_status NOT IN ('discarded', 'merged')"
         if subreddit:
             query += " AND subreddit = ?"
             params.append(subreddit)
-        query += " ORDER BY willingness_to_pay DESC, pain_level DESC, created_at DESC LIMIT ?"
+        if opportunity_bucket:
+            query += " AND opportunity_bucket = ?"
+            params.append(opportunity_bucket)
+        if max_source_age_days is not None:
+            cutoff_ts = int((datetime.now(timezone.utc).timestamp()) - max(0, max_source_age_days) * 86400)
+            query += " AND source_created_ts IS NOT NULL AND source_created_ts >= ?"
+            params.append(cutoff_ts)
+        query += " ORDER BY willingness_to_pay DESC, pain_level DESC, source_created_ts DESC, created_at DESC LIMIT ?"
         params.append(limit)
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()

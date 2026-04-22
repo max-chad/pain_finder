@@ -19,6 +19,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "url": "https://reddit.com/p1",
             "subreddit": "sales",
             "deep_dive_summary": "CSV handoffs between teams keep breaking.",
+            "opportunity_bucket": "current_opportunity",
         },
         {
             "post_id": "p2",
@@ -32,6 +33,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "url": "https://example.com/p2",
             "subreddit": "finance",
             "deep_dive_summary": "Teams export data three times before review.",
+            "opportunity_bucket": "evergreen_pain",
         },
         {
             "post_id": "p3",
@@ -45,6 +47,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "url": "https://news.ycombinator.com/item?id=3",
             "subreddit": "marketing",
             "deep_dive_summary": "Attribution breaks across CRM sync boundaries.",
+            "opportunity_bucket": "current_opportunity",
         },
     ]
 
@@ -61,6 +64,8 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
         xml = archive.read("word/document.xml").decode("utf-8")
 
     assert "Pain Finder Daily Digest" in xml
+    assert "Current opportunities" in xml
+    assert "Evergreen pain index" in xml
     assert "RevOps" in xml
     assert "FinOps" in xml
     assert "Need better onboarding handoff" in xml

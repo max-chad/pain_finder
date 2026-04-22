@@ -28,6 +28,9 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
         body="Still broken",
         url="https://reddit.com/p1",
         score=10,
+        source_created_at="2026-04-20T10:00:00+00:00",
+        source_created_ts=1776688800,
+        author_name="ops_owner",
     )
     signal = PainSignal(
         post=post,
@@ -40,6 +43,11 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
         niche_category="DevTools",
         analysis_mode="b2b",
         analysis_payload={"sample": True},
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["still broken", "can't make this work"],
+        opportunity_bucket="current_opportunity",
     )
 
     scraper = AsyncMock()
@@ -83,6 +91,10 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     with open(run.json_path, "r", encoding="utf-8") as handle:
         report_payload = json.load(handle)
     assert report_payload[0]["post_id"] == "p1"
+    assert report_payload[0]["source_created_ts"] == 1776688800
+    assert report_payload[0]["post_type"] == "first_person_pain"
+    assert report_payload[0]["buyer_authority"] == "founder_owner"
+    assert report_payload[0]["opportunity_bucket"] == "current_opportunity"
 
     latest = await db.get_latest_report(subreddit="python")
     assert latest is not None

@@ -57,6 +57,7 @@ class AnalysisPipeline:
         budget_guard: BudgetGuard | None = None,
         deduplicator: Deduplicator | None = None,
         llm_max_classifications_per_run: int = 0,
+        current_opportunity_max_age_days: int = 180,
     ):
         self.scraper = scraper
         self.classifier = classifier
@@ -67,6 +68,7 @@ class AnalysisPipeline:
         self.budget_guard = budget_guard
         self.deduplicator = deduplicator
         self.llm_max_classifications_per_run = max(0, int(llm_max_classifications_per_run))
+        self.current_opportunity_max_age_days = max(1, int(current_opportunity_max_age_days))
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
         posts = await self.scraper.fetch_posts(subreddit, limit=limit)
@@ -125,6 +127,8 @@ class AnalysisPipeline:
 
         for signal in classified_signals:
             embedding: list[float] | None = None
+            opportunity_bucket = self._classify_opportunity_bucket(signal.post)
+            signal.opportunity_bucket = opportunity_bucket
 
             if self.deduplicator is not None:
                 text = f"{signal.post.title} {signal.post.body}"
@@ -153,6 +157,14 @@ class AnalysisPipeline:
                 niche_category=signal.niche_category,
                 competitor_tags=signal.competitor_tags,
                 source=source,
+                source_created_at=signal.post.source_created_at,
+                source_created_ts=signal.post.source_created_ts,
+                author_name=signal.post.author_name,
+                opportunity_bucket=opportunity_bucket,
+                post_type=signal.post_type,
+                first_handness=signal.first_handness,
+                buyer_authority=signal.buyer_authority,
+                evidence_spans=signal.evidence_spans,
                 analysis_mode=signal.analysis_mode,
                 analysis_payload=signal.analysis_payload,
                 emb_vector=embedding,
@@ -416,9 +428,26 @@ class AnalysisPipeline:
                 "niche_category": signal.niche_category,
                 "competitor_tags": signal.competitor_tags,
                 "analysis_mode": signal.analysis_mode,
+                "source_created_at": signal.post.source_created_at,
+                "source_created_ts": signal.post.source_created_ts,
+                "author_name": signal.post.author_name,
+                "opportunity_bucket": signal.opportunity_bucket,
+                "post_type": signal.post_type,
+                "first_handness": signal.first_handness,
+                "buyer_authority": signal.buyer_authority,
+                "evidence_spans": signal.evidence_spans,
             }
             for signal in signals
         ]
+
+    def _classify_opportunity_bucket(self, post: Post) -> str:
+        if not post.source_created_ts:
+            return "unknown_age"
+        age_seconds = max(0, int(datetime.now(UTC).timestamp()) - int(post.source_created_ts))
+        age_days = age_seconds / 86400.0
+        if age_days <= self.current_opportunity_max_age_days:
+            return "current_opportunity"
+        return "evergreen_pain"
 
     @staticmethod
     def _build_thread_text(title: str, body: str, comments: list[str]) -> str:

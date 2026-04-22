@@ -7,6 +7,8 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -32,6 +34,9 @@ class Post:
     top_comments: list[str] = field(default_factory=list)
     source: str = "reddit"
     discovery_query: str = ""
+    source_created_at: str | None = None
+    source_created_ts: int | None = None
+    author_name: str | None = None
 
 
 class RedditScraper:
@@ -168,6 +173,7 @@ class RedditScraper:
             full_url = f"https://reddit.com{permalink}"
         else:
             full_url = post_data.get("url", "")
+        source_created_at, source_created_ts = RedditScraper._normalize_source_timestamp(post_data.get("created_utc"))
         return Post(
             post_id=prefixed_post_id,
             subreddit=subreddit,
@@ -177,7 +183,41 @@ class RedditScraper:
             score=int(post_data.get("score", 0) or 0),
             permalink=permalink,
             discovery_query=discovery_query,
+            source_created_at=source_created_at,
+            source_created_ts=source_created_ts,
+            author_name=(post_data.get("author") or None),
         )
+
+    @staticmethod
+    def _normalize_source_timestamp(raw_ts: Any) -> tuple[str | None, int | None]:
+        if raw_ts in {None, ""}:
+            return None, None
+        try:
+            ts = int(float(raw_ts))
+        except (TypeError, ValueError):
+            return None, None
+        if ts <= 0:
+            return None, None
+        dt = datetime.fromtimestamp(ts, UTC)
+        return dt.isoformat(), ts
+
+    @staticmethod
+    def _parse_datetime_text(raw_text: str) -> tuple[str | None, int | None]:
+        text = (raw_text or "").strip()
+        if not text:
+            return None, None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                dt = parsedate_to_datetime(text)
+            except (TypeError, ValueError):
+                return None, None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt.isoformat(), int(dt.timestamp())
 
     @staticmethod
     def _merge_post(posts_by_id: dict[str, Post], post: Post) -> None:
@@ -193,6 +233,15 @@ class RedditScraper:
             existing.permalink = post.permalink
         if not existing.url and post.url:
             existing.url = post.url
+        if post.source_created_ts and (
+            existing.source_created_ts is None or post.source_created_ts < existing.source_created_ts
+        ):
+            existing.source_created_ts = post.source_created_ts
+            existing.source_created_at = post.source_created_at
+        elif existing.source_created_at is None and post.source_created_at is not None:
+            existing.source_created_at = post.source_created_at
+        if not existing.author_name and post.author_name:
+            existing.author_name = post.author_name
 
     @staticmethod
     def _rss_feed_url(subreddit: str, feed: str) -> str:
@@ -231,6 +280,10 @@ class RedditScraper:
             title = cls._sanitize_rss_text(entry.findtext("atom:title", default="", namespaces=ATOM_NS))
             summary = cls._sanitize_rss_text(entry.findtext("atom:summary", default="", namespaces=ATOM_NS))
             content = cls._sanitize_rss_text(entry.findtext("atom:content", default="", namespaces=ATOM_NS))
+            updated = entry.findtext("atom:updated", default="", namespaces=ATOM_NS)
+            published = entry.findtext("atom:published", default="", namespaces=ATOM_NS)
+            source_created_at, source_created_ts = cls._parse_datetime_text(published or updated)
+            author_name = cls._sanitize_rss_text(entry.findtext("atom:author/atom:name", default="", namespaces=ATOM_NS)) or None
             link = ""
             permalink = ""
             for link_node in entry.findall("atom:link", ATOM_NS):
@@ -258,6 +311,9 @@ class RedditScraper:
                     score=0,
                     permalink=permalink,
                     discovery_query=discovery_query,
+                    source_created_at=source_created_at,
+                    source_created_ts=source_created_ts,
+                    author_name=author_name,
                 )
             )
         return posts
@@ -315,6 +371,7 @@ class RedditScraper:
                             logger.debug("Unable to fetch top comments for %s: %s", submission.id, e)
 
                     body = self._append_comments(submission.selftext or "", top_comments)
+                    source_created_at, source_created_ts = self._normalize_source_timestamp(getattr(submission, "created_utc", None))
                     post = Post(
                         post_id=self._external_post_id(submission.id),
                         subreddit=subreddit,
@@ -324,6 +381,9 @@ class RedditScraper:
                         score=submission.score,
                         permalink=submission.permalink,
                         top_comments=top_comments,
+                        source_created_at=source_created_at,
+                        source_created_ts=source_created_ts,
+                        author_name=str(getattr(submission, "author", "") or "") or None,
                     )
                     self._merge_post(posts_by_id, post)
 
@@ -336,6 +396,7 @@ class RedditScraper:
                     limit=search_limit,
                 )
                 for submission in iterator:
+                    source_created_at, source_created_ts = self._normalize_source_timestamp(getattr(submission, "created_utc", None))
                     post = Post(
                         post_id=self._external_post_id(submission.id),
                         subreddit=subreddit,
@@ -345,6 +406,9 @@ class RedditScraper:
                         score=submission.score,
                         permalink=submission.permalink,
                         discovery_query=query,
+                        source_created_at=source_created_at,
+                        source_created_ts=source_created_ts,
+                        author_name=str(getattr(submission, "author", "") or "") or None,
                     )
                     self._merge_post(posts_by_id, post)
 

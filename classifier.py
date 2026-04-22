@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -116,6 +117,11 @@ class PainSignal:
     competitor_tags: list[str] = field(default_factory=list)
     analysis_mode: str = "legacy"
     analysis_payload: dict[str, Any] | None = None
+    post_type: str = "advice_thread"
+    first_handness: str = "unknown"
+    buyer_authority: str = "unknown"
+    evidence_spans: list[str] = field(default_factory=list)
+    opportunity_bucket: str = "unknown_age"
 
 
 class Classifier:
@@ -183,9 +189,80 @@ class Classifier:
         text = f"{post.title} {post.body}".lower()
         return sorted([tag for tag in COMPETITOR_HINTS if tag in text])
 
+    def _infer_post_type(self, post: Post, *, category: str) -> str:
+        text = f"{post.title} {post.body}".lower()
+        if any(marker in text for marker in {" vs ", "versus", "alternative to", "compare", "comparison"}):
+            return "tool_comparison"
+        if any(marker in text for marker in {"launching", "i built", "we built", "looking for cofounder", "serious only", "my saas"}):
+            return "founder_pitch"
+        if any(marker in text for marker in {"news recap", "industry news", "weekly recap", "analysis", "lawsuit"}):
+            return "news_analysis"
+        if category == "complaint" and self._extract_competitor_hints(post):
+            return "vendor_rant"
+        if category == "unsolved":
+            return "solution_request"
+        if category == "complaint":
+            return "first_person_pain"
+        return "advice_thread"
+
+    def _infer_first_handness(self, post: Post, *, post_type: str) -> str:
+        text = f" {post.title} {post.body} ".lower()
+        if post_type == "news_analysis":
+            return "speculative"
+        if any(marker in text for marker in {"my clients", "our clients", "customer interviews", "i interviewed", "we interviewed"}):
+            return "aggregated"
+        if any(marker in text for marker in {"my customer", "our customer", "my team", "our team"}):
+            return "second_hand"
+        if any(marker in text for marker in {" i ", " i'm ", " i’ve ", " i've ", " my ", " we ", " we're ", " our "}):
+            return "first_hand"
+        if any(marker in text for marker in {"people say", "founders say", "users say", "everyone says"}):
+            return "aggregated"
+        return "unknown"
+
+    def _infer_buyer_authority(self, post: Post) -> str:
+        text = f"{post.title} {post.body}".lower()
+        if any(marker in text for marker in {"founder", "cofounder", "business owner", "owner", "ceo"}):
+            return "founder_owner"
+        if any(marker in text for marker in {"head of ops", "head of operations", "director of ops", "vp operations", "ops lead"}):
+            return "head_of_ops"
+        if any(marker in text for marker in {"agency", "client work", "client projects", "freelance agency"}):
+            return "agency_operator"
+        if any(marker in text for marker in {"intern", "student", "graduate"}):
+            return "intern"
+        if any(marker in text for marker in {"manager", "team lead", "lead "}):
+            return "manager"
+        if any(marker in text for marker in {"engineer", "developer", "devops", "sysadmin", "sre"}):
+            return "engineer"
+        if any(marker in text for marker in {"analyst", "specialist", "coordinator", "individual contributor"}):
+            return "ic"
+        return "unknown"
+
+    def _extract_evidence_spans(self, post: Post) -> list[str]:
+        text = "\n".join(part for part in [post.title, post.body] if part).strip()
+        if not text:
+            return []
+        parts = [segment.strip() for segment in re.split(r"[\n.!?]+", text) if segment.strip()]
+        spans: list[str] = []
+        keywords = tuple(COMPLAINT_WORDS + UNSOLVED_WORDS + WISH_WORDS)
+        for segment in parts:
+            lowered = segment.lower()
+            if any(keyword in lowered for keyword in keywords) or any(
+                token in lowered for token in {"manual", "hours", "days", "$", "spreadsheet", "workaround", "broken"}
+            ):
+                spans.append(segment[:160])
+            if len(spans) >= 3:
+                break
+        if not spans:
+            spans.append(post.title[:160])
+        return spans[:3]
+
     def _signal_from_analysis(self, post: Post, result: AnalysisResult, mode: str) -> PainSignal:
         pain_level = max(0, min(10, int(result.pain_level)))
         willingness_to_pay = max(0, min(10, int(result.willingness_to_pay)))
+        inferred_post_type = result.post_type or self._infer_post_type(post, category=result.category)
+        evidence_spans = result.evidence_spans or self._extract_evidence_spans(post)
+        first_handness = result.first_handness if result.first_handness != "unknown" else self._infer_first_handness(post, post_type=inferred_post_type)
+        buyer_authority = result.buyer_authority if result.buyer_authority != "unknown" else self._infer_buyer_authority(post)
         return PainSignal(
             post=post,
             category=result.category,
@@ -198,6 +275,10 @@ class Classifier:
             competitor_tags=self._normalize_competitor_tags(result.competitor_tags),
             analysis_mode=mode,
             analysis_payload=result.raw_payload,
+            post_type=inferred_post_type,
+            first_handness=first_handness,
+            buyer_authority=buyer_authority,
+            evidence_spans=evidence_spans,
         )
 
     async def classify(self, post: Post) -> PainSignal | None:
@@ -257,6 +338,7 @@ class Classifier:
             return None
 
         category = self._keyword_category(post)
+        inferred_post_type = self._infer_post_type(post, category=category)
         return PainSignal(
             post=post,
             category=category,
@@ -268,6 +350,10 @@ class Classifier:
             niche_category="B2C-noise" if b2c_noise else "Uncategorized",
             competitor_tags=self._extract_competitor_hints(post),
             analysis_mode="legacy",
+            post_type=inferred_post_type,
+            first_handness=self._infer_first_handness(post, post_type=inferred_post_type),
+            buyer_authority=self._infer_buyer_authority(post),
+            evidence_spans=self._extract_evidence_spans(post),
         )
 
     async def classify_batch(self, posts: list[Post]) -> list[PainSignal]:

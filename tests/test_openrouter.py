@@ -18,7 +18,9 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
                                 '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 9, '
                                 '"niche_category": "E-commerce", "competitor_tags": ["shopify"], '
                                 '"summary": "Inventory sync is failing for stores", "category": "complaint", '
-                                '"severity": "high"}'
+                                '"severity": "high", "post_type": "first_person_pain", '
+                                '"first_handness": "first_hand", "buyer_authority": "founder_owner", '
+                                '"evidence_spans": ["stock sync lags", "we lose sales"]}'
                             )
                         }
                     }
@@ -38,6 +40,10 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
     assert result.willingness_to_pay == 9
     assert result.niche_category == "E-commerce"
     assert result.competitor_tags == ["shopify"]
+    assert result.post_type == "first_person_pain"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans == ["stock sync lags", "we lose sales"]
 
 
 async def test_analyze_rejects_invalid_primary_schema(respx_mock):
@@ -48,7 +54,13 @@ async def test_analyze_rejects_invalid_primary_schema(respx_mock):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": "yes", "pain_level": 11, "willingness_to_pay": 9, "niche_category": "X", "summary": "bad", "category": "complaint", "severity": "high"}'
+                            "content": (
+                                '{"is_monetizable": "yes", "pain_level": 11, '
+                                '"willingness_to_pay": 9, "niche_category": "X", '
+                                '"summary": "bad", "category": "complaint", "severity": "high", '
+                                '"post_type": "mystery", "first_handness": "first_hand", '
+                                '"buyer_authority": "founder_owner", "evidence_spans": []}'
+                            )
                         }
                     }
                 ]

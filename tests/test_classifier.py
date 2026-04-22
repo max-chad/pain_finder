@@ -53,6 +53,10 @@ async def test_dual_mode_uses_primary_b2b_result():
         pain_level=9,
         willingness_to_pay=9,
         niche_category="E-commerce",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["orders fail", "customers complain"],
     )
     clf = Classifier(openrouter=mock_llm, mode="dual")
     result = await clf.classify(make_post(title="Shopify stock sync broken"))
@@ -60,6 +64,10 @@ async def test_dual_mode_uses_primary_b2b_result():
     assert result.is_monetizable is True
     assert result.willingness_to_pay == 9
     assert result.analysis_mode == "b2b"
+    assert result.post_type == "first_person_pain"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans == ["orders fail", "customers complain"]
 
 
 async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
@@ -100,6 +108,23 @@ async def test_dual_mode_falls_back_to_legacy_llm():
     assert result.analysis_mode == "legacy_llm"
 
 
+async def test_legacy_llm_backfills_unknown_authority_and_first_handness_from_post():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = None
+    mock_llm.analyze_legacy_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="QuickBooks keeps failing",
+        severity="high",
+    )
+    clf = Classifier(openrouter=mock_llm, mode="dual")
+    result = await clf.classify(make_post(title="As founder, QuickBooks keeps failing and I'm stuck"))
+    assert result is not None
+    assert result.analysis_mode == "legacy_llm"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans
+
+
 async def test_b2b_mode_returns_none_when_model_fails():
     mock_llm = AsyncMock()
     mock_llm.analyze_post.return_value = None
@@ -110,10 +135,16 @@ async def test_b2b_mode_returns_none_when_model_fails():
 
 async def test_legacy_mode_uses_keyword_fallback_without_llm():
     clf = Classifier(openrouter=None, mode="legacy")
-    result = await clf.classify(make_post(title="I can't figure this out, stuck on it for days"))
+    result = await clf.classify(
+        make_post(title="As the founder, I can't figure this out and I'm stuck on it for days")
+    )
     assert result is not None
     assert result.category == "complaint"
     assert result.analysis_mode == "legacy"
+    assert result.post_type == "first_person_pain"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans
 
 
 async def test_b2c_noise_is_rejected_as_non_monetizable():

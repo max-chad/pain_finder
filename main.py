@@ -147,6 +147,7 @@ async def run() -> None:
         budget_guard=budget_guard,
         deduplicator=deduplicator,
         llm_max_classifications_per_run=config.LLM_MAX_CLASSIFICATIONS_PER_RUN,
+        current_opportunity_max_age_days=config.CURRENT_OPPORTUNITY_MAX_AGE_DAYS,
     )
     clusterer = MacroTrendClusterer(
         db=db,
