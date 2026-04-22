@@ -1,8 +1,11 @@
 ﻿import asyncio
+import html
 import logging
 import math
 import random
+import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,6 +15,9 @@ logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 ALLOWED_FEEDS = {"top", "new", "rising"}
 DEFAULT_FEEDS = ("top",)
+ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
 
 
 @dataclass
@@ -64,7 +70,11 @@ class RedditScraper:
                 return await self._fetch_oauth_json(subreddit, limit, timeframe)
             except Exception as e:
                 logger.warning("OAuth JSON failed (%s), falling back to public JSON", e)
-        return await self._fetch_public_json(subreddit, limit, timeframe)
+        try:
+            return await self._fetch_public_json(subreddit, limit, timeframe)
+        except Exception as e:
+            logger.warning("Public JSON failed (%s), falling back to RSS", e)
+            return await self._fetch_rss(subreddit, limit, timeframe)
 
     async def fetch_full_thread(
         self,
@@ -183,6 +193,82 @@ class RedditScraper:
             existing.permalink = post.permalink
         if not existing.url and post.url:
             existing.url = post.url
+
+    @staticmethod
+    def _rss_feed_url(subreddit: str, feed: str) -> str:
+        if feed == "top":
+            return f"https://old.reddit.com/r/{subreddit}/top/.rss"
+        if feed == "new":
+            return f"https://old.reddit.com/r/{subreddit}/new/.rss"
+        return f"https://old.reddit.com/r/{subreddit}/rising/.rss"
+
+    @staticmethod
+    def _sanitize_rss_text(raw: str) -> str:
+        if not raw:
+            return ""
+        cleaned = HTML_TAG_RE.sub(" ", raw)
+        cleaned = html.unescape(cleaned)
+        return " ".join(cleaned.split())
+
+    @staticmethod
+    def _extract_rss_post_id(entry_id: str, link: str) -> str:
+        value = (entry_id or "").strip()
+        if value.startswith("t3_"):
+            return value[3:]
+        match = REDDIT_COMMENT_PATH_RE.search(link or "")
+        if match:
+            return match.group(1)
+        if value:
+            return value.rsplit("/", 1)[-1]
+        return ""
+
+    @classmethod
+    def _parse_rss_entries(cls, subreddit: str, xml_text: str, *, discovery_query: str = "") -> list[Post]:
+        root = ET.fromstring(xml_text)
+        posts: list[Post] = []
+        for entry in root.findall("atom:entry", ATOM_NS):
+            entry_id = entry.findtext("atom:id", default="", namespaces=ATOM_NS)
+            title = cls._sanitize_rss_text(entry.findtext("atom:title", default="", namespaces=ATOM_NS))
+            summary = cls._sanitize_rss_text(entry.findtext("atom:summary", default="", namespaces=ATOM_NS))
+            content = cls._sanitize_rss_text(entry.findtext("atom:content", default="", namespaces=ATOM_NS))
+            link = ""
+            permalink = ""
+            for link_node in entry.findall("atom:link", ATOM_NS):
+                href = (link_node.attrib.get("href") or "").strip()
+                if href:
+                    link = href
+                    if href.startswith("https://www.reddit.com"):
+                        link = href.replace("https://www.reddit.com", "https://reddit.com", 1)
+                    elif href.startswith("https://old.reddit.com"):
+                        link = href.replace("https://old.reddit.com", "https://reddit.com", 1)
+                    if link.startswith("https://reddit.com/r/"):
+                        permalink = link.removeprefix("https://reddit.com")
+                    break
+            raw_post_id = cls._extract_rss_post_id(entry_id, link)
+            if not raw_post_id:
+                continue
+            body = summary or content
+            posts.append(
+                Post(
+                    post_id=cls._external_post_id(raw_post_id),
+                    subreddit=subreddit,
+                    title=title,
+                    body=body,
+                    url=link,
+                    score=0,
+                    permalink=permalink,
+                    discovery_query=discovery_query,
+                )
+            )
+        return posts
+
+    def _rss_request_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        filtered: dict[str, Any] = {}
+        for key, value in params.items():
+            if key in {"raw_json", "limit"}:
+                continue
+            filtered[key] = value
+        return filtered
 
     def _iter_feed_requests(self, *, limit: int, timeframe: str) -> list[tuple[str, dict[str, Any]]]:
         per_feed_limit = max(1, min(100, math.ceil(max(1, limit) / max(1, len(self.feed_mix)))))
@@ -313,6 +399,70 @@ class RedditScraper:
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
 
+            if self.top_comments_limit <= 0 or not base_posts:
+                return base_posts
+
+            semaphore = asyncio.Semaphore(self.comment_fetch_concurrency)
+
+            async def hydrate_comments(post: Post) -> Post:
+                async with semaphore:
+                    comments = await self._fetch_top_comments_json(
+                        client=client,
+                        post_id=post.post_id,
+                        limit=self.top_comments_limit,
+                    )
+                post.top_comments = comments
+                post.body = self._append_comments(post.body, comments)
+                return post
+
+            hydrated = await asyncio.gather(*(hydrate_comments(post) for post in base_posts))
+            return list(hydrated)
+
+    async def _fetch_rss(self, subreddit: str, limit: int, timeframe: str = "day") -> list[Post]:
+        headers = {"User-Agent": self.user_agent}
+
+        async with httpx.AsyncClient() as client:
+            posts_by_id: dict[str, Post] = {}
+            feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+
+            async def fetch_feed(feed: str, params: dict[str, Any]) -> str:
+                response = await client.get(
+                    self._rss_feed_url(subreddit, feed),
+                    params=self._rss_request_params(params),
+                    headers=headers,
+                    timeout=20,
+                )
+                response.raise_for_status()
+                return response.text
+
+            feed_payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            for payload in feed_payloads:
+                for post in self._parse_rss_entries(subreddit, payload):
+                    self._merge_post(posts_by_id, post)
+
+            async def fetch_search(query: str, params: dict[str, Any]) -> str | None:
+                try:
+                    response = await client.get(
+                        f"https://old.reddit.com/r/{subreddit}/search.rss",
+                        params=self._rss_request_params(params),
+                        headers=headers,
+                        timeout=20,
+                    )
+                    response.raise_for_status()
+                    return response.text
+                except Exception as e:
+                    logger.warning("RSS search failed for r/%s query %r: %s", subreddit, query, e)
+                    return None
+
+            search_requests = self._iter_search_requests(limit=limit)
+            search_payloads = await asyncio.gather(*(fetch_search(query, params) for query, params in search_requests))
+            for (query, _), payload in zip(search_requests, search_payloads, strict=False):
+                if not payload:
+                    continue
+                for post in self._parse_rss_entries(subreddit, payload, discovery_query=query):
+                    self._merge_post(posts_by_id, post)
+
+            base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
             if self.top_comments_limit <= 0 or not base_posts:
                 return base_posts
 

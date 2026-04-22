@@ -23,7 +23,7 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
 
 - `main.py`: wires services, scheduler jobs, Telegram app lifecycle.
 - `db.py`: async SQLite layer, PRAGMAs, additive migrations, analytics helpers.
-- `scraper.py`: Reddit scraping with PRAW + OAuth JSON + public JSON fallback, mixed feed ingestion (`new+rising+top`), optional subreddit pain-search queries, top comments, full thread extraction, retry/backoff.
+- `scraper.py`: Reddit scraping with PRAW + OAuth JSON + public JSON fallback, plus RSS fallback when Reddit blocks unauthenticated JSON; supports mixed feed ingestion (`new+rising+top`), optional subreddit pain-search queries, top comments, full thread extraction, retry/backoff.
 - `scraper_hn.py`: Hacker News Algolia ingestion.
 - `scraper_reviews.py`: review-source scraping for negative (1-2 star) reviews.
 - `openrouter.py`: provider-agnostic OpenAI-compatible LLM client (Codex/OpenAI/OpenRouter), strict schema parsing, usage/cost accounting.

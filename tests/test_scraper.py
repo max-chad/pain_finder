@@ -453,6 +453,85 @@ async def test_fetch_public_json_requests_feeds_concurrently():
     assert elapsed < 0.12
 
 
+async def test_fetch_posts_falls_back_to_rss_when_public_json_is_blocked():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    fallback_posts = [
+        Post(
+            post_id="reddit:rss1",
+            subreddit="python",
+            title="RSS fallback post",
+            body="manual workaround",
+            url="https://reddit.com/r/python/comments/rss1/example/",
+            score=11,
+        )
+    ]
+    blocked_response = httpx.Response(
+        403,
+        request=httpx.Request("GET", "https://www.reddit.com/r/python/top.json"),
+    )
+    blocked_error = httpx.HTTPStatusError("blocked", request=blocked_response.request, response=blocked_response)
+
+    with patch.object(scraper, "_fetch_public_json", new=AsyncMock(side_effect=blocked_error)):
+        with patch.object(scraper, "_fetch_rss", new=AsyncMock(return_value=fallback_posts)) as rss_mock:
+            posts = await scraper.fetch_posts("python", limit=5)
+
+    rss_mock.assert_awaited_once_with("python", 5, "day")
+    assert posts == fallback_posts
+
+
+async def test_fetch_rss_merges_feed_and_search_results(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_same</id>
+        <title>Need better alerts</title>
+        <summary>Still doing manual checks</summary>
+        <link href='https://reddit.com/r/python/comments/same/need-better-alerts/' />
+      </entry>
+    </feed>
+    """
+    search_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_same</id>
+        <title>Need better alerts</title>
+        <summary>Still doing manual checks</summary>
+        <link href='https://reddit.com/r/python/comments/same/need-better-alerts/' />
+      </entry>
+      <entry>
+        <id>t3_rssonly</id>
+        <title>Spreadsheet workaround pain</title>
+        <summary>We export CSV files every week</summary>
+        <link href='https://reddit.com/r/python/comments/rssonly/spreadsheet-workaround-pain/' />
+      </entry>
+    </feed>
+    """
+
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+    search_route = respx_mock.get("https://old.reddit.com/r/python/search.rss").mock(
+        return_value=httpx.Response(200, text=search_xml)
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["spreadsheet workaround"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert {post.post_id for post in posts} == {"reddit:same", "reddit:rssonly"}
+    by_id = {post.post_id: post for post in posts}
+    assert by_id["reddit:same"].discovery_query == "spreadsheet workaround"
+    assert by_id["reddit:rssonly"].discovery_query == "spreadsheet workaround"
+    assert search_route.call_count == 1
+
+
 async def test_fetch_oauth_json_requests_feeds_concurrently():
     from unittest.mock import patch
 
