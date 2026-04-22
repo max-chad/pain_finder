@@ -17,6 +17,7 @@ class MonitoringScheduler:
         macro_fn: Callable[[], Awaitable[None]] | None = None,
         hn_fn: Callable[[], Awaitable[None]] | None = None,
         reviews_fn: Callable[[], Awaitable[None]] | None = None,
+        digest_fn: Callable[[], Awaitable[None]] | None = None,
         macro_enabled: bool = False,
         macro_weekday_utc: str = "sun",
         macro_hour_utc: int = 8,
@@ -24,12 +25,16 @@ class MonitoringScheduler:
         hn_interval_hours: int = 6,
         reviews_enabled: bool = False,
         reviews_interval_hours: int = 24,
+        digest_enabled: bool = False,
+        digest_hour_utc: int = 9,
+        digest_minute_utc: int = 0,
     ):
         self.db = db
         self.analyze_fn = analyze_fn
         self.macro_fn = macro_fn
         self.hn_fn = hn_fn
         self.reviews_fn = reviews_fn
+        self.digest_fn = digest_fn
         self.macro_enabled = macro_enabled
         self.macro_weekday_utc = macro_weekday_utc
         self.macro_hour_utc = macro_hour_utc
@@ -37,6 +42,9 @@ class MonitoringScheduler:
         self.hn_interval_hours = hn_interval_hours
         self.reviews_enabled = reviews_enabled
         self.reviews_interval_hours = reviews_interval_hours
+        self.digest_enabled = digest_enabled
+        self.digest_hour_utc = digest_hour_utc
+        self.digest_minute_utc = digest_minute_utc
         self.scheduler = AsyncIOScheduler()
 
     def start(self):
@@ -47,11 +55,12 @@ class MonitoringScheduler:
         self.scheduler.shutdown(wait=False)
 
     def job_count(self) -> int:
-        return len([job for job in self.scheduler.get_jobs() if job.id.startswith(("monitor_", "macro_", "hn_", "reviews_"))])
+        prefixes = ("monitor_", "macro_", "hn_", "reviews_", "daily_digest")
+        return len([job for job in self.scheduler.get_jobs() if job.id.startswith(prefixes)])
 
     async def reload_jobs(self):
         for job in self.scheduler.get_jobs():
-            if job.id.startswith(("monitor_", "macro_", "hn_", "reviews_")):
+            if job.id.startswith(("monitor_", "macro_", "hn_", "reviews_", "daily_digest")):
                 job.remove()
 
         paused_value = await self.db.is_llm_paused()
@@ -118,6 +127,21 @@ class MonitoringScheduler:
                 self.reviews_interval_hours,
             )
 
+        if self.digest_enabled and self.digest_fn is not None:
+            self.scheduler.add_job(
+                self._run_digest,
+                trigger="cron",
+                hour=self.digest_hour_utc,
+                minute=self.digest_minute_utc,
+                id="daily_digest",
+                replace_existing=True,
+            )
+            logger.info(
+                "scheduler_job_loaded stage=scheduler job=digest hour=%d minute=%d",
+                self.digest_hour_utc,
+                self.digest_minute_utc,
+            )
+
     async def _run_analysis(self, subreddit: str):
         logger.info("scheduled_analysis_start stage=scheduler subreddit=%s", subreddit)
         try:
@@ -153,3 +177,12 @@ class MonitoringScheduler:
             logger.info("scheduled_reviews_complete stage=scheduler")
         except Exception:
             logger.exception("scheduled_reviews_failed stage=scheduler")
+
+    async def _run_digest(self):
+        logger.info("scheduled_digest_start stage=scheduler")
+        try:
+            if self.digest_fn:
+                await self.digest_fn()
+            logger.info("scheduled_digest_complete stage=scheduler")
+        except Exception:
+            logger.exception("scheduled_digest_failed stage=scheduler")

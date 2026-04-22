@@ -129,6 +129,26 @@ async def test_reload_jobs_adds_macro_hn_reviews_jobs():
     sched.stop()
 
 
+async def test_reload_jobs_adds_daily_digest_job():
+    mock_db = AsyncMock()
+    mock_db.is_llm_paused.return_value = False
+    mock_db.get_monitored_subreddits.return_value = [{"name": "python", "interval_hours": 6}]
+    digest_fn = AsyncMock()
+    sched = MonitoringScheduler(
+        db=mock_db,
+        analyze_fn=AsyncMock(),
+        digest_fn=digest_fn,
+        digest_enabled=True,
+        digest_hour_utc=9,
+        digest_minute_utc=30,
+    )
+    sched.start()
+    await sched.reload_jobs()
+    job_ids = {job.id for job in sched.scheduler.get_jobs()}
+    assert "daily_digest" in job_ids
+    sched.stop()
+
+
 async def test_run_macro_hn_reviews_execute_callbacks():
     mock_db = AsyncMock()
     mock_db.is_llm_paused.return_value = False
@@ -148,3 +168,16 @@ async def test_run_macro_hn_reviews_execute_callbacks():
     macro_fn.assert_awaited_once()
     hn_fn.assert_awaited_once()
     reviews_fn.assert_awaited_once()
+
+
+async def test_run_digest_executes_callback():
+    mock_db = AsyncMock()
+    mock_db.is_llm_paused.return_value = False
+    digest_fn = AsyncMock()
+    sched = MonitoringScheduler(
+        db=mock_db,
+        analyze_fn=AsyncMock(),
+        digest_fn=digest_fn,
+    )
+    await sched._run_digest()
+    digest_fn.assert_awaited_once()

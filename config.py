@@ -103,6 +103,15 @@ GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
 GOOGLE_SHEETS_WORKSHEET_PREFIX = os.getenv("GOOGLE_SHEETS_WORKSHEET_PREFIX", "pain_finder")
 
+APP_MODE = os.getenv("APP_MODE", "telegram").strip().lower() or "telegram"
+DIGEST_DELIVERY_ENABLED = os.getenv("DIGEST_DELIVERY_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
+DIGEST_HOURS = int(os.getenv("DIGEST_HOURS", "24"))
+DIGEST_GROUP_BY = os.getenv("DIGEST_GROUP_BY", "niche").strip().lower() or "niche"
+DIGEST_HOUR_UTC = int(os.getenv("DIGEST_HOUR_UTC", "9"))
+DIGEST_MINUTE_UTC = int(os.getenv("DIGEST_MINUTE_UTC", "0"))
+DIGEST_MIN_WTP = int(os.getenv("DIGEST_MIN_WTP", str(EXPORT_MIN_WTP)))
+DIGEST_MAX_ITEMS_PER_GROUP = int(os.getenv("DIGEST_MAX_ITEMS_PER_GROUP", "10"))
+
 DAILY_BUDGET_USD = float(os.getenv("DAILY_BUDGET_USD", "2.0"))
 
 TREND_LOOKBACK_DAYS = int(os.getenv("TREND_LOOKBACK_DAYS", "30"))

@@ -21,6 +21,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
 
     main = importlib.import_module("main")
     main = importlib.reload(main)
+    main.config.APP_MODE = "telegram"
     main.config.MACRO_TREND_ENABLED = True
     main.config.HN_ENABLED = True
     main.config.REVIEWS_ENABLED = True
@@ -331,6 +332,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
 
     main = importlib.import_module("main")
     main = importlib.reload(main)
+    main.config.APP_MODE = "telegram"
 
     class FakeDB:
         instances = []
@@ -597,4 +599,202 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
     assert "r/python" in grouped_labels
     assert "HN" in grouped_labels
     assert "Reviews" in grouped_labels
+
+
+@pytest.mark.asyncio
+async def test_run_in_hermes_mode_skips_telegram_polling(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
+    monkeypatch.setenv("APP_MODE", "hermes")
+    monkeypatch.setenv("DIGEST_DELIVERY_ENABLED", "1")
+    monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "0")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    main.config.APP_MODE = "hermes"
+    main.config.DIGEST_DELIVERY_ENABLED = True
+
+    class FakeDB:
+        instances = []
+
+        def __init__(self, path):
+            self.path = path
+            self.init_called = False
+            self.close_called = False
+            FakeDB.instances.append(self)
+
+        async def init(self):
+            self.init_called = True
+
+        async def close(self):
+            self.close_called = True
+
+        async def get_pain_point(self, post_id):
+            return {"title": "t", "body": "b"}
+
+        async def is_llm_paused(self):
+            return False
+
+        async def get_pain_points_without_embeddings(self):
+            return []
+
+        async def get_pain_points_with_embeddings(self):
+            return []
+
+    class FakeScraper:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeEmbedder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeDeduplicator:
+        def __init__(self, db, embedder, threshold):
+            self.db = db
+            self.embedder = embedder
+            self.threshold = threshold
+
+        async def backfill(self):
+            return 0
+
+    class FakeOpenRouterClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeClassifier:
+        def __init__(self, openrouter, dspy_parser=None, mode="dual", max_concurrency=8):
+            self.openrouter = openrouter
+            self.dspy_parser = dspy_parser
+            self.mode = mode
+            self.max_concurrency = max_concurrency
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def analyze_subreddit(self, subreddit, limit=100):
+            return SimpleNamespace(signals=[], post_count=0, pain_count=0)
+
+        async def analyze_external_posts(self, posts, source, run_scope):
+            return SimpleNamespace(signals=[], post_count=0, pain_count=0)
+
+        async def run_deep_dive(self, **kwargs):
+            return SimpleNamespace(status="completed", summary="ok", error=None)
+
+        async def generate_digest(self, subreddit=None, hours=24):
+            return {"total": 0, "top_items": [], "niche_counts": {}, "source_counts": {}, "recurring_blockers": []}
+
+    class FakeClusterer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def run(self, window_days):
+            return SimpleNamespace(run_id=1, candidate_count=0, clusters=[])
+
+    class FakeGTMGenerator:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def generate(self, post_id):
+            return SimpleNamespace(post_id=post_id, payload=SimpleNamespace())
+
+    class FakeHNScraper:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def fetch_posts(self, **kwargs):
+            return []
+
+    class FakeReviewScraper:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def fetch_many_targets(self, **kwargs):
+            return []
+
+    class FakeExportService:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeDigestService:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeDigestService.instances.append(self)
+
+        async def build_document(self, **kwargs):
+            return SimpleNamespace(total_items=0, docx_path=None, group_count=0)
+
+    class FakeBot:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.app = None
+            FakeBot.instances.append(self)
+
+        def build_app(self):
+            raise AssertionError("Telegram app should not be built in hermes mode")
+
+        async def send_grouped_notification(self, *, chat_id: int, signals: list, label: str) -> None:
+            return None
+
+    class FakeScheduler:
+        instances = []
+
+        def __init__(self, db, analyze_fn, **kwargs):
+            self.db = db
+            self.analyze_fn = analyze_fn
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            self.reload_called = False
+            FakeScheduler.instances.append(self)
+
+        def start(self):
+            self.started = True
+
+        async def reload_jobs(self):
+            self.reload_called = True
+
+        def stop(self):
+            self.stopped = True
+
+    class FakeEvent:
+        async def wait(self):
+            scheduler = FakeScheduler.instances[-1]
+            assert scheduler.kwargs["digest_fn"] is not None
+            return None
+
+    monkeypatch.setattr(main, "Database", FakeDB)
+    monkeypatch.setattr(main, "RedditScraper", FakeScraper)
+    monkeypatch.setattr(main, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(main, "Deduplicator", FakeDeduplicator)
+    monkeypatch.setattr(main, "OpenRouterClient", FakeOpenRouterClient)
+    monkeypatch.setattr(main, "Classifier", FakeClassifier)
+    monkeypatch.setattr(main, "AnalysisPipeline", FakePipeline)
+    monkeypatch.setattr(main, "MacroTrendClusterer", FakeClusterer)
+    monkeypatch.setattr(main, "GTMGenerator", FakeGTMGenerator)
+    monkeypatch.setattr(main, "HackerNewsScraper", FakeHNScraper)
+    monkeypatch.setattr(main, "ReviewScraper", FakeReviewScraper)
+    monkeypatch.setattr(main, "PainFinderBot", FakeBot)
+    monkeypatch.setattr(main, "MonitoringScheduler", FakeScheduler)
+    monkeypatch.setattr(main, "ExportService", FakeExportService)
+    monkeypatch.setattr(main, "DailyDigestDocumentService", FakeDigestService)
+    monkeypatch.setattr(main.asyncio, "Event", lambda: FakeEvent())
+
+    await main.run()
+
+    scheduler = FakeScheduler.instances[0]
+    db = FakeDB.instances[0]
+    assert scheduler.started is True
+    assert scheduler.reload_called is True
+    assert scheduler.stopped is True
+    assert db.init_called is True
+    assert db.close_called is True
+    assert FakeDigestService.instances
 

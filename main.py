@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 import config
 from bot import PainFinderBot
@@ -8,6 +9,7 @@ from classifier import Classifier
 from clusterer import MacroTrendClusterer
 from db import Database
 from deduplicator import Deduplicator
+from digest_delivery import DailyDigestDocumentService
 from dspy_parser import DSPyRedditPainParser
 from embedder import Embedder
 from export_sheets import ExportService
@@ -39,6 +41,38 @@ def _build_review_targets() -> list[ReviewTarget]:
             continue
         targets.append(ReviewTarget(site=site, name=name, url=url, enabled=enabled))
     return targets
+
+
+async def _publish_daily_digest(*, digest_service: DailyDigestDocumentService):
+    result = await digest_service.build_document(
+        hours=config.DIGEST_HOURS,
+        group_by=config.DIGEST_GROUP_BY,
+        min_wtp=config.DIGEST_MIN_WTP,
+        max_items_per_group=config.DIGEST_MAX_ITEMS_PER_GROUP,
+    )
+    if result.docx_path is None:
+        logger.info("daily_digest_skipped stage=digest reason=no_items")
+        return result
+
+    from telegram import Bot
+
+    bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+    with open(result.docx_path, "rb") as document_file:
+        await bot.send_document(
+            chat_id=config.TELEGRAM_CHAT_ID,
+            document=document_file,
+            filename=os.path.basename(result.docx_path),
+            caption=(
+                f"pain_finder daily digest • {result.total_items} items • {result.group_count} groups"
+            ),
+        )
+    logger.info(
+        "daily_digest_sent stage=digest path=%s total_items=%d group_count=%d",
+        result.docx_path,
+        result.total_items,
+        result.group_count,
+    )
+    return result
 
 
 async def run() -> None:
@@ -135,6 +169,8 @@ async def run() -> None:
         sheets_spreadsheet_id=config.GOOGLE_SHEETS_SPREADSHEET_ID,
         sheets_worksheet_prefix=config.GOOGLE_SHEETS_WORKSHEET_PREFIX,
     )
+    digest_service = DailyDigestDocumentService(db=db, reports_dir=config.REPORTS_DIR)
+    notifications_enabled = config.APP_MODE == "telegram"
 
     async def deep_dive_from_bot(post_id: str, subreddit: str, source: str):
         row = await db.get_pain_point(post_id)
@@ -177,7 +213,7 @@ async def run() -> None:
 
     async def analyze_and_notify(subreddit: str) -> None:
         run_result = await pipeline.analyze_subreddit(subreddit=subreddit, limit=100)
-        if run_result.pain_count:
+        if notifications_enabled and run_result.pain_count:
             await bot.send_grouped_notification(
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
@@ -186,7 +222,7 @@ async def run() -> None:
 
     async def run_macro_job() -> None:
         result = await clusterer.run(window_days=config.TREND_LOOKBACK_DAYS)
-        if bot.app and result.clusters:
+        if notifications_enabled and bot.app and result.clusters:
             top = result.clusters[0]
             await bot.app.bot.send_message(
                 chat_id=config.TELEGRAM_CHAT_ID,
@@ -208,7 +244,7 @@ async def run() -> None:
         if not posts:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="hn", run_scope="hackernews")
-        if run_result.pain_count:
+        if notifications_enabled and run_result.pain_count:
             await bot.send_grouped_notification(
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
@@ -225,12 +261,15 @@ async def run() -> None:
         if not posts:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="reviews", run_scope="reviews")
-        if run_result.pain_count:
+        if notifications_enabled and run_result.pain_count:
             await bot.send_grouped_notification(
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label="Reviews",
             )
+
+    async def run_daily_digest_job() -> None:
+        await _publish_daily_digest(digest_service=digest_service)
 
     scheduler = MonitoringScheduler(
         db=db,
@@ -238,6 +277,7 @@ async def run() -> None:
         macro_fn=run_macro_job,
         hn_fn=run_hn_job,
         reviews_fn=run_reviews_job,
+        digest_fn=run_daily_digest_job,
         macro_enabled=config.MACRO_TREND_ENABLED,
         macro_weekday_utc=config.MACRO_TREND_WEEKDAY_UTC,
         macro_hour_utc=config.MACRO_TREND_HOUR_UTC,
@@ -245,6 +285,9 @@ async def run() -> None:
         hn_interval_hours=config.HN_INTERVAL_HOURS,
         reviews_enabled=config.REVIEWS_ENABLED,
         reviews_interval_hours=config.REVIEWS_INTERVAL_HOURS,
+        digest_enabled=config.DIGEST_DELIVERY_ENABLED,
+        digest_hour_utc=config.DIGEST_HOUR_UTC,
+        digest_minute_utc=config.DIGEST_MINUTE_UTC,
     )
     bot.reload_jobs_fn = scheduler.reload_jobs
 
@@ -264,20 +307,23 @@ async def run() -> None:
         scheduler_started = True
         await scheduler.reload_jobs()
 
-        tg_app = bot.build_app()
-        logger.info("pain_finder starting...")
-
-        async with tg_app:
-            await tg_app.start()
-            if tg_app.updater is None:
-                raise RuntimeError("Telegram updater is not configured")
-            await tg_app.updater.start_polling()
-            logger.info("Bot is running. Send /status in Telegram to verify.")
-            try:
-                await asyncio.Event().wait()
-            finally:
-                await tg_app.updater.stop()
-                await tg_app.stop()
+        logger.info("pain_finder starting in %s mode...", config.APP_MODE)
+        if notifications_enabled:
+            tg_app = bot.build_app()
+            async with tg_app:
+                await tg_app.start()
+                if tg_app.updater is None:
+                    raise RuntimeError("Telegram updater is not configured")
+                await tg_app.updater.start_polling()
+                logger.info("Bot is running. Send /status in Telegram to verify.")
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    await tg_app.updater.stop()
+                    await tg_app.stop()
+        else:
+            logger.info("Hermes mode enabled: skipping Telegram polling and keeping scheduler alive.")
+            await asyncio.Event().wait()
     finally:
         if scheduler_started:
             scheduler.stop()

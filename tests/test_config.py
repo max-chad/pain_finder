@@ -31,6 +31,14 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_WORKSHEET_PREFIX", "pf")
     monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "dspy-key")
+    monkeypatch.setenv("APP_MODE", "hermes")
+    monkeypatch.setenv("DIGEST_DELIVERY_ENABLED", "1")
+    monkeypatch.setenv("DIGEST_HOURS", "48")
+    monkeypatch.setenv("DIGEST_GROUP_BY", "niche")
+    monkeypatch.setenv("DIGEST_HOUR_UTC", "6")
+    monkeypatch.setenv("DIGEST_MINUTE_UTC", "15")
+    monkeypatch.setenv("DIGEST_MIN_WTP", "6")
+    monkeypatch.setenv("DIGEST_MAX_ITEMS_PER_GROUP", "12")
 
     config_module = importlib.import_module("config")
     config_module = importlib.reload(config_module)
@@ -65,6 +73,14 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.GOOGLE_SHEETS_CREDENTIALS_JSON == "{}"
     assert config_module.GOOGLE_SHEETS_SPREADSHEET_ID == "sheet-id"
     assert config_module.GOOGLE_SHEETS_WORKSHEET_PREFIX == "pf"
+    assert config_module.APP_MODE == "hermes"
+    assert config_module.DIGEST_DELIVERY_ENABLED is True
+    assert config_module.DIGEST_HOURS == 48
+    assert config_module.DIGEST_GROUP_BY == "niche"
+    assert config_module.DIGEST_HOUR_UTC == 6
+    assert config_module.DIGEST_MINUTE_UTC == 15
+    assert config_module.DIGEST_MIN_WTP == 6
+    assert config_module.DIGEST_MAX_ITEMS_PER_GROUP == 12
     assert config_module.DSPY_REDDIT_PARSER_ENABLED is True
     assert config_module.DSPY_PROVIDER == "codex"
     assert config_module.DSPY_MODEL == "gpt-5.3-spark"
