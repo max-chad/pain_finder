@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -222,6 +223,28 @@ class OpenRouterClient:
     def _is_openai_compatible(self) -> bool:
         return self.provider in {"openai", "codex", "openrouter", "openai-codex"}
 
+    @staticmethod
+    def _build_codex_headers(access_token: str) -> dict[str, str]:
+        headers = {
+            "User-Agent": "codex_cli_rs/0.0.0 (pain_finder)",
+            "originator": "codex_cli_rs",
+        }
+        if not isinstance(access_token, str) or not access_token.strip():
+            return headers
+        try:
+            parts = access_token.split(".")
+            if len(parts) < 2:
+                return headers
+            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+            auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+            account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+            if isinstance(account_id, str) and account_id.strip():
+                headers["ChatGPT-Account-ID"] = account_id.strip()
+        except Exception:
+            pass
+        return headers
+
     def _build_headers(self) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -229,6 +252,8 @@ class OpenRouterClient:
         }
         if self.provider == "openrouter":
             headers.update({"HTTP-Referer": self.app_url, "X-Title": self.app_name})
+        if self._uses_openai_codex_backend():
+            headers.update(self._build_codex_headers(self.api_key))
         return headers
 
     def _build_request_body(self, *, model: str, prompt: str) -> dict[str, Any]:
@@ -276,7 +301,11 @@ class OpenRouterClient:
 
     async def _request_codex_responses_payload(self, *, prompt: str, model: str) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
         def _run() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                default_headers=self._build_codex_headers(self.api_key),
+            )
             streamed_parts: list[str] = []
             stream_kwargs: dict[str, Any] = {
                 "model": model,

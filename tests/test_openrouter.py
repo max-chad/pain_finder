@@ -194,6 +194,29 @@ async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effo
     assert captured_requests[0].headers["Authorization"] == "Bearer test-key"
 
 
+def test_codex_header_builder_extracts_account_id_from_jwt():
+    import base64
+    import json
+
+    def _segment(payload: dict[str, object]) -> str:
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+        return encoded.rstrip("=")
+
+    token = ".".join(
+        [
+            _segment({"alg": "none"}),
+            _segment({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-reserve-123"}}),
+            "signature",
+        ]
+    )
+
+    headers = OpenRouterClient._build_codex_headers(token)
+
+    assert headers["originator"] == "codex_cli_rs"
+    assert headers["User-Agent"].startswith("codex_cli_rs/")
+    assert headers["ChatGPT-Account-ID"] == "acct-reserve-123"
+
+
 async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monkeypatch):
     from types import SimpleNamespace
 
@@ -229,13 +252,15 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
+            captured_kwargs["client_kwargs"] = kwargs
             self.responses = FakeResponses()
 
     monkeypatch.setattr("openrouter.OpenAI", FakeClient)
 
     budget = AsyncMock()
+    token = "eyJhbGciOiAibm9uZSJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LXJlc2VydmUtMTIzIn19.signature"
     client = OpenRouterClient(
-        api_key="test-key",
+        api_key=token,
         model="gpt-5.3-codex-spark",
         provider="openai-codex",
         api_base="https://chatgpt.com/backend-api/codex",
@@ -249,6 +274,10 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
     assert result.summary == "From stream"
     assert captured_kwargs["instructions"]
     assert captured_kwargs["reasoning"]["effort"] == "high"
+    client_headers = captured_kwargs["client_kwargs"]["default_headers"]
+    assert client_headers["originator"] == "codex_cli_rs"
+    assert client_headers["User-Agent"].startswith("codex_cli_rs/")
+    assert client_headers["ChatGPT-Account-ID"] == "acct-reserve-123"
     budget.record_usage.assert_awaited_once()
     usage_kwargs = budget.record_usage.await_args.kwargs
     assert usage_kwargs["prompt_tokens"] == 120
