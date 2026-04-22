@@ -28,6 +28,10 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
         body="Still broken",
         url="https://reddit.com/p1",
         score=10,
+        top_comments=[
+            "Same here — we still do this every week.",
+            "Manual workaround: export CSV and patch rows in Sheets.",
+        ],
         source_created_at="2026-04-20T10:00:00+00:00",
         source_created_ts=1776688800,
         author_name="ops_owner",
@@ -95,6 +99,11 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert report_payload[0]["post_type"] == "first_person_pain"
     assert report_payload[0]["buyer_authority"] == "founder_owner"
     assert report_payload[0]["opportunity_bucket"] == "current_opportunity"
+    assert report_payload[0]["comment_same_here_count"] == 1
+    assert report_payload[0]["comment_workaround_count"] == 1
+    assert report_payload[0]["comment_tool_mentions"] == []
+    assert report_payload[0]["opportunity_score"] > 0
+    assert report_payload[0]["score_components"]["consensus_score"] > 0
 
     latest = await db.get_latest_report(subreddit="python")
     assert latest is not None
@@ -104,6 +113,9 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert len(rows) == 1
     assert rows[0]["post_id"] == "p1"
     assert rows[0]["deep_dive_status"] == "completed"
+    assert rows[0]["comment_same_here_count"] == 1
+    assert rows[0]["comment_workaround_count"] == 1
+    assert rows[0]["opportunity_score"] > 0
 
 
 async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):
@@ -332,10 +344,12 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         summary="s1",
         severity="high",
         is_monetizable=True,
-        pain_level=9,
-        willingness_to_pay=8,
+        pain_level=7,
+        willingness_to_pay=7,
         niche_category="DevOps",
         deep_dive_summary="Need better alerts",
+        opportunity_score=87.5,
+        score_components={"consensus_score": 0.9, "impact_score": 0.8},
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -347,9 +361,11 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         summary="s2",
         severity="medium",
         is_monetizable=True,
-        pain_level=7,
-        willingness_to_pay=7,
+        pain_level=9,
+        willingness_to_pay=9,
         niche_category="DevOps",
+        opportunity_score=61.0,
+        score_components={"consensus_score": 0.2, "impact_score": 0.5},
     )
 
     pipeline = AnalysisPipeline(
@@ -362,6 +378,8 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
     digest = await pipeline.generate_digest(subreddit="python", hours=24)
     assert digest["total"] == 2
     assert digest["top_items"][0]["post_id"] == "d1"
+    assert digest["top_items"][0]["opportunity_score"] == 87.5
+    assert digest["top_items"][1]["post_id"] == "d2"
     assert digest["niche_counts"]["DevOps"] == 2
     assert "Need better alerts" in digest["recurring_blockers"]
 

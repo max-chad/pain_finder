@@ -78,6 +78,12 @@ class BudgetGuard:
         completion_tokens: int,
         cost_usd: float,
         post_id: str | None = None,
+        prompt_hash: str | None = None,
+        fallback_reason: str | None = None,
+        schema_version: str | None = None,
+        provider: str | None = None,
+        request_path: str | None = None,
+        candidate_stage: str | None = None,
     ) -> None:
         await self.db.record_llm_usage(
             model=model,
@@ -86,6 +92,12 @@ class BudgetGuard:
             completion_tokens=completion_tokens,
             cost_usd=cost_usd,
             post_id=post_id,
+            prompt_hash=prompt_hash,
+            fallback_reason=fallback_reason,
+            schema_version=schema_version,
+            provider=provider,
+            request_path=request_path,
+            candidate_stage=candidate_stage,
         )
 
         status = await self.get_status()

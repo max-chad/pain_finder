@@ -36,6 +36,22 @@ CREATE TABLE IF NOT EXISTS pain_points (
     first_handness TEXT DEFAULT 'unknown',
     buyer_authority TEXT DEFAULT 'unknown',
     evidence_spans_json TEXT DEFAULT '[]',
+    comment_sample_json TEXT DEFAULT '[]',
+    buyer_authority_score REAL DEFAULT 0.55,
+    workflow_frequency_score REAL DEFAULT 0,
+    impact_score REAL DEFAULT 0,
+    consensus_score REAL DEFAULT 0,
+    incumbent_failure_score REAL DEFAULT 0,
+    recency_score REAL DEFAULT 0,
+    stale_penalty REAL DEFAULT 0,
+    solved_penalty REAL DEFAULT 0,
+    opportunity_score REAL DEFAULT 0,
+    score_components_json TEXT DEFAULT '{}',
+    comment_consensus_count INTEGER DEFAULT 0,
+    comment_same_here_count INTEGER DEFAULT 0,
+    comment_workaround_count INTEGER DEFAULT 0,
+    comment_tool_mentions_json TEXT DEFAULT '[]',
+    comment_shill_risk REAL DEFAULT 0,
     triage_status TEXT DEFAULT 'new',
     analysis_mode TEXT DEFAULT 'legacy',
     deep_dive_status TEXT DEFAULT 'not_requested',
@@ -140,6 +156,12 @@ CREATE TABLE IF NOT EXISTS llm_usage_events (
     completion_tokens INTEGER DEFAULT 0,
     cost_usd REAL DEFAULT 0,
     post_id TEXT,
+    prompt_hash TEXT,
+    fallback_reason TEXT,
+    schema_version TEXT,
+    provider TEXT,
+    request_path TEXT,
+    candidate_stage TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -185,6 +207,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pain_points_source ON pain_points(source)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_bucket ON pain_points(opportunity_bucket)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_source_created_ts ON pain_points(source_created_ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_score ON pain_points(opportunity_score DESC)",
     "CREATE INDEX IF NOT EXISTS idx_reports_subreddit_run_at ON reports(subreddit, run_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_deep_dives_post_id ON deep_dives(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_runs_created_at ON analysis_runs(created_at DESC)",
@@ -192,6 +215,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_run ON macro_trend_clusters(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_run ON macro_trend_members(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created ON llm_usage_events(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_stage ON llm_usage_events(candidate_stage, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_gtm_assets_post ON gtm_assets(post_id, created_at DESC)",
 ]
@@ -211,6 +235,22 @@ PAIN_POINT_COLUMNS = {
     "first_handness": "TEXT DEFAULT 'unknown'",
     "buyer_authority": "TEXT DEFAULT 'unknown'",
     "evidence_spans_json": "TEXT DEFAULT '[]'",
+    "comment_sample_json": "TEXT DEFAULT '[]'",
+    "buyer_authority_score": "REAL DEFAULT 0.55",
+    "workflow_frequency_score": "REAL DEFAULT 0",
+    "impact_score": "REAL DEFAULT 0",
+    "consensus_score": "REAL DEFAULT 0",
+    "incumbent_failure_score": "REAL DEFAULT 0",
+    "recency_score": "REAL DEFAULT 0",
+    "stale_penalty": "REAL DEFAULT 0",
+    "solved_penalty": "REAL DEFAULT 0",
+    "opportunity_score": "REAL DEFAULT 0",
+    "score_components_json": "TEXT DEFAULT '{}'",
+    "comment_consensus_count": "INTEGER DEFAULT 0",
+    "comment_same_here_count": "INTEGER DEFAULT 0",
+    "comment_workaround_count": "INTEGER DEFAULT 0",
+    "comment_tool_mentions_json": "TEXT DEFAULT '[]'",
+    "comment_shill_risk": "REAL DEFAULT 0",
     "triage_status": "TEXT DEFAULT 'new'",
     "analysis_mode": "TEXT DEFAULT 'legacy'",
     "deep_dive_status": "TEXT DEFAULT 'not_requested'",
@@ -224,6 +264,15 @@ PAIN_POINT_COLUMNS = {
 ANALYSIS_RUN_COLUMNS = {
     "skipped_existing_count": "INTEGER DEFAULT 0",
     "dedup_merged_count": "INTEGER DEFAULT 0",
+}
+
+LLM_USAGE_EVENT_COLUMNS = {
+    "prompt_hash": "TEXT",
+    "fallback_reason": "TEXT",
+    "schema_version": "TEXT",
+    "provider": "TEXT",
+    "request_path": "TEXT",
+    "candidate_stage": "TEXT",
 }
 
 
@@ -283,6 +332,12 @@ class Database:
             for column_name, ddl in ANALYSIS_RUN_COLUMNS.items():
                 await self._ensure_column("analysis_runs", column_name, ddl)
             await self._mark_migration_applied(analysis_run_migration)
+
+        llm_usage_migration = "2026_04_22_llm_usage_lineage"
+        if not await self._is_migration_applied(llm_usage_migration):
+            for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
+                await self._ensure_column("llm_usage_events", column_name, ddl)
+            await self._mark_migration_applied(llm_usage_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -360,6 +415,22 @@ class Database:
         first_handness: str = "unknown",
         buyer_authority: str = "unknown",
         evidence_spans: list[str] | None = None,
+        comment_sample: list[str] | None = None,
+        buyer_authority_score: float = 0.55,
+        workflow_frequency_score: float = 0.0,
+        impact_score: float = 0.0,
+        consensus_score: float = 0.0,
+        incumbent_failure_score: float = 0.0,
+        recency_score: float = 0.0,
+        stale_penalty: float = 0.0,
+        solved_penalty: float = 0.0,
+        opportunity_score: float = 0.0,
+        score_components: dict[str, Any] | None = None,
+        comment_consensus_count: int = 0,
+        comment_same_here_count: int = 0,
+        comment_workaround_count: int = 0,
+        comment_tool_mentions: list[str] | None = None,
+        comment_shill_risk: float = 0.0,
         triage_status: str = "new",
         analysis_mode: str = "legacy",
         deep_dive_status: str = "not_requested",
@@ -380,6 +451,13 @@ class Database:
             for item in (evidence_spans or [])
             if isinstance(item, str) and str(item).strip()
         ][:3]
+        normalized_comment_sample = [
+            str(item).strip()[:240]
+            for item in (comment_sample or [])
+            if isinstance(item, str) and str(item).strip()
+        ][:5]
+        normalized_comment_tool_mentions = self._normalize_competitor_tags(comment_tool_mentions)
+        score_components_json = json.dumps(score_components or {}, ensure_ascii=False)
 
         try:
             await self._conn.execute(
@@ -389,10 +467,13 @@ class Database:
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
                     competitor_tags, source, source_created_at, source_created_ts, author_name,
                     opportunity_bucket, post_type, first_handness, buyer_authority, evidence_spans_json,
-                    triage_status, analysis_mode,
-                    deep_dive_status, deep_dive_summary, analysis_payload_json,
+                    comment_sample_json, buyer_authority_score, workflow_frequency_score, impact_score,
+                    consensus_score, incumbent_failure_score, recency_score, stale_penalty, solved_penalty,
+                    opportunity_score, score_components_json, comment_consensus_count, comment_same_here_count,
+                    comment_workaround_count, comment_tool_mentions_json, comment_shill_risk,
+                    triage_status, analysis_mode, deep_dive_status, deep_dive_summary, analysis_payload_json,
                     emb_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -415,6 +496,22 @@ class Database:
                     first_handness = excluded.first_handness,
                     buyer_authority = excluded.buyer_authority,
                     evidence_spans_json = excluded.evidence_spans_json,
+                    comment_sample_json = excluded.comment_sample_json,
+                    buyer_authority_score = excluded.buyer_authority_score,
+                    workflow_frequency_score = excluded.workflow_frequency_score,
+                    impact_score = excluded.impact_score,
+                    consensus_score = excluded.consensus_score,
+                    incumbent_failure_score = excluded.incumbent_failure_score,
+                    recency_score = excluded.recency_score,
+                    stale_penalty = excluded.stale_penalty,
+                    solved_penalty = excluded.solved_penalty,
+                    opportunity_score = excluded.opportunity_score,
+                    score_components_json = excluded.score_components_json,
+                    comment_consensus_count = excluded.comment_consensus_count,
+                    comment_same_here_count = excluded.comment_same_here_count,
+                    comment_workaround_count = excluded.comment_workaround_count,
+                    comment_tool_mentions_json = excluded.comment_tool_mentions_json,
+                    comment_shill_risk = excluded.comment_shill_risk,
                     analysis_mode = excluded.analysis_mode,
                     analysis_payload_json = excluded.analysis_payload_json,
                     deep_dive_summary = COALESCE(excluded.deep_dive_summary, pain_points.deep_dive_summary),
@@ -446,6 +543,22 @@ class Database:
                     first_handness,
                     buyer_authority,
                     json.dumps(normalized_evidence_spans, ensure_ascii=False),
+                    json.dumps(normalized_comment_sample, ensure_ascii=False),
+                    float(buyer_authority_score),
+                    float(workflow_frequency_score),
+                    float(impact_score),
+                    float(consensus_score),
+                    float(incumbent_failure_score),
+                    float(recency_score),
+                    float(stale_penalty),
+                    float(solved_penalty),
+                    float(opportunity_score),
+                    score_components_json,
+                    int(comment_consensus_count),
+                    int(comment_same_here_count),
+                    int(comment_workaround_count),
+                    json.dumps(normalized_comment_tool_mentions, ensure_ascii=False),
+                    float(comment_shill_risk),
                     triage_status,
                     analysis_mode,
                     deep_dive_status,
@@ -829,7 +942,10 @@ class Database:
             cutoff_ts = int((datetime.now(timezone.utc).timestamp()) - max(0, max_source_age_days) * 86400)
             query += " AND source_created_ts IS NOT NULL AND source_created_ts >= ?"
             params.append(cutoff_ts)
-        query += " ORDER BY willingness_to_pay DESC, pain_level DESC, source_created_ts DESC, created_at DESC LIMIT ?"
+        query += (
+            " ORDER BY opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, "
+            "source_created_ts DESC, created_at DESC LIMIT ?"
+        )
         params.append(limit)
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
@@ -855,10 +971,34 @@ class Database:
         completion_tokens: int,
         cost_usd: float,
         post_id: str | None = None,
+        prompt_hash: str | None = None,
+        fallback_reason: str | None = None,
+        schema_version: str | None = None,
+        provider: str | None = None,
+        request_path: str | None = None,
+        candidate_stage: str | None = None,
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO llm_usage_events (model, operation, prompt_tokens, completion_tokens, cost_usd, post_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (model, operation, prompt_tokens, completion_tokens, cost_usd, post_id),
+            """
+            INSERT INTO llm_usage_events (
+                model, operation, prompt_tokens, completion_tokens, cost_usd, post_id,
+                prompt_hash, fallback_reason, schema_version, provider, request_path, candidate_stage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                model,
+                operation,
+                prompt_tokens,
+                completion_tokens,
+                cost_usd,
+                post_id,
+                prompt_hash,
+                fallback_reason,
+                schema_version,
+                provider,
+                request_path,
+                candidate_stage,
+            ),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)

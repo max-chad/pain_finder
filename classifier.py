@@ -103,6 +103,183 @@ COMPETITOR_HINTS = {
     "monday",
 }
 
+BUYER_AUTHORITY_SCORES = {
+    "intern": 0.35,
+    "ic": 0.6,
+    "engineer": 0.72,
+    "manager": 0.82,
+    "head_of_ops": 0.94,
+    "founder_owner": 1.0,
+    "agency_operator": 0.88,
+    "unknown": 0.55,
+}
+FIRST_HANDNESS_SCORES = {
+    "first_hand": 1.0,
+    "second_hand": 0.78,
+    "aggregated": 0.7,
+    "speculative": 0.45,
+    "unknown": 0.58,
+}
+CONSENSUS_PATTERNS = (
+    "same here",
+    "same issue",
+    "same problem",
+    "me too",
+    "we have this too",
+    "here too",
+    "also happens",
+    "also happening",
+    "we hit this too",
+)
+WORKAROUND_PATTERNS = (
+    "manual workaround",
+    "workaround",
+    "export csv",
+    "export to csv",
+    "spreadsheet",
+    "sheets",
+    "copy paste",
+    "copy/paste",
+    "re-upload",
+    "reupload",
+    "script around",
+    "zapier",
+    "glue code",
+)
+SHILL_PATTERNS = (
+    "try our tool",
+    "book a demo",
+    "sign up",
+    "dm me",
+    "reach out",
+    "check out my",
+    "we can help",
+    "our product",
+)
+HIGH_IMPACT_PATTERNS = (
+    "lose sales",
+    "lost sales",
+    "lost revenue",
+    "revenue",
+    "churn",
+    "customers complain",
+    "customer escalations",
+    "compliance",
+    "security risk",
+    "refund",
+)
+MEDIUM_IMPACT_PATTERNS = (
+    "hours",
+    "days",
+    "manual",
+    "spreadsheet",
+    "reconcile",
+    "delay",
+    "backlog",
+    "broken",
+    "failing",
+    "crash",
+    "error",
+)
+SOLVED_PATTERNS = (
+    "fixed it",
+    "solved",
+    "resolved",
+    "works now",
+    "ended up using",
+    "switched to",
+    "temporary workaround",
+)
+HIGH_FREQUENCY_PATTERNS = (
+    "every day",
+    "daily",
+    "every week",
+    "weekly",
+    "all the time",
+    "each time",
+    "every time",
+    "constantly",
+)
+
+
+def buyer_authority_score(authority: str | None) -> float:
+    return float(BUYER_AUTHORITY_SCORES.get((authority or "unknown").strip().lower(), BUYER_AUTHORITY_SCORES["unknown"]))
+
+
+def first_handness_score(level: str | None) -> float:
+    return float(FIRST_HANDNESS_SCORES.get((level or "unknown").strip().lower(), FIRST_HANDNESS_SCORES["unknown"]))
+
+
+def extract_comment_market_signals(post: Post, competitor_tags: list[str] | None = None) -> dict[str, Any]:
+    comments = [comment.strip() for comment in (post.top_comments or []) if isinstance(comment, str) and comment.strip()]
+    same_here_count = 0
+    consensus_count = 0
+    workaround_count = 0
+    shill_hits = 0
+    tool_mentions: set[str] = {tag.strip().lower() for tag in (competitor_tags or []) if isinstance(tag, str) and tag.strip()}
+
+    for comment in comments:
+        lowered = comment.lower()
+        same_here = any(
+            pattern in lowered
+            for pattern in {"same here", "same issue", "same problem", "me too", "we have this too", "we hit this too"}
+        )
+        workaround = any(pattern in lowered for pattern in WORKAROUND_PATTERNS)
+        shill = any(pattern in lowered for pattern in SHILL_PATTERNS) or ("http://" in lowered or "https://" in lowered)
+        if same_here:
+            same_here_count += 1
+            consensus_count += 1
+        elif any(token in lowered for token in {"we hit this", "also", "us too", "same pain", "here too"}):
+            consensus_count += 1
+        if workaround:
+            workaround_count += 1
+        if shill:
+            shill_hits += 1
+        for tag in COMPETITOR_HINTS:
+            if tag in lowered:
+                tool_mentions.add(tag)
+
+    shill_risk = round(min(1.0, shill_hits / max(1, len(comments))), 3) if comments else 0.0
+    return {
+        "comment_consensus_count": consensus_count,
+        "comment_same_here_count": same_here_count,
+        "comment_workaround_count": workaround_count,
+        "comment_tool_mentions": sorted(tool_mentions),
+        "comment_shill_risk": shill_risk,
+        "comment_sample": comments[:5],
+    }
+
+
+def estimate_workflow_frequency_score(post: Post, signal: "PainSignal") -> float:
+    text = "\n".join(part for part in [post.title, post.body, *post.top_comments] if part).lower()
+    score = 0.32
+    if any(pattern in text for pattern in HIGH_FREQUENCY_PATTERNS):
+        score += 0.33
+    if any(pattern in text for pattern in WORKAROUND_PATTERNS) or any(token in text for token in {"manual", "spreadsheet", "export", "reconcile"}):
+        score += 0.2
+    if signal.post_type in {"first_person_pain", "solution_request", "vendor_rant"}:
+        score += 0.1
+    return round(min(1.0, score), 3)
+
+
+def estimate_impact_score(post: Post, signal: "PainSignal") -> float:
+    text = "\n".join(part for part in [post.title, post.body, *post.top_comments] if part).lower()
+    score = 0.2 + min(0.45, max(signal.pain_level, signal.willingness_to_pay) / 10 * 0.45)
+    if any(pattern in text for pattern in HIGH_IMPACT_PATTERNS):
+        score += 0.25
+    if any(pattern in text for pattern in MEDIUM_IMPACT_PATTERNS):
+        score += 0.12
+    return round(min(1.0, score), 3)
+
+
+def estimate_solved_penalty(post: Post, *, comment_signals: dict[str, Any]) -> float:
+    text = "\n".join(part for part in [post.title, post.body, *post.top_comments] if part).lower()
+    solved_hits = sum(1 for pattern in SOLVED_PATTERNS if pattern in text)
+    if solved_hits == 0:
+        return 0.0
+    penalty = min(0.65, 0.18 * solved_hits + float(comment_signals.get("comment_workaround_count", 0)) * 0.04)
+    return round(penalty, 3)
+
 
 @dataclass
 class PainSignal:
@@ -122,6 +299,22 @@ class PainSignal:
     buyer_authority: str = "unknown"
     evidence_spans: list[str] = field(default_factory=list)
     opportunity_bucket: str = "unknown_age"
+    buyer_authority_score: float = 0.55
+    workflow_frequency_score: float = 0.0
+    impact_score: float = 0.0
+    consensus_score: float = 0.0
+    incumbent_failure_score: float = 0.0
+    recency_score: float = 0.0
+    stale_penalty: float = 0.0
+    solved_penalty: float = 0.0
+    opportunity_score: float = 0.0
+    comment_consensus_count: int = 0
+    comment_same_here_count: int = 0
+    comment_workaround_count: int = 0
+    comment_tool_mentions: list[str] = field(default_factory=list)
+    comment_shill_risk: float = 0.0
+    comment_sample: list[str] = field(default_factory=list)
+    score_components: dict[str, Any] | None = None
 
 
 class Classifier:
@@ -317,7 +510,13 @@ class Classifier:
                 return None
 
         if self.mode in {"legacy", "dual"} and self.openrouter:
-            legacy = await self.openrouter.analyze_legacy_post(title=post.title, body=post.body, post_id=post.post_id)
+            legacy_fallback_reason = "mode_legacy" if self.mode == "legacy" else "primary_unavailable"
+            legacy = await self.openrouter.analyze_legacy_post(
+                title=post.title,
+                body=post.body,
+                post_id=post.post_id,
+                fallback_reason=legacy_fallback_reason,
+            )
             if legacy:
                 signal = self._signal_from_analysis(post, legacy, mode="legacy_llm")
                 if b2c_noise:

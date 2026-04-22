@@ -1,7 +1,7 @@
 ﻿import asyncio
 from unittest.mock import AsyncMock
 
-from classifier import Classifier
+from classifier import Classifier, extract_comment_market_signals
 from openrouter import AnalysisResult
 from scraper import Post
 
@@ -217,3 +217,23 @@ async def test_competitor_tags_are_propagated_and_normalized():
     signal = await clf.classify(make_post(title="Shopify sync broken"))
     assert signal is not None
     assert signal.competitor_tags == ["shopify", "jira"]
+
+
+def test_extract_comment_market_signals_detects_consensus_workarounds_tools_and_shill_risk():
+    post = make_post(
+        title="Jira approvals are still painful",
+        body="We keep exporting CSVs and stitching steps manually",
+    )
+    post.top_comments = [
+        "Same here — we still hit this every week.",
+        "Manual workaround here too: export CSV, clean it in Sheets, and re-upload.",
+        "Try our tool at https://promo.example, book a demo and we will fix Jira for you.",
+    ]
+
+    signals = extract_comment_market_signals(post, competitor_tags=["jira"])
+
+    assert signals["comment_same_here_count"] == 1
+    assert signals["comment_consensus_count"] >= 2
+    assert signals["comment_workaround_count"] == 1
+    assert signals["comment_tool_mentions"] == ["jira"]
+    assert signals["comment_shill_risk"] > 0

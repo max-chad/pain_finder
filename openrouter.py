@@ -40,6 +40,12 @@ VALID_BUYER_AUTHORITIES = {
 }
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = (0.5, 1.0)
+PRIMARY_SCHEMA_VERSION = "primary_v2"
+LEGACY_SCHEMA_VERSION = "legacy_v2"
+DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
+CLUSTER_SCHEMA_VERSION = "cluster_v1"
+GTM_SCHEMA_VERSION = "gtm_v1"
+
 
 PRIMARY_PROMPT_TEMPLATE = """You are a B2B SaaS product manager analyzing Reddit pain signals.
 
@@ -156,6 +162,12 @@ class UsageEvent:
     completion_tokens: int
     cost_usd: float
     post_id: str | None = None
+    prompt_hash: str | None = None
+    fallback_reason: str | None = None
+    schema_version: str | None = None
+    provider: str | None = None
+    request_path: str | None = None
+    candidate_stage: str | None = None
 
 
 @dataclass
@@ -383,6 +395,10 @@ class OpenRouterClient:
         model: str,
         operation: str,
         post_id: str | None,
+        prompt_hash: str,
+        fallback_reason: str | None,
+        schema_version: str,
+        candidate_stage: str,
     ) -> None:
         if not usage:
             return
@@ -398,6 +414,12 @@ class OpenRouterClient:
                 completion_tokens=completion_tokens,
                 cost_usd=cost_usd,
                 post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                provider=self.provider,
+                request_path=self._request_path(),
+                candidate_stage=candidate_stage,
             )
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
@@ -411,6 +433,8 @@ class OpenRouterClient:
             operation="classify_primary",
             post_id=post_id,
             validate_payload=self._is_valid_primary_payload,
+            schema_version=PRIMARY_SCHEMA_VERSION,
+            candidate_stage="primary",
         )
         if payload is None:
             return None
@@ -419,7 +443,13 @@ class OpenRouterClient:
             logger.warning("OpenRouter primary output failed validation: %s", payload)
         return result
 
-    async def analyze_legacy_post(self, title: str, body: str, post_id: str | None = None) -> AnalysisResult | None:
+    async def analyze_legacy_post(
+        self,
+        title: str,
+        body: str,
+        post_id: str | None = None,
+        fallback_reason: str | None = None,
+    ) -> AnalysisResult | None:
         prompt = LEGACY_PROMPT_TEMPLATE.replace("{title}", title).replace("{body}", body[:4000])
         payload = await self._request_json_response(
             prompt=prompt,
@@ -427,6 +457,9 @@ class OpenRouterClient:
             operation="classify_legacy",
             post_id=post_id,
             validate_payload=self._is_valid_legacy_payload,
+            schema_version=LEGACY_SCHEMA_VERSION,
+            fallback_reason=fallback_reason,
+            candidate_stage="primary_fallback",
         )
         if payload is None:
             return None
@@ -443,6 +476,8 @@ class OpenRouterClient:
             operation="deep_dive",
             post_id=post_id,
             validate_payload=self._is_valid_deep_dive_payload,
+            schema_version=DEEP_DIVE_SCHEMA_VERSION,
+            candidate_stage="deep_dive",
         )
         if payload is None:
             return None
@@ -467,6 +502,8 @@ class OpenRouterClient:
             operation="cluster_label",
             post_id=post_id,
             validate_payload=self._is_valid_cluster_label_payload,
+            schema_version=CLUSTER_SCHEMA_VERSION,
+            candidate_stage="cluster",
         )
         if payload is None:
             return None
@@ -483,6 +520,8 @@ class OpenRouterClient:
             operation="generate_gtm",
             post_id=post_id,
             validate_payload=self._is_valid_gtm_payload,
+            schema_version=GTM_SCHEMA_VERSION,
+            candidate_stage="gtm",
         )
         if payload is None:
             return None
@@ -499,8 +538,12 @@ class OpenRouterClient:
         operation: str,
         post_id: str | None,
         validate_payload: Callable[[dict[str, Any]], bool] | None = None,
+        schema_version: str,
+        candidate_stage: str,
+        fallback_reason: str | None = None,
     ) -> dict[str, Any] | None:
         cache_key = self._build_cache_key(model=model, operation=operation, prompt=prompt)
+        prompt_hash = self._prompt_hash(prompt)
         cached_payload = await self._get_cached_payload(cache_key)
         if cached_payload is not None:
             if validate_payload is not None and not validate_payload(cached_payload):
@@ -540,6 +583,10 @@ class OpenRouterClient:
                 model=model,
                 operation=operation,
                 post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                candidate_stage=candidate_stage,
             )
             return payload
 
@@ -571,6 +618,10 @@ class OpenRouterClient:
                             model=model,
                             operation=operation,
                             post_id=post_id,
+                            prompt_hash=prompt_hash,
+                            fallback_reason=fallback_reason,
+                            schema_version=schema_version,
+                            candidate_stage=candidate_stage,
                         )
                         return payload
                     except httpx.HTTPStatusError as e:
@@ -609,8 +660,17 @@ class OpenRouterClient:
             return None
 
     @staticmethod
-    def _build_cache_key(*, model: str, operation: str, prompt: str) -> str:
-        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    def _prompt_hash(prompt: str) -> str:
+        return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+    def _request_path(self) -> str:
+        if self._uses_openai_codex_backend():
+            return f"{self.base_url.rstrip('/')}/responses"
+        return self.base_url
+
+    @classmethod
+    def _build_cache_key(cls, *, model: str, operation: str, prompt: str) -> str:
+        digest = cls._prompt_hash(prompt)
         return f"{operation}:{model}:{digest}"
 
     async def _get_cached_payload(self, cache_key: str) -> dict[str, Any] | None:
@@ -650,6 +710,10 @@ class OpenRouterClient:
         model: str,
         operation: str,
         post_id: str | None,
+        prompt_hash: str,
+        fallback_reason: str | None,
+        schema_version: str,
+        candidate_stage: str,
     ) -> None:
         usage = response_json.get("usage")
         if not isinstance(usage, dict):
@@ -667,6 +731,12 @@ class OpenRouterClient:
                 completion_tokens=completion_tokens,
                 cost_usd=cost_usd,
                 post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                provider=self.provider,
+                request_path=self._request_path(),
+                candidate_stage=candidate_stage,
             )
 
     def _estimate_cost_usd(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:

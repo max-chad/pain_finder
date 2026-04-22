@@ -547,6 +547,44 @@ async def test_usage_tracking_calls_budget_guard(respx_mock):
     assert call_kwargs["prompt_tokens"] == 1200
     assert call_kwargs["completion_tokens"] == 300
     assert call_kwargs["cost_usd"] == 0.0036
+    assert call_kwargs["schema_version"] == "primary_v2"
+    assert call_kwargs["candidate_stage"] == "primary"
+    assert call_kwargs["provider"] == "openrouter"
+    assert call_kwargs["request_path"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert len(call_kwargs["prompt_hash"]) == 64
+
+
+async def test_legacy_usage_tracking_records_fallback_reason(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"category": "wish", "summary": "Need export feature", "severity": "low"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 90, "completion_tokens": 20},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_legacy_post(
+        title="Wish",
+        body="Need CSV",
+        post_id="reddit:legacy",
+        fallback_reason="primary_invalid",
+    )
+
+    assert result is not None
+    usage_kwargs = budget.record_usage.await_args.kwargs
+    assert usage_kwargs["fallback_reason"] == "primary_invalid"
+    assert usage_kwargs["schema_version"] == "legacy_v2"
+    assert usage_kwargs["candidate_stage"] == "primary_fallback"
 
 
 def test_safe_json_load_handles_code_fence():

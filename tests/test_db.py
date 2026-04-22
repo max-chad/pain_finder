@@ -463,6 +463,12 @@ async def test_usage_ledger_and_runtime_flags(db):
         completion_tokens=50,
         cost_usd=0.12,
         post_id="reddit:u1",
+        prompt_hash="abc123",
+        fallback_reason=None,
+        schema_version="primary_v2",
+        provider="openai-codex",
+        request_path="https://chatgpt.com/backend-api/codex/responses",
+        candidate_stage="primary",
     )
     await db.record_llm_usage(
         model="model-a",
@@ -471,7 +477,26 @@ async def test_usage_ledger_and_runtime_flags(db):
         completion_tokens=75,
         cost_usd=0.34,
         post_id="reddit:u2",
+        prompt_hash="def456",
+        fallback_reason="primary_invalid",
+        schema_version="deep_dive_v1",
+        provider="openrouter",
+        request_path="https://openrouter.ai/api/v1/chat/completions",
+        candidate_stage="deep_dive",
     )
+
+    async with db._conn.execute(
+        "SELECT prompt_hash, fallback_reason, schema_version, provider, request_path, candidate_stage "
+        "FROM llm_usage_events WHERE post_id = ?",
+        ("reddit:u2",),
+    ) as cursor:
+        usage_row = await cursor.fetchone()
+
+    assert usage_row["prompt_hash"] == "def456"
+    assert usage_row["fallback_reason"] == "primary_invalid"
+    assert usage_row["schema_version"] == "deep_dive_v1"
+    assert usage_row["provider"] == "openrouter"
+    assert usage_row["candidate_stage"] == "deep_dive"
 
     spend = await db.get_daily_spend_usd()
     assert spend >= 0.46

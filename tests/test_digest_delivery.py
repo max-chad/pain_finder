@@ -84,3 +84,47 @@ async def test_daily_digest_document_service_returns_empty_result_without_rows(t
     assert result.total_items == 0
     assert result.group_count == 0
     assert result.docx_path is None
+
+
+async def test_daily_digest_document_orders_rows_by_opportunity_score_within_group(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "p-high",
+            "title": "Lower WTP but stronger consensus",
+            "summary": "Ops teams keep repeating the same manual workaround.",
+            "pain_level": 7,
+            "willingness_to_pay": 7,
+            "opportunity_score": 92.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot"]',
+            "source": "reddit",
+            "url": "https://reddit.com/p-high",
+            "subreddit": "sales",
+            "deep_dive_summary": "CSV handoffs between teams keep breaking.",
+            "opportunity_bucket": "current_opportunity",
+        },
+        {
+            "post_id": "p-low",
+            "title": "Higher WTP but weaker score",
+            "summary": "Pain exists but consensus is weak.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 51.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["salesforce"]',
+            "source": "reddit",
+            "url": "https://reddit.com/p-low",
+            "subreddit": "sales",
+            "deep_dive_summary": "Single-team complaint.",
+            "opportunity_bucket": "current_opportunity",
+        },
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert xml.index("Lower WTP but stronger consensus") < xml.index("Higher WTP but weaker score")

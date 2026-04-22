@@ -151,13 +151,14 @@ class DailyDigestDocumentService:
                 url = (row.get("url") or "").strip()
                 wtp = int(row.get("willingness_to_pay") or 0)
                 pain_level = int(row.get("pain_level") or 0)
+                opportunity_score = self._row_opportunity_score(row)
                 competitors = ", ".join(self._competitor_tags(row)) or "none"
                 deep_dive_summary = (row.get("deep_dive_summary") or "").strip()
 
                 header = document.add_paragraph()
                 header.add_run(title).bold = True
                 metrics = document.add_paragraph(
-                    f"WTP {wtp}/10 | Pain {pain_level}/10 | Source {source} | Scope {subreddit}"
+                    f"Opp {opportunity_score:.1f} | WTP {wtp}/10 | Pain {pain_level}/10 | Source {source} | Scope {subreddit}"
                 )
                 metrics.style = "Intense Quote"
                 document.add_paragraph(summary)
@@ -167,24 +168,35 @@ class DailyDigestDocumentService:
                 if url:
                     document.add_paragraph(f"Link: {url}")
 
-    @staticmethod
-    def _order_groups(grouped: dict[str, list[dict[str, Any]]]) -> list[tuple[str, list[dict[str, Any]]]]:
-        def _group_score(item: tuple[str, list[dict[str, Any]]]) -> tuple[int, int, str]:
+    @classmethod
+    def _order_groups(cls, grouped: dict[str, list[dict[str, Any]]]) -> list[tuple[str, list[dict[str, Any]]]]:
+        def _group_score(item: tuple[str, list[dict[str, Any]]]) -> tuple[float, int, str]:
             label, rows = item
-            best_wtp = max(int(row.get("willingness_to_pay") or 0) for row in rows)
-            return (-best_wtp, -len(rows), label.lower())
+            best_score = max(cls._row_opportunity_score(row) for row in rows)
+            return (-best_score, -len(rows), label.lower())
 
         ordered_groups = sorted(grouped.items(), key=_group_score)
         for _, rows in ordered_groups:
             rows.sort(
                 key=lambda row: (
+                    cls._row_opportunity_score(row),
+                    int(row.get("source_created_ts") or 0),
                     int(row.get("willingness_to_pay") or 0),
                     int(row.get("pain_level") or 0),
-                    str(row.get("source_created_at") or row.get("created_at") or ""),
                 ),
                 reverse=True,
             )
         return ordered_groups
+
+    @staticmethod
+    def _row_opportunity_score(row: dict[str, Any]) -> float:
+        raw = row.get("opportunity_score")
+        try:
+            if raw is not None:
+                return float(raw)
+        except (TypeError, ValueError):
+            pass
+        return float(int(row.get("willingness_to_pay") or 0))
 
     @staticmethod
     def _competitor_tags(row: dict[str, Any]) -> list[str]:
