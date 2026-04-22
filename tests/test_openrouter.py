@@ -194,6 +194,67 @@ async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effo
     assert captured_requests[0].headers["Authorization"] == "Bearer test-key"
 
 
+async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monkeypatch):
+    from types import SimpleNamespace
+
+    captured_kwargs = {}
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            payload = (
+                '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, '
+                '"niche_category": "Ops", "competitor_tags": [], '
+                '"summary": "From stream", "category": "complaint", "severity": "medium"}'
+            )
+            yield SimpleNamespace(type="response.output_text.delta", delta=payload)
+
+        def get_final_response(self):
+            return SimpleNamespace(
+                output=[],
+                output_text="",
+                usage=SimpleNamespace(input_tokens=120, output_tokens=45),
+                status="completed",
+            )
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("openrouter.OpenAI", FakeClient)
+
+    budget = AsyncMock()
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        api_base="https://chatgpt.com/backend-api/codex",
+        reasoning_effort="high",
+        budget_guard=budget,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful", post_id="reddit:abc")
+
+    assert result is not None
+    assert result.summary == "From stream"
+    assert captured_kwargs["instructions"]
+    assert captured_kwargs["reasoning"]["effort"] == "high"
+    budget.record_usage.assert_awaited_once()
+    usage_kwargs = budget.record_usage.await_args.kwargs
+    assert usage_kwargs["prompt_tokens"] == 120
+    assert usage_kwargs["completion_tokens"] == 45
+
+
 async def test_analyze_retries_transient_http_errors(respx_mock):
     from unittest.mock import AsyncMock, patch
 

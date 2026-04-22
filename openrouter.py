@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from openai import OpenAI
 
 if TYPE_CHECKING:
     from budget import BudgetGuard
@@ -170,6 +171,7 @@ class OpenRouterClient:
         "openrouter": "https://openrouter.ai/api/v1/chat/completions",
         "codex": "https://api.openai.com/v1/chat/completions",
         "openai": "https://api.openai.com/v1/chat/completions",
+        "openai-codex": "https://chatgpt.com/backend-api/codex",
     }
 
     def __init__(
@@ -209,11 +211,16 @@ class OpenRouterClient:
 
     def _resolve_base_url(self) -> str:
         if self.api_base:
+            if self.provider == "openai-codex":
+                return self.api_base.rstrip("/")
             return f"{self.api_base.rstrip('/')}/chat/completions"
         return self.DEFAULT_BASE_URLS.get(self.provider, self.DEFAULT_BASE_URLS["openai"])
 
+    def _uses_openai_codex_backend(self) -> bool:
+        return self.provider == "openai-codex" or "chatgpt.com/backend-api/codex" in self.base_url.lower()
+
     def _is_openai_compatible(self) -> bool:
-        return self.provider in {"openai", "codex", "openrouter"}
+        return self.provider in {"openai", "codex", "openrouter", "openai-codex"}
 
     def _build_headers(self) -> dict[str, str]:
         headers = {
@@ -240,6 +247,90 @@ class OpenRouterClient:
         if self.reasoning_effort and self._is_openai_compatible():
             request_body["reasoning_effort"] = self.reasoning_effort
         return request_body
+
+    @staticmethod
+    def _extract_responses_text(final_response: Any, streamed_parts: list[str]) -> str:
+        text = "".join(part for part in streamed_parts if part).strip()
+        if text:
+            return text
+        direct = getattr(final_response, "output_text", "")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        for item in getattr(final_response, "output", []) or []:
+            for content in getattr(item, "content", []) or []:
+                maybe_text = getattr(content, "text", "")
+                if isinstance(maybe_text, str) and maybe_text.strip():
+                    return maybe_text.strip()
+        return ""
+
+    @staticmethod
+    def _responses_usage_to_dict(usage: Any) -> dict[str, int] | None:
+        if usage is None:
+            return None
+        prompt_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        }
+
+    async def _request_codex_responses_payload(self, *, prompt: str, model: str) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+        def _run() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            streamed_parts: list[str] = []
+            stream_kwargs: dict[str, Any] = {
+                "model": model,
+                "instructions": "Return only the JSON object requested by the user task.",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}],
+                    }
+                ],
+                "store": False,
+            }
+            if self.reasoning_effort:
+                stream_kwargs["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
+            with client.responses.stream(**stream_kwargs) as stream:
+                for event in stream:
+                    event_type = getattr(event, "type", "")
+                    if event_type in {"response.output_text.delta", "output_text.delta"}:
+                        delta = getattr(event, "delta", "")
+                        if delta:
+                            streamed_parts.append(delta)
+                final_response = stream.get_final_response()
+            raw_text = self._extract_responses_text(final_response, streamed_parts)
+            if not raw_text:
+                return None, self._responses_usage_to_dict(getattr(final_response, "usage", None))
+            payload = self._safe_json_load(raw_text)
+            usage = self._responses_usage_to_dict(getattr(final_response, "usage", None))
+            return payload, usage
+
+        return await asyncio.to_thread(_run)
+
+    async def _record_usage_from_usage_dict(
+        self,
+        *,
+        usage: dict[str, int] | None,
+        model: str,
+        operation: str,
+        post_id: str | None,
+    ) -> None:
+        if not usage:
+            return
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
+
+        if self.budget_guard is not None:
+            await self.budget_guard.record_usage(
+                model=model,
+                operation=operation,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+                post_id=post_id,
+            )
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -357,6 +448,32 @@ class OpenRouterClient:
 
         if self.budget_guard is not None:
             await self.budget_guard.ensure_can_spend(operation)
+
+        if self._uses_openai_codex_backend():
+            try:
+                payload, usage = await self._request_codex_responses_payload(prompt=prompt, model=model)
+            except Exception as e:
+                logger.warning("OpenAI Codex request failed: %s", e)
+                return None
+            if payload is None:
+                return None
+            is_valid_payload = validate_payload(payload) if validate_payload is not None else True
+            if is_valid_payload:
+                await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
+            else:
+                logger.warning(
+                    "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
+                    model,
+                    operation,
+                    cache_key,
+                )
+            await self._record_usage_from_usage_dict(
+                usage=usage,
+                model=model,
+                operation=operation,
+                post_id=post_id,
+            )
+            return payload
 
         headers = self._build_headers()
         request_body = self._build_request_body(model=model, prompt=prompt)

@@ -88,6 +88,9 @@ class Embedder:
 
     async def embed(self, text: str) -> list[float]:
         """Return an embedding vector. Always succeeds."""
+        if self._provider in {"bow", "hash", "disabled", "none"}:
+            return _bow_embed(text)
+
         try:
             return await _provider_embed_raw(
                 api_key=self._api_key,

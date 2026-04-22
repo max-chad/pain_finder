@@ -89,6 +89,18 @@ class TestOpenRouterEmbed:
         magnitude = math.sqrt(sum(x * x for x in result))
         assert abs(magnitude - 1.0) < 1e-6
 
+    async def test_bow_provider_skips_remote_embedding_call(self):
+        from unittest.mock import AsyncMock
+
+        remote_mock = AsyncMock(side_effect=AssertionError("should not call remote"))
+        with patch("embedder._provider_embed_raw", remote_mock):
+            e = _make_embedder(provider="bow")
+            result = await e.embed("hello world hello")
+
+        remote_mock.assert_not_called()
+        assert isinstance(result, list)
+        assert len(result) == 96
+
     @respx.mock
     async def test_embed_never_raises(self):
         """embed() must not propagate any exception."""
