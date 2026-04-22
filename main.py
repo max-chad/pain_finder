@@ -8,6 +8,7 @@ from classifier import Classifier
 from clusterer import MacroTrendClusterer
 from db import Database
 from deduplicator import Deduplicator
+from dspy_parser import DSPyRedditPainParser
 from embedder import Embedder
 from export_sheets import ExportService
 from generator_gtm import GTMGenerator
@@ -60,6 +61,7 @@ async def run() -> None:
         retry_max_attempts=config.SCRAPER_RETRY_MAX_ATTEMPTS,
         retry_base_delay=config.SCRAPER_RETRY_BASE_DELAY,
         feed_mix=config.SCRAPER_FEED_MIX,
+        search_queries=config.SCRAPER_SEARCH_QUERIES,
     )
     openrouter = OpenRouterClient(
         api_key=config.OPENROUTER_API_KEY,
@@ -71,8 +73,23 @@ async def run() -> None:
         budget_guard=budget_guard,
         cache_db=db,
     )
+    dspy_parser = None
+    if config.DSPY_REDDIT_PARSER_ENABLED and config.DSPY_API_KEY:
+        dspy_parser = DSPyRedditPainParser(
+            api_key=config.DSPY_API_KEY,
+            provider=config.DSPY_PROVIDER,
+            model=config.DSPY_MODEL,
+            api_base=config.DSPY_API_BASE,
+            reasoning_effort=config.DSPY_REASONING_EFFORT,
+            temperature=config.DSPY_TEMPERATURE,
+            max_tokens=config.DSPY_MAX_TOKENS,
+        )
+    elif config.DSPY_REDDIT_PARSER_ENABLED:
+        logger.warning("DSPy Reddit parser enabled but no DSPY_API_KEY/OPENAI_API_KEY provided; falling back to OpenRouter")
+
     classifier = Classifier(
         openrouter=openrouter,
+        dspy_parser=dspy_parser,
         mode=config.CLASSIFIER_MODE,
         max_concurrency=config.CLASSIFIER_MAX_CONCURRENCY,
     )

@@ -9,6 +9,8 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
     monkeypatch.setenv("OPENROUTER_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_API_KEY", "dspy-key")
+    monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
     monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
 
@@ -55,9 +57,17 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class FakeDSPyParser:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeDSPyParser.instances.append(self)
+
     class FakeClassifier:
-        def __init__(self, openrouter, mode="dual", max_concurrency=8):
+        def __init__(self, openrouter, dspy_parser=None, mode="dual", max_concurrency=8):
             self.openrouter = openrouter
+            self.dspy_parser = dspy_parser
             self.mode = mode
             self.max_concurrency = max_concurrency
 
@@ -227,6 +237,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "Database", FakeDB)
     monkeypatch.setattr(main, "RedditScraper", FakeScraper)
     monkeypatch.setattr(main, "OpenRouterClient", FakeOpenRouterClient)
+    monkeypatch.setattr(main, "DSPyRedditPainParser", FakeDSPyParser)
     monkeypatch.setattr(main, "Classifier", FakeClassifier)
     monkeypatch.setattr(main, "AnalysisPipeline", FakePipeline)
     monkeypatch.setattr(main, "PainFinderBot", FakeBot)
@@ -262,6 +273,8 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert bot.scraper.kwargs["feed_mix"] == main.config.SCRAPER_FEED_MIX
     assert bot.scraper.kwargs["comment_fetch_concurrency"] == main.config.SCRAPER_COMMENT_FETCH_CONCURRENCY
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
+    assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)
+    assert bot.classifier.dspy_parser.kwargs["provider"] == main.config.DSPY_PROVIDER
     assert pipeline.llm_max_classifications_per_run == main.config.LLM_MAX_CLASSIFICATIONS_PER_RUN
     bot = FakeBot.instances[-1]
     assert len(bot.grouped_notifications) == 1
@@ -323,9 +336,17 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             self.kwargs = kwargs
             self.gtm_model = "gpt-test"
 
+    class FakeDSPyParser:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeDSPyParser.instances.append(self)
+
     class FakeClassifier:
-        def __init__(self, openrouter, mode="dual", max_concurrency=8):
+        def __init__(self, openrouter, dspy_parser=None, mode="dual", max_concurrency=8):
             self.openrouter = openrouter
+            self.dspy_parser = dspy_parser
             self.mode = mode
             self.max_concurrency = max_concurrency
 
@@ -489,6 +510,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "Database", FakeDB)
     monkeypatch.setattr(main, "RedditScraper", FakeScraper)
     monkeypatch.setattr(main, "OpenRouterClient", FakeOpenRouterClient)
+    monkeypatch.setattr(main, "DSPyRedditPainParser", FakeDSPyParser)
     monkeypatch.setattr(main, "Classifier", FakeClassifier)
     monkeypatch.setattr(main, "AnalysisPipeline", FakePipeline)
     monkeypatch.setattr(main, "MacroTrendClusterer", FakeClusterer)

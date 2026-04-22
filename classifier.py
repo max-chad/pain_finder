@@ -121,8 +121,15 @@ class PainSignal:
 class Classifier:
     VALID_MODES = {"legacy", "b2b", "dual"}
 
-    def __init__(self, openrouter: OpenRouterClient | None, mode: str = "dual", max_concurrency: int = 8):
+    def __init__(
+        self,
+        openrouter: OpenRouterClient | None,
+        dspy_parser: Any | None = None,
+        mode: str = "dual",
+        max_concurrency: int = 8,
+    ):
         self.openrouter = openrouter
+        self.dspy_parser = dspy_parser
         normalized_mode = mode.lower().strip()
         self.mode = normalized_mode if normalized_mode in self.VALID_MODES else "dual"
         self.max_concurrency = max(1, max_concurrency)
@@ -200,18 +207,31 @@ class Classifier:
 
         b2c_noise = self._is_likely_b2c_noise(post)
 
-        if self.mode in {"b2b", "dual"} and self.openrouter:
-            primary = await self.openrouter.analyze_post(title=post.title, body=post.body, post_id=post.post_id)
-            if primary:
-                signal = self._signal_from_analysis(post, primary, mode="b2b")
-                if b2c_noise:
-                    signal.is_monetizable = False
-                    signal.willingness_to_pay = 0
-                    signal.pain_level = min(signal.pain_level, 3)
-                    signal.niche_category = signal.niche_category or "B2C-noise"
-                if not signal.competitor_tags:
-                    signal.competitor_tags = self._extract_competitor_hints(post)
-                return signal
+        if self.mode in {"b2b", "dual"}:
+            if self.dspy_parser is not None:
+                primary = await self.dspy_parser.analyze_post(post)
+                if primary:
+                    signal = self._signal_from_analysis(post, primary, mode="dspy_b2b")
+                    if b2c_noise:
+                        signal.is_monetizable = False
+                        signal.willingness_to_pay = 0
+                        signal.pain_level = min(signal.pain_level, 3)
+                        signal.niche_category = signal.niche_category or "B2C-noise"
+                    if not signal.competitor_tags:
+                        signal.competitor_tags = self._extract_competitor_hints(post)
+                    return signal
+            if self.openrouter:
+                primary = await self.openrouter.analyze_post(title=post.title, body=post.body, post_id=post.post_id)
+                if primary:
+                    signal = self._signal_from_analysis(post, primary, mode="b2b")
+                    if b2c_noise:
+                        signal.is_monetizable = False
+                        signal.willingness_to_pay = 0
+                        signal.pain_level = min(signal.pain_level, 3)
+                        signal.niche_category = signal.niche_category or "B2C-noise"
+                    if not signal.competitor_tags:
+                        signal.competitor_tags = self._extract_competitor_hints(post)
+                    return signal
             if self.mode == "b2b":
                 return None
 

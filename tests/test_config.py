@@ -19,10 +19,16 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("SCRAPER_RETRY_MAX_ATTEMPTS", "6")
     monkeypatch.setenv("SCRAPER_RETRY_BASE_DELAY", "1.5")
     monkeypatch.setenv("SCRAPER_FEED_MIX_JSON", '["new", "top"]')
+    monkeypatch.setenv("SCRAPER_SEARCH_QUERIES_JSON", '["manual process", "spreadsheet workaround"]')
     monkeypatch.setenv("EXPORT_MIN_WTP", "7")
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "{}")
     monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
     monkeypatch.setenv("GOOGLE_SHEETS_WORKSHEET_PREFIX", "pf")
+    monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
+    monkeypatch.setenv("DSPY_PROVIDER", "codex")
+    monkeypatch.setenv("DSPY_MODEL", "gpt-5.3-spark")
+    monkeypatch.setenv("DSPY_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_API_KEY", "dspy-key")
 
     config_module = importlib.import_module("config")
     config_module = importlib.reload(config_module)
@@ -44,8 +50,14 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.SCRAPER_RETRY_MAX_ATTEMPTS == 6
     assert config_module.SCRAPER_RETRY_BASE_DELAY == 1.5
     assert config_module.SCRAPER_FEED_MIX == ["new", "top"]
+    assert config_module.SCRAPER_SEARCH_QUERIES == ["manual process", "spreadsheet workaround"]
     assert config_module.EXPORT_MIN_WTP == 7
     assert config_module.GOOGLE_SHEETS_CREDENTIALS_JSON == "{}"
     assert config_module.GOOGLE_SHEETS_SPREADSHEET_ID == "sheet-id"
     assert config_module.GOOGLE_SHEETS_WORKSHEET_PREFIX == "pf"
+    assert config_module.DSPY_REDDIT_PARSER_ENABLED is True
+    assert config_module.DSPY_PROVIDER == "codex"
+    assert config_module.DSPY_MODEL == "gpt-5.3-spark"
+    assert config_module.DSPY_REASONING_EFFORT == "high"
+    assert config_module.DSPY_API_KEY == "dspy-key"
 

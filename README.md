@@ -9,6 +9,7 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
   - Hacker News Algolia API (`scraper_hn.py`)
   - Configured review pages (`scraper_reviews.py`)
 - Classifies pain with `legacy|b2b|dual` modes and strict JSON schemas.
+- Can route the primary Reddit pain parse through an optional DSPy/Codex (`gpt-5.3-spark`, `high`) backend, with OpenRouter fallback.
 - Tracks monetization signals (`pain_level`, `willingness_to_pay`, `is_monetizable`, `niche_category`, `competitor_tags`).
 - Auto-runs deep dives on high-value signals and supports manual deep dives.
 - Runs macro trend clustering over historical high-signal items.
@@ -20,11 +21,11 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
 
 - `main.py`: wires services, scheduler jobs, Telegram app lifecycle.
 - `db.py`: async SQLite layer, PRAGMAs, additive migrations, analytics helpers.
-- `scraper.py`: Reddit scraping with PRAW + OAuth JSON + public JSON fallback, mixed feed ingestion (`new+rising+top`), top comments, full thread extraction, retry/backoff.
+- `scraper.py`: Reddit scraping with PRAW + OAuth JSON + public JSON fallback, mixed feed ingestion (`new+rising+top`), optional subreddit pain-search queries, top comments, full thread extraction, retry/backoff.
 - `scraper_hn.py`: Hacker News Algolia ingestion.
 - `scraper_reviews.py`: review-source scraping for negative (1-2 star) reviews.
 - `openrouter.py`: LLM client, strict schema parsing, usage/cost accounting.
-- `classifier.py`: scoring + classification mode orchestration + competitor tag normalization.
+- `classifier.py`: scoring + classification mode orchestration + competitor tag normalization, with optional DSPy primary Reddit parser fallback.
 - `pipeline.py`: ingestion->classification->persistence->deep dive->digest flow.
 - `clusterer.py`: hybrid local embedding clustering + LLM trend labels.
 - `budget.py`: daily spend checks, pause state, override-to-next-UTC-day resume.
@@ -91,6 +92,18 @@ Scraper controls:
 - `SCRAPER_RETRY_MAX_ATTEMPTS` (default `5`)
 - `SCRAPER_RETRY_BASE_DELAY` (default `1.0`)
 - `SCRAPER_FEED_MIX_JSON` (default `["new", "rising", "top"]`)
+- `SCRAPER_SEARCH_QUERIES_JSON` (optional pain-intent subreddit search queries merged with feed results)
+
+Optional DSPy Reddit parser:
+
+- `DSPY_REDDIT_PARSER_ENABLED` (default `1`)
+- `DSPY_PROVIDER` (default `codex`)
+- `DSPY_MODEL` (default `gpt-5.3-spark`)
+- `DSPY_REASONING_EFFORT` (default `high`)
+- `DSPY_API_KEY` (falls back to `OPENAI_API_KEY`)
+- `DSPY_API_BASE`
+- `DSPY_TEMPERATURE`
+- `DSPY_MAX_TOKENS`
 
 Trend clustering:
 

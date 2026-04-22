@@ -62,6 +62,29 @@ async def test_dual_mode_uses_primary_b2b_result():
     assert result.analysis_mode == "b2b"
 
 
+async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
+    dspy_parser = AsyncMock()
+    dspy_parser.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Spreadsheet workflow is brittle",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="RevOps",
+        competitor_tags=["hubspot"],
+    )
+    mock_llm = AsyncMock()
+    clf = Classifier(openrouter=mock_llm, dspy_parser=dspy_parser, mode="dual")
+
+    result = await clf.classify(make_post(title="I can't keep reconciling this manually"))
+
+    assert result is not None
+    assert result.summary == "Spreadsheet workflow is brittle"
+    dspy_parser.analyze_post.assert_awaited_once()
+    mock_llm.analyze_post.assert_not_called()
+
+
 async def test_dual_mode_falls_back_to_legacy_llm():
     mock_llm = AsyncMock()
     mock_llm.analyze_post.return_value = None

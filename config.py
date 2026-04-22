@@ -36,6 +36,16 @@ SCRAPER_COMMENT_FETCH_CONCURRENCY = int(os.getenv("SCRAPER_COMMENT_FETCH_CONCURR
 SCRAPER_RETRY_MAX_ATTEMPTS = int(os.getenv("SCRAPER_RETRY_MAX_ATTEMPTS", "5"))
 SCRAPER_RETRY_BASE_DELAY = float(os.getenv("SCRAPER_RETRY_BASE_DELAY", "1.0"))
 SCRAPER_FEED_MIX_JSON = os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "top"]')
+SCRAPER_SEARCH_QUERIES_JSON = os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]")
+
+DSPY_REDDIT_PARSER_ENABLED = os.getenv("DSPY_REDDIT_PARSER_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+DSPY_PROVIDER = os.getenv("DSPY_PROVIDER", "codex").strip().lower() or "codex"
+DSPY_MODEL = os.getenv("DSPY_MODEL", "gpt-5.3-spark").strip() or "gpt-5.3-spark"
+DSPY_REASONING_EFFORT = os.getenv("DSPY_REASONING_EFFORT", "high").strip().lower() or "high"
+DSPY_API_KEY = os.getenv("DSPY_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+DSPY_API_BASE = os.getenv("DSPY_API_BASE", "").strip()
+DSPY_TEMPERATURE = float(os.getenv("DSPY_TEMPERATURE", "1.0"))
+DSPY_MAX_TOKENS = int(os.getenv("DSPY_MAX_TOKENS", "16000"))
 
 EXPORT_MIN_WTP = int(os.getenv("EXPORT_MIN_WTP", "8"))
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
@@ -88,3 +98,8 @@ SCRAPER_FEED_MIX = parse_json_env(SCRAPER_FEED_MIX_JSON, ["new", "rising", "top"
 if not isinstance(SCRAPER_FEED_MIX, list):
     SCRAPER_FEED_MIX = ["new", "rising", "top"]
 SCRAPER_FEED_MIX = [str(feed) for feed in SCRAPER_FEED_MIX]
+
+SCRAPER_SEARCH_QUERIES = parse_json_env(SCRAPER_SEARCH_QUERIES_JSON, [])
+if not isinstance(SCRAPER_SEARCH_QUERIES, list):
+    SCRAPER_SEARCH_QUERIES = []
+SCRAPER_SEARCH_QUERIES = [str(query).strip() for query in SCRAPER_SEARCH_QUERIES if str(query).strip()]
