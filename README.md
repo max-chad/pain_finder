@@ -1,6 +1,6 @@
 ﻿# pain_finder
 
-Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and review-source ingestion, deep-dive enrichment, macro trend clustering, budget guardrails, and GTM generation.
+Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hacker News, and review-source ingestion, deep-dive enrichment, macro trend clustering, budget guardrails, GTM generation, and daily grouped digest delivery.
 
 ## What It Does
 
@@ -17,6 +17,7 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
 - Enforces daily LLM budget caps with pause/resume runtime flags.
 - Generates GTM assets (names, hero copy, MVP features, pricing, positioning) for selected pain points.
 - Exports filtered data to CSV and optionally upserts to Google Sheets.
+- Can run in `APP_MODE=hermes`, which disables Telegram polling conflicts and publishes a once-daily grouped `.docx` digest back through the configured bot token/chat.
 
 ## Architecture
 
@@ -32,6 +33,7 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
 - `budget.py`: daily spend checks, pause state, override-to-next-UTC-day resume.
 - `generator_gtm.py`: one-click GTM payload generation and persistence.
 - `export_sheets.py`: CSV writer + optional Google Sheets push.
+- `digest_delivery.py`: `.docx` daily digest builder grouped by niche/source/category tags.
 - `scheduler.py`: monitored subreddit jobs + macro/HN/review jobs.
 - `bot.py`: Telegram command handlers and inline callback actions.
 
@@ -154,6 +156,17 @@ Export:
 - `GOOGLE_SHEETS_CREDENTIALS_JSON`
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
 - `GOOGLE_SHEETS_WORKSHEET_PREFIX`
+
+Hermes-mode delivery:
+
+- `APP_MODE` (`telegram` or `hermes`)
+- `DIGEST_DELIVERY_ENABLED`
+- `DIGEST_HOURS`
+- `DIGEST_GROUP_BY` (`niche|source|category`)
+- `DIGEST_HOUR_UTC`
+- `DIGEST_MINUTE_UTC`
+- `DIGEST_MIN_WTP`
+- `DIGEST_MAX_ITEMS_PER_GROUP`
 
 Paths and source auth:
 
