@@ -25,6 +25,7 @@ class Post:
     permalink: str = ""
     top_comments: list[str] = field(default_factory=list)
     source: str = "reddit"
+    discovery_query: str = ""
 
 
 class RedditScraper:
@@ -38,6 +39,7 @@ class RedditScraper:
         retry_max_attempts: int = 5,
         retry_base_delay: float = 1.0,
         feed_mix: list[str] | tuple[str, ...] | None = None,
+        search_queries: list[str] | tuple[str, ...] | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -48,6 +50,7 @@ class RedditScraper:
         self.retry_base_delay = max(0.1, retry_base_delay)
         self._use_praw = bool(client_id and client_secret)
         self.feed_mix = self._normalize_feeds(feed_mix)
+        self.search_queries = self._normalize_search_queries(search_queries)
         self._oauth_access_token: str = ""
         self._oauth_token_expires_at = 0.0
 
@@ -108,6 +111,79 @@ class RedditScraper:
             normalized.append(feed)
         return normalized or list(DEFAULT_FEEDS)
 
+    @staticmethod
+    def _normalize_search_queries(search_queries: list[str] | tuple[str, ...] | None) -> list[str]:
+        if not search_queries:
+            return []
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in search_queries:
+            query = str(raw).strip()
+            if not query:
+                continue
+            lowered = query.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(query)
+        return normalized
+
+    def _iter_search_requests(self, *, limit: int) -> list[tuple[str, dict[str, Any]]]:
+        if not self.search_queries:
+            return []
+        per_query_limit = max(1, min(100, math.ceil(max(1, limit) / max(1, len(self.search_queries)))))
+        return [
+            (
+                query,
+                {
+                    "q": query,
+                    "restrict_sr": "on",
+                    "sort": "relevance",
+                    "limit": per_query_limit,
+                    "raw_json": 1,
+                },
+            )
+            for query in self.search_queries
+        ]
+
+    @staticmethod
+    def _build_post(subreddit: str, post_data: dict[str, Any], *, discovery_query: str = "") -> Post | None:
+        post_id = post_data.get("id")
+        if not post_id:
+            return None
+        prefixed_post_id = RedditScraper._external_post_id(post_id)
+        permalink = post_data.get("permalink", "")
+        if permalink and not permalink.startswith("http"):
+            full_url = f"https://reddit.com{permalink}"
+        else:
+            full_url = post_data.get("url", "")
+        return Post(
+            post_id=prefixed_post_id,
+            subreddit=subreddit,
+            title=post_data.get("title", ""),
+            body=post_data.get("selftext", ""),
+            url=full_url,
+            score=int(post_data.get("score", 0) or 0),
+            permalink=permalink,
+            discovery_query=discovery_query,
+        )
+
+    @staticmethod
+    def _merge_post(posts_by_id: dict[str, Post], post: Post) -> None:
+        existing = posts_by_id.get(post.post_id)
+        if existing is None:
+            posts_by_id[post.post_id] = post
+            return
+        if post.score > existing.score:
+            existing.score = post.score
+        if post.discovery_query and not existing.discovery_query:
+            existing.discovery_query = post.discovery_query
+        if not existing.permalink and post.permalink:
+            existing.permalink = post.permalink
+        if not existing.url and post.url:
+            existing.url = post.url
+
     def _iter_feed_requests(self, *, limit: int, timeframe: str) -> list[tuple[str, dict[str, Any]]]:
         per_feed_limit = max(1, min(100, math.ceil(max(1, limit) / max(1, len(self.feed_mix)))))
         requests: list[tuple[str, dict[str, Any]]] = []
@@ -163,7 +239,28 @@ class RedditScraper:
                         permalink=submission.permalink,
                         top_comments=top_comments,
                     )
-                    posts_by_id[post.post_id] = post
+                    self._merge_post(posts_by_id, post)
+
+            for query, params in self._iter_search_requests(limit=limit):
+                search_limit = int(params.get("limit", limit))
+                iterator = sub.search(
+                    query,
+                    sort="relevance",
+                    time_filter=timeframe,
+                    limit=search_limit,
+                )
+                for submission in iterator:
+                    post = Post(
+                        post_id=self._external_post_id(submission.id),
+                        subreddit=subreddit,
+                        title=submission.title,
+                        body=submission.selftext or "",
+                        url=f"https://reddit.com{submission.permalink}",
+                        score=submission.score,
+                        permalink=submission.permalink,
+                        discovery_query=query,
+                    )
+                    self._merge_post(posts_by_id, post)
 
             posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)
             return posts[:limit]
@@ -190,26 +287,29 @@ class RedditScraper:
 
             for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
-                    post_data = child.get("data", {})
-                    post_id = post_data.get("id")
-                    if not post_id:
+                    post = self._build_post(subreddit, child.get("data", {}))
+                    if post is None:
                         continue
-                    prefixed_post_id = self._external_post_id(post_id)
-                    permalink = post_data.get("permalink", "")
-                    if permalink and not permalink.startswith("http"):
-                        full_url = f"https://reddit.com{permalink}"
-                    else:
-                        full_url = post_data.get("url", "")
+                    self._merge_post(posts_by_id, post)
 
-                    posts_by_id[prefixed_post_id] = Post(
-                        post_id=prefixed_post_id,
-                        subreddit=subreddit,
-                        title=post_data.get("title", ""),
-                        body=post_data.get("selftext", ""),
-                        url=full_url,
-                        score=int(post_data.get("score", 0) or 0),
-                        permalink=permalink,
-                    )
+            async def fetch_search(query: str, params: dict[str, Any]) -> Any:
+                url = f"https://www.reddit.com/r/{subreddit}/search.json"
+                return await self._request_json_with_retries(
+                    client=client,
+                    url=url,
+                    params=params,
+                    headers=headers,
+                )
+
+            search_payloads = await asyncio.gather(
+                *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
+            )
+            for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
+                for child in payload.get("data", {}).get("children", []):
+                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                    if post is None:
+                        continue
+                    self._merge_post(posts_by_id, post)
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
 
@@ -248,26 +348,27 @@ class RedditScraper:
 
             for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
-                    post_data = child.get("data", {})
-                    post_id = post_data.get("id")
-                    if not post_id:
+                    post = self._build_post(subreddit, child.get("data", {}))
+                    if post is None:
                         continue
-                    prefixed_post_id = self._external_post_id(post_id)
-                    permalink = post_data.get("permalink", "")
-                    if permalink and not permalink.startswith("http"):
-                        full_url = f"https://reddit.com{permalink}"
-                    else:
-                        full_url = post_data.get("url", "")
+                    self._merge_post(posts_by_id, post)
 
-                    posts_by_id[prefixed_post_id] = Post(
-                        post_id=prefixed_post_id,
-                        subreddit=subreddit,
-                        title=post_data.get("title", ""),
-                        body=post_data.get("selftext", ""),
-                        url=full_url,
-                        score=int(post_data.get("score", 0) or 0),
-                        permalink=permalink,
-                    )
+            async def fetch_search(query: str, params: dict[str, Any]) -> Any:
+                return await self._request_oauth_json(
+                    client=client,
+                    path=f"/r/{subreddit}/search.json",
+                    params=params,
+                )
+
+            search_payloads = await asyncio.gather(
+                *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
+            )
+            for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
+                for child in payload.get("data", {}).get("children", []):
+                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                    if post is None:
+                        continue
+                    self._merge_post(posts_by_id, post)
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
             if self.top_comments_limit <= 0 or not base_posts:

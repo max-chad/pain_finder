@@ -311,6 +311,77 @@ async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_moc
     assert {post.post_id for post in posts} == {"reddit:same", "reddit:fresh"}
 
 
+async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_query(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "same",
+                                "title": "Top duplicate",
+                                "selftext": "body",
+                                "url": "https://reddit.com/same",
+                                "score": 10,
+                                "permalink": "/r/python/comments/same/top/",
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    search_route = respx_mock.get("https://www.reddit.com/r/python/search.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "same",
+                                "title": "Top duplicate",
+                                "selftext": "body",
+                                "url": "https://reddit.com/same",
+                                "score": 10,
+                                "permalink": "/r/python/comments/same/top/",
+                            }
+                        },
+                        {
+                            "data": {
+                                "id": "searchonly",
+                                "title": "Spreadsheet workaround pain",
+                                "selftext": "Still doing this manually",
+                                "url": "https://reddit.com/searchonly",
+                                "score": 12,
+                                "permalink": "/r/python/comments/searchonly/search/",
+                            }
+                        },
+                    ]
+                }
+            },
+        )
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["spreadsheet workaround"],
+    )
+    posts = await scraper._fetch_public_json("python", limit=5)
+
+    assert {post.post_id for post in posts} == {"reddit:same", "reddit:searchonly"}
+    by_id = {post.post_id: post for post in posts}
+    assert by_id["reddit:same"].discovery_query == "spreadsheet workaround"
+    assert by_id["reddit:searchonly"].discovery_query == "spreadsheet workaround"
+    assert search_route.call_count == 1
+
+
 async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_mock):
     from unittest.mock import AsyncMock, patch
 

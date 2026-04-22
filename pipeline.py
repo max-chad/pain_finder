@@ -406,6 +406,7 @@ class AnalysisPipeline:
                 "title": signal.post.title,
                 "url": signal.post.url,
                 "source": source,
+                "discovery_query": signal.post.discovery_query,
                 "category": signal.category,
                 "summary": signal.summary,
                 "severity": signal.severity,
