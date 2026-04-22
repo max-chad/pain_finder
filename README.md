@@ -10,6 +10,7 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
   - Configured review pages (`scraper_reviews.py`)
 - Classifies pain with `legacy|b2b|dual` modes and strict JSON schemas.
 - Defaults the full LLM stack (primary parse, legacy fallback, deep dive, clustering, GTM, embeddings) to Codex/OpenAI-compatible routing, with OpenRouter-compatible env aliases still supported.
+- For `openai-codex` / ChatGPT Codex backend calls, the runtime now mirrors Codex CLI request headers (`originator`, Codex-style `User-Agent`, `ChatGPT-Account-ID`) so quota/account routing stays on the Codex path instead of generic ChatGPT handling.
 - Can route the primary Reddit pain parse through an optional DSPy/Codex (`gpt-5.3-spark`, `high`) backend, with the same provider defaults.
 - Tracks monetization signals (`pain_level`, `willingness_to_pay`, `is_monetizable`, `niche_category`, `competitor_tags`).
 - Auto-runs deep dives on high-value signals and supports manual deep dives.
@@ -167,6 +168,11 @@ Hermes-mode delivery:
 - `DIGEST_MINUTE_UTC`
 - `DIGEST_MIN_WTP`
 - `DIGEST_MAX_ITEMS_PER_GROUP`
+
+Codex reserve routing note:
+
+- True reserve-credential selection requires more than one `openai-codex` credential in Hermes (`hermes auth add openai-codex --type oauth --label reserve`).
+- With only one Codex credential in Hermes, runtime fixes can align request headers and account routing, but they cannot invent a separate reserve credential.
 
 Paths and source auth:
 
