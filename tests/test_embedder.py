@@ -7,8 +7,15 @@ import respx
 from embedder import Embedder
 
 
-def _make_embedder():
-    return Embedder(api_key="test_key", model="google/text-embedding-004")
+def _make_embedder(**kwargs):
+    params = {
+        "api_key": "test_key",
+        "model": "text-embedding-3-small",
+        "provider": "openrouter",
+        "api_base": "",
+    }
+    params.update(kwargs)
+    return Embedder(**params)
 
 
 def _unit_vector(dim: int) -> list[float]:
@@ -17,6 +24,23 @@ def _unit_vector(dim: int) -> list[float]:
 
 
 class TestOpenRouterEmbed:
+    @respx.mock
+    async def test_codex_provider_uses_openai_embeddings_endpoint(self):
+        embedding = _unit_vector(384)
+        captured = []
+
+        def capture(request):
+            captured.append(request)
+            return httpx.Response(200, json={"data": [{"embedding": embedding}]})
+
+        respx.post("https://api.openai.com/v1/embeddings").mock(side_effect=capture)
+        e = _make_embedder(provider="codex")
+        result = await e.embed("test text")
+
+        assert result == embedding
+        assert len(captured) == 1
+        assert captured[0].headers["Authorization"] == "Bearer test_key"
+
     @respx.mock
     async def test_openrouter_success_returns_embedding(self):
         embedding = _unit_vector(384)
@@ -54,7 +78,7 @@ class TestOpenRouterEmbed:
         """Falls back to bag-of-words when sentence-transformers is unavailable."""
         import sys
         with (
-            patch("embedder._openrouter_embed_raw", side_effect=Exception("network")),
+            patch("embedder._provider_embed_raw", side_effect=Exception("network")),
             patch.dict(sys.modules, {"sentence_transformers": None}),
         ):
             e = _make_embedder()

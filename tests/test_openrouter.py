@@ -157,6 +157,43 @@ async def test_body_truncated_for_large_prompt(respx_mock):
     assert "OVERFLOW_MARKER" not in prompt
 
 
+async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effort(respx_mock):
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, "niche_category": "Ops", "competitor_tags": [], "summary": "Works", "category": "complaint", "severity": "medium"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    respx_mock.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-spark",
+        provider="codex",
+        reasoning_effort="high",
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is not None
+    assert len(captured_requests) == 1
+    import json
+
+    req_body = json.loads(captured_requests[0].content)
+    assert req_body["reasoning_effort"] == "high"
+    assert captured_requests[0].headers["Authorization"] == "Bearer test-key"
+
+
 async def test_analyze_retries_transient_http_errors(respx_mock):
     from unittest.mock import AsyncMock, patch
 

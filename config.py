@@ -6,6 +6,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _first_env(*names: str, default: str | None = None, required: bool = False) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            return value
+    if required:
+        raise KeyError(names[0])
+    return default or ""
+
+
+def _default_llm_model(provider: str) -> str:
+    if provider in {"codex", "openai"}:
+        return "gpt-5.3-spark"
+    return "meta-llama/llama-3.1-8b-instruct:free"
+
+
+def _default_embed_model(provider: str) -> str:
+    if provider in {"codex", "openai"}:
+        return "text-embedding-3-small"
+    return "google/text-embedding-004"
+
+
+def _default_temperature(provider: str, model: str) -> str:
+    if provider in {"codex", "openai"} and "gpt-5" in model:
+        return "1.0"
+    return "0.1"
+
+
+def _default_max_tokens(provider: str, model: str) -> str:
+    if provider in {"codex", "openai"} and "gpt-5" in model:
+        return "16000"
+    return "4000"
+
+
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 
@@ -13,13 +47,30 @@ REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "pain_finder/1.0")
 
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
-OPENROUTER_DEEP_DIVE_MODEL = os.getenv("OPENROUTER_DEEP_DIVE_MODEL", "").strip() or OPENROUTER_MODEL
-OPENROUTER_CLUSTER_MODEL = os.getenv("OPENROUTER_CLUSTER_MODEL", "").strip() or OPENROUTER_MODEL
-OPENROUTER_GTM_MODEL = os.getenv("OPENROUTER_GTM_MODEL", "").strip() or OPENROUTER_MODEL
-OPENROUTER_MODEL_PRICING_JSON = os.getenv("OPENROUTER_MODEL_PRICING_JSON", "{}")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "google/text-embedding-004")
+LLM_PROVIDER = _first_env("LLM_PROVIDER", default="codex").strip().lower() or "codex"
+LLM_API_KEY = _first_env("LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", required=True).strip()
+LLM_API_BASE = _first_env("LLM_API_BASE", "OPENROUTER_API_BASE", default="").strip()
+LLM_MODEL = _first_env("LLM_MODEL", "OPENROUTER_MODEL", default=_default_llm_model(LLM_PROVIDER)).strip() or _default_llm_model(LLM_PROVIDER)
+LLM_DEEP_DIVE_MODEL = _first_env("LLM_DEEP_DIVE_MODEL", "OPENROUTER_DEEP_DIVE_MODEL", default="").strip() or LLM_MODEL
+LLM_CLUSTER_MODEL = _first_env("LLM_CLUSTER_MODEL", "OPENROUTER_CLUSTER_MODEL", default="").strip() or LLM_MODEL
+LLM_GTM_MODEL = _first_env("LLM_GTM_MODEL", "OPENROUTER_GTM_MODEL", default="").strip() or LLM_MODEL
+LLM_MODEL_PRICING_JSON = _first_env("LLM_MODEL_PRICING_JSON", "OPENROUTER_MODEL_PRICING_JSON", default="{}")
+LLM_REASONING_EFFORT = _first_env("LLM_REASONING_EFFORT", default="high").strip().lower() or "high"
+LLM_TEMPERATURE = float(_first_env("LLM_TEMPERATURE", default=_default_temperature(LLM_PROVIDER, LLM_MODEL)))
+LLM_MAX_TOKENS = int(_first_env("LLM_MAX_TOKENS", default=_default_max_tokens(LLM_PROVIDER, LLM_MODEL)))
+
+# Backward-compatible aliases for existing code/tests/docs.
+OPENROUTER_API_KEY = LLM_API_KEY
+OPENROUTER_MODEL = LLM_MODEL
+OPENROUTER_DEEP_DIVE_MODEL = LLM_DEEP_DIVE_MODEL
+OPENROUTER_CLUSTER_MODEL = LLM_CLUSTER_MODEL
+OPENROUTER_GTM_MODEL = LLM_GTM_MODEL
+OPENROUTER_MODEL_PRICING_JSON = LLM_MODEL_PRICING_JSON
+
+EMBED_PROVIDER = _first_env("EMBED_PROVIDER", default=LLM_PROVIDER).strip().lower() or LLM_PROVIDER
+EMBED_API_KEY = _first_env("EMBED_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", default=LLM_API_KEY).strip() or LLM_API_KEY
+EMBED_API_BASE = _first_env("EMBED_API_BASE", "LLM_API_BASE", "OPENROUTER_API_BASE", default=LLM_API_BASE).strip()
+EMBED_MODEL = _first_env("EMBED_MODEL", default=_default_embed_model(EMBED_PROVIDER)).strip() or _default_embed_model(EMBED_PROVIDER)
 DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("DEDUP_SIMILARITY_THRESHOLD", "0.88"))
 
 DB_PATH = os.getenv("DB_PATH", "pain_finder.db")
@@ -39,13 +90,13 @@ SCRAPER_FEED_MIX_JSON = os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "t
 SCRAPER_SEARCH_QUERIES_JSON = os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]")
 
 DSPY_REDDIT_PARSER_ENABLED = os.getenv("DSPY_REDDIT_PARSER_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
-DSPY_PROVIDER = os.getenv("DSPY_PROVIDER", "codex").strip().lower() or "codex"
-DSPY_MODEL = os.getenv("DSPY_MODEL", "gpt-5.3-spark").strip() or "gpt-5.3-spark"
-DSPY_REASONING_EFFORT = os.getenv("DSPY_REASONING_EFFORT", "high").strip().lower() or "high"
-DSPY_API_KEY = os.getenv("DSPY_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
-DSPY_API_BASE = os.getenv("DSPY_API_BASE", "").strip()
-DSPY_TEMPERATURE = float(os.getenv("DSPY_TEMPERATURE", "1.0"))
-DSPY_MAX_TOKENS = int(os.getenv("DSPY_MAX_TOKENS", "16000"))
+DSPY_PROVIDER = _first_env("DSPY_PROVIDER", default=LLM_PROVIDER).strip().lower() or LLM_PROVIDER
+DSPY_MODEL = _first_env("DSPY_MODEL", default=LLM_MODEL).strip() or LLM_MODEL
+DSPY_REASONING_EFFORT = _first_env("DSPY_REASONING_EFFORT", default=LLM_REASONING_EFFORT).strip().lower() or LLM_REASONING_EFFORT
+DSPY_API_KEY = _first_env("DSPY_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", default=LLM_API_KEY).strip() or LLM_API_KEY
+DSPY_API_BASE = _first_env("DSPY_API_BASE", "LLM_API_BASE", default=LLM_API_BASE).strip()
+DSPY_TEMPERATURE = float(_first_env("DSPY_TEMPERATURE", default=str(LLM_TEMPERATURE)))
+DSPY_MAX_TOKENS = int(_first_env("DSPY_MAX_TOKENS", default=str(LLM_MAX_TOKENS)))
 
 EXPORT_MIN_WTP = int(os.getenv("EXPORT_MIN_WTP", "8"))
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
@@ -85,7 +136,8 @@ def parse_json_env(raw: str, default):
         return default
 
 
-OPENROUTER_MODEL_PRICING = parse_json_env(OPENROUTER_MODEL_PRICING_JSON, {})
+LLM_MODEL_PRICING = parse_json_env(LLM_MODEL_PRICING_JSON, {})
+OPENROUTER_MODEL_PRICING = LLM_MODEL_PRICING
 HN_KEYWORDS = parse_json_env(HN_KEYWORDS_JSON, [])
 if not isinstance(HN_KEYWORDS, list):
     HN_KEYWORDS = []

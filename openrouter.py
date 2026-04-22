@@ -166,7 +166,11 @@ class GTMGenerationResult:
 
 
 class OpenRouterClient:
-    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    DEFAULT_BASE_URLS = {
+        "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+        "codex": "https://api.openai.com/v1/chat/completions",
+        "openai": "https://api.openai.com/v1/chat/completions",
+    }
 
     def __init__(
         self,
@@ -178,6 +182,13 @@ class OpenRouterClient:
         pricing_map: dict[str, dict[str, float]] | None = None,
         budget_guard: "BudgetGuard | None" = None,
         cache_db: Any | None = None,
+        provider: str = "openrouter",
+        api_base: str = "",
+        reasoning_effort: str = "",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        app_url: str = "https://github.com/max-chad/pain_finder",
+        app_name: str = "pain_finder",
     ):
         self.api_key = api_key
         self.model = model
@@ -187,6 +198,48 @@ class OpenRouterClient:
         self.pricing_map = pricing_map or {}
         self.budget_guard = budget_guard
         self.cache_db = cache_db
+        self.provider = provider.strip().lower() or "openrouter"
+        self.api_base = api_base.strip()
+        self.reasoning_effort = reasoning_effort.strip().lower()
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.app_url = app_url
+        self.app_name = app_name
+        self.base_url = self._resolve_base_url()
+
+    def _resolve_base_url(self) -> str:
+        if self.api_base:
+            return f"{self.api_base.rstrip('/')}/chat/completions"
+        return self.DEFAULT_BASE_URLS.get(self.provider, self.DEFAULT_BASE_URLS["openai"])
+
+    def _is_openai_compatible(self) -> bool:
+        return self.provider in {"openai", "codex", "openrouter"}
+
+    def _build_headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.provider == "openrouter":
+            headers.update({"HTTP-Referer": self.app_url, "X-Title": self.app_name})
+        return headers
+
+    def _build_request_body(self, *, model: str, prompt: str) -> dict[str, Any]:
+        request_body: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+        }
+        if self.temperature is not None:
+            request_body["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            if self.provider in {"openai", "codex"} and (model.startswith("gpt-5") or model.startswith("o")):
+                request_body["max_completion_tokens"] = self.max_tokens
+            else:
+                request_body["max_tokens"] = self.max_tokens
+        if self.reasoning_effort and self._is_openai_compatible():
+            request_body["reasoning_effort"] = self.reasoning_effort
+        return request_body
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -305,23 +358,15 @@ class OpenRouterClient:
         if self.budget_guard is not None:
             await self.budget_guard.ensure_can_spend(operation)
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        request_body = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-        }
+        headers = self._build_headers()
+        request_body = self._build_request_body(model=model, prompt=prompt)
 
         _max_attempts = len(RETRY_BACKOFF_SECONDS)
         try:
             async with httpx.AsyncClient(timeout=45) as client:
                 for attempt in range(1, _max_attempts + 1):
                     try:
-                        response = await client.post(self.BASE_URL, json=request_body, headers=headers)
+                        response = await client.post(self.base_url, json=request_body, headers=headers)
                         response.raise_for_status()
                         response_json = response.json()
                         content = response_json["choices"][0]["message"]["content"]

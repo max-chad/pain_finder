@@ -4,9 +4,14 @@
 def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("OPENROUTER_MODEL", "test-model")
-    monkeypatch.setenv("OPENROUTER_DEEP_DIVE_MODEL", "deep-model")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "legacy-test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.3-spark")
+    monkeypatch.setenv("LLM_DEEP_DIVE_MODEL", "gpt-5.3-spark-deep")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "high")
+    monkeypatch.setenv("EMBED_PROVIDER", "codex")
+    monkeypatch.setenv("EMBED_MODEL", "text-embedding-3-small")
     monkeypatch.setenv("DB_PATH", "custom.db")
     monkeypatch.setenv("REPORTS_DIR", "custom-reports")
     monkeypatch.setenv("CLASSIFIER_MODE", "dual")
@@ -25,9 +30,6 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
     monkeypatch.setenv("GOOGLE_SHEETS_WORKSHEET_PREFIX", "pf")
     monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
-    monkeypatch.setenv("DSPY_PROVIDER", "codex")
-    monkeypatch.setenv("DSPY_MODEL", "gpt-5.3-spark")
-    monkeypatch.setenv("DSPY_REASONING_EFFORT", "high")
     monkeypatch.setenv("OPENAI_API_KEY", "dspy-key")
 
     config_module = importlib.import_module("config")
@@ -35,9 +37,17 @@ def test_config_loads_required_environment(monkeypatch):
 
     assert config_module.TELEGRAM_BOT_TOKEN == "test-token"
     assert config_module.TELEGRAM_CHAT_ID == 123
+    assert config_module.LLM_API_KEY == "test-key"
+    assert config_module.LLM_PROVIDER == "codex"
+    assert config_module.LLM_MODEL == "gpt-5.3-spark"
+    assert config_module.LLM_DEEP_DIVE_MODEL == "gpt-5.3-spark-deep"
+    assert config_module.LLM_REASONING_EFFORT == "high"
+    assert config_module.EMBED_PROVIDER == "codex"
+    assert config_module.EMBED_API_KEY == "test-key"
+    assert config_module.EMBED_MODEL == "text-embedding-3-small"
     assert config_module.OPENROUTER_API_KEY == "test-key"
-    assert config_module.OPENROUTER_MODEL == "test-model"
-    assert config_module.OPENROUTER_DEEP_DIVE_MODEL == "deep-model"
+    assert config_module.OPENROUTER_MODEL == "gpt-5.3-spark"
+    assert config_module.OPENROUTER_DEEP_DIVE_MODEL == "gpt-5.3-spark-deep"
     assert config_module.DB_PATH == "custom.db"
     assert config_module.REPORTS_DIR == "custom-reports"
     assert config_module.CLASSIFIER_MODE == "dual"
@@ -59,5 +69,5 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.DSPY_PROVIDER == "codex"
     assert config_module.DSPY_MODEL == "gpt-5.3-spark"
     assert config_module.DSPY_REASONING_EFFORT == "high"
-    assert config_module.DSPY_API_KEY == "dspy-key"
+    assert config_module.DSPY_API_KEY == "test-key"
 

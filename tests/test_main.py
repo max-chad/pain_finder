@@ -8,7 +8,12 @@ import pytest
 async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "key")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.3-spark")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "high")
+    monkeypatch.setenv("EMBED_PROVIDER", "codex")
+    monkeypatch.setenv("EMBED_MODEL", "text-embedding-3-small")
     monkeypatch.setenv("OPENAI_API_KEY", "dspy-key")
     monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
     monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
@@ -53,9 +58,31 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    class FakeOpenRouterClient:
+    class FakeEmbedder:
+        instances = []
+
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            FakeEmbedder.instances.append(self)
+
+    class FakeDeduplicator:
+        instances = []
+
+        def __init__(self, db, embedder, threshold):
+            self.db = db
+            self.embedder = embedder
+            self.threshold = threshold
+            FakeDeduplicator.instances.append(self)
+
+        async def backfill(self):
+            return 0
+
+    class FakeOpenRouterClient:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeOpenRouterClient.instances.append(self)
 
     class FakeDSPyParser:
         instances = []
@@ -236,6 +263,8 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "Database", FakeDB)
     monkeypatch.setattr(main, "RedditScraper", FakeScraper)
+    monkeypatch.setattr(main, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(main, "Deduplicator", FakeDeduplicator)
     monkeypatch.setattr(main, "OpenRouterClient", FakeOpenRouterClient)
     monkeypatch.setattr(main, "DSPyRedditPainParser", FakeDSPyParser)
     monkeypatch.setattr(main, "Classifier", FakeClassifier)
@@ -275,6 +304,9 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
     assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)
     assert bot.classifier.dspy_parser.kwargs["provider"] == main.config.DSPY_PROVIDER
+    assert FakeEmbedder.instances[0].kwargs["provider"] == main.config.EMBED_PROVIDER
+    assert FakeOpenRouterClient.instances[0].kwargs["provider"] == main.config.LLM_PROVIDER
+    assert FakeOpenRouterClient.instances[0].kwargs["reasoning_effort"] == main.config.LLM_REASONING_EFFORT
     assert pipeline.llm_max_classifications_per_run == main.config.LLM_MAX_CLASSIFICATIONS_PER_RUN
     bot = FakeBot.instances[-1]
     assert len(bot.grouped_notifications) == 1
@@ -331,10 +363,32 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class FakeEmbedder:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeEmbedder.instances.append(self)
+
+    class FakeDeduplicator:
+        instances = []
+
+        def __init__(self, db, embedder, threshold):
+            self.db = db
+            self.embedder = embedder
+            self.threshold = threshold
+            FakeDeduplicator.instances.append(self)
+
+        async def backfill(self):
+            return 0
+
     class FakeOpenRouterClient:
+        instances = []
+
         def __init__(self, **kwargs):
             self.kwargs = kwargs
             self.gtm_model = "gpt-test"
+            FakeOpenRouterClient.instances.append(self)
 
     class FakeDSPyParser:
         instances = []
@@ -509,6 +563,8 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "Database", FakeDB)
     monkeypatch.setattr(main, "RedditScraper", FakeScraper)
+    monkeypatch.setattr(main, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(main, "Deduplicator", FakeDeduplicator)
     monkeypatch.setattr(main, "OpenRouterClient", FakeOpenRouterClient)
     monkeypatch.setattr(main, "DSPyRedditPainParser", FakeDSPyParser)
     monkeypatch.setattr(main, "Classifier", FakeClassifier)

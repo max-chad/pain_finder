@@ -45,7 +45,12 @@ async def run() -> None:
     db = Database(config.DB_PATH)
     await db.init()
 
-    embedder = Embedder(api_key=config.OPENROUTER_API_KEY, model=config.EMBED_MODEL)
+    embedder = Embedder(
+        api_key=config.EMBED_API_KEY,
+        model=config.EMBED_MODEL,
+        provider=config.EMBED_PROVIDER,
+        api_base=config.EMBED_API_BASE,
+    )
     deduplicator = Deduplicator(db=db, embedder=embedder, threshold=config.DEDUP_SIMILARITY_THRESHOLD)
     dedup_merged = await deduplicator.backfill()
     logger.info("Dedup backfill complete: %d cross-source duplicates merged", dedup_merged)
@@ -64,14 +69,19 @@ async def run() -> None:
         search_queries=config.SCRAPER_SEARCH_QUERIES,
     )
     openrouter = OpenRouterClient(
-        api_key=config.OPENROUTER_API_KEY,
-        model=config.OPENROUTER_MODEL,
-        deep_dive_model=config.OPENROUTER_DEEP_DIVE_MODEL,
-        cluster_model=config.OPENROUTER_CLUSTER_MODEL,
-        gtm_model=config.OPENROUTER_GTM_MODEL,
-        pricing_map=config.OPENROUTER_MODEL_PRICING,
+        api_key=config.LLM_API_KEY,
+        model=config.LLM_MODEL,
+        deep_dive_model=config.LLM_DEEP_DIVE_MODEL,
+        cluster_model=config.LLM_CLUSTER_MODEL,
+        gtm_model=config.LLM_GTM_MODEL,
+        pricing_map=config.LLM_MODEL_PRICING,
         budget_guard=budget_guard,
         cache_db=db,
+        provider=config.LLM_PROVIDER,
+        api_base=config.LLM_API_BASE,
+        reasoning_effort=config.LLM_REASONING_EFFORT,
+        temperature=config.LLM_TEMPERATURE,
+        max_tokens=config.LLM_MAX_TOKENS,
     )
     dspy_parser = None
     if config.DSPY_REDDIT_PARSER_ENABLED and config.DSPY_API_KEY:
@@ -85,7 +95,7 @@ async def run() -> None:
             max_tokens=config.DSPY_MAX_TOKENS,
         )
     elif config.DSPY_REDDIT_PARSER_ENABLED:
-        logger.warning("DSPy Reddit parser enabled but no DSPY_API_KEY/OPENAI_API_KEY provided; falling back to OpenRouter")
+        logger.warning("DSPy Reddit parser enabled but no API key was provided; falling back to the configured LLM client")
 
     classifier = Classifier(
         openrouter=openrouter,

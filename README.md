@@ -9,7 +9,8 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
   - Hacker News Algolia API (`scraper_hn.py`)
   - Configured review pages (`scraper_reviews.py`)
 - Classifies pain with `legacy|b2b|dual` modes and strict JSON schemas.
-- Can route the primary Reddit pain parse through an optional DSPy/Codex (`gpt-5.3-spark`, `high`) backend, with OpenRouter fallback.
+- Defaults the full LLM stack (primary parse, legacy fallback, deep dive, clustering, GTM, embeddings) to Codex/OpenAI-compatible routing, with OpenRouter-compatible env aliases still supported.
+- Can route the primary Reddit pain parse through an optional DSPy/Codex (`gpt-5.3-spark`, `high`) backend, with the same provider defaults.
 - Tracks monetization signals (`pain_level`, `willingness_to_pay`, `is_monetizable`, `niche_category`, `competitor_tags`).
 - Auto-runs deep dives on high-value signals and supports manual deep dives.
 - Runs macro trend clustering over historical high-signal items.
@@ -24,7 +25,7 @@ Telegram-controlled B2B pain discovery system with Reddit, Hacker News, and revi
 - `scraper.py`: Reddit scraping with PRAW + OAuth JSON + public JSON fallback, mixed feed ingestion (`new+rising+top`), optional subreddit pain-search queries, top comments, full thread extraction, retry/backoff.
 - `scraper_hn.py`: Hacker News Algolia ingestion.
 - `scraper_reviews.py`: review-source scraping for negative (1-2 star) reviews.
-- `openrouter.py`: LLM client, strict schema parsing, usage/cost accounting.
+- `openrouter.py`: provider-agnostic OpenAI-compatible LLM client (Codex/OpenAI/OpenRouter), strict schema parsing, usage/cost accounting.
 - `classifier.py`: scoring + classification mode orchestration + competitor tag normalization, with optional DSPy primary Reddit parser fallback.
 - `pipeline.py`: ingestion->classification->persistence->deep dive->digest flow.
 - `clusterer.py`: hybrid local embedding clustering + LLM trend labels.
@@ -67,14 +68,28 @@ Required:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `LLM_API_KEY` (or backward-compatible `OPENAI_API_KEY` / `OPENROUTER_API_KEY`)
+
+Core provider + models:
+
+- `LLM_PROVIDER` (default `codex`)
+- `LLM_API_BASE`
+- `LLM_MODEL`
+- `LLM_DEEP_DIVE_MODEL` (falls back to `LLM_MODEL`)
+- `LLM_CLUSTER_MODEL` (falls back to `LLM_MODEL`)
+- `LLM_GTM_MODEL` (falls back to `LLM_MODEL`)
+- `LLM_MODEL_PRICING_JSON`
+- `LLM_REASONING_EFFORT`
+- `LLM_TEMPERATURE`
+- `LLM_MAX_TOKENS`
+
+Backward-compatible aliases still work:
+
 - `OPENROUTER_API_KEY`
-
-Core models:
-
 - `OPENROUTER_MODEL`
-- `OPENROUTER_DEEP_DIVE_MODEL` (falls back to `OPENROUTER_MODEL`)
-- `OPENROUTER_CLUSTER_MODEL` (falls back to `OPENROUTER_MODEL`)
-- `OPENROUTER_GTM_MODEL` (falls back to `OPENROUTER_MODEL`)
+- `OPENROUTER_DEEP_DIVE_MODEL`
+- `OPENROUTER_CLUSTER_MODEL`
+- `OPENROUTER_GTM_MODEL`
 - `OPENROUTER_MODEL_PRICING_JSON`
 
 Classifier/deep dive controls:
@@ -97,11 +112,11 @@ Scraper controls:
 Optional DSPy Reddit parser:
 
 - `DSPY_REDDIT_PARSER_ENABLED` (default `1`)
-- `DSPY_PROVIDER` (default `codex`)
-- `DSPY_MODEL` (default `gpt-5.3-spark`)
-- `DSPY_REASONING_EFFORT` (default `high`)
-- `DSPY_API_KEY` (falls back to `OPENAI_API_KEY`)
-- `DSPY_API_BASE`
+- `DSPY_PROVIDER` (defaults to `LLM_PROVIDER`, so Codex by default)
+- `DSPY_MODEL` (defaults to `LLM_MODEL`)
+- `DSPY_REASONING_EFFORT` (defaults to `LLM_REASONING_EFFORT`)
+- `DSPY_API_KEY` (defaults to `LLM_API_KEY` / `OPENAI_API_KEY`)
+- `DSPY_API_BASE` (defaults to `LLM_API_BASE`)
 - `DSPY_TEMPERATURE`
 - `DSPY_MAX_TOKENS`
 
@@ -147,6 +162,10 @@ Paths and source auth:
 - `REDDIT_CLIENT_ID`
 - `REDDIT_CLIENT_SECRET`
 - `REDDIT_USER_AGENT`
+- `EMBED_PROVIDER`
+- `EMBED_API_KEY`
+- `EMBED_API_BASE`
+- `EMBED_MODEL`
 
 ## Data Model Highlights
 
