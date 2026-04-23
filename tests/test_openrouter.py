@@ -169,6 +169,78 @@ async def test_body_truncated_for_large_prompt(respx_mock):
     assert "OVERFLOW_MARKER" not in prompt
 
 
+async def test_analyze_post_uses_primary_max_output_tokens(respx_mock):
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "Ops", "competitor_tags": [], "summary": "Manual process", "category": "complaint", "severity": "medium"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    respx_mock.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-spark",
+        provider="codex",
+        max_tokens=4096,
+        primary_max_output_tokens=321,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is not None
+    import json
+
+    req_body = json.loads(captured_requests[0].content)
+    assert req_body["max_completion_tokens"] == 321
+
+
+async def test_openrouter_provider_uses_primary_max_output_tokens_in_request_body(respx_mock):
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "Ops", "competitor_tags": [], "summary": "Manual process", "category": "complaint", "severity": "medium"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-spark",
+        provider="openrouter",
+        max_tokens=4096,
+        primary_max_output_tokens=321,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is not None
+    import json
+
+    req_body = json.loads(captured_requests[0].content)
+    assert req_body["max_tokens"] == 321
+
+
 async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effort(respx_mock):
     captured_requests = []
 

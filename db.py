@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     deep_dive_count INTEGER NOT NULL,
     skipped_existing_count INTEGER DEFAULT 0,
     dedup_merged_count INTEGER DEFAULT 0,
+    screen_rule_dropped_count INTEGER DEFAULT 0,
+    screen_kept_count INTEGER DEFAULT 0,
+    screen_capped_count INTEGER DEFAULT 0,
     duration_ms INTEGER,
     report_id INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
@@ -264,6 +267,9 @@ PAIN_POINT_COLUMNS = {
 ANALYSIS_RUN_COLUMNS = {
     "skipped_existing_count": "INTEGER DEFAULT 0",
     "dedup_merged_count": "INTEGER DEFAULT 0",
+    "screen_rule_dropped_count": "INTEGER DEFAULT 0",
+    "screen_kept_count": "INTEGER DEFAULT 0",
+    "screen_capped_count": "INTEGER DEFAULT 0",
 }
 
 LLM_USAGE_EVENT_COLUMNS = {
@@ -329,9 +335,15 @@ class Database:
 
         analysis_run_migration = "2026_04_15_analysis_run_efficiency_metrics"
         if not await self._is_migration_applied(analysis_run_migration):
-            for column_name, ddl in ANALYSIS_RUN_COLUMNS.items():
-                await self._ensure_column("analysis_runs", column_name, ddl)
+            for column_name in ["skipped_existing_count", "dedup_merged_count"]:
+                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_migration)
+
+        analysis_run_screening_migration = "2026_04_22_analysis_run_screening_metrics"
+        if not await self._is_migration_applied(analysis_run_screening_migration):
+            for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
+                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
+            await self._mark_migration_applied(analysis_run_screening_migration)
 
         llm_usage_migration = "2026_04_22_llm_usage_lineage"
         if not await self._is_migration_applied(llm_usage_migration):
@@ -812,11 +824,20 @@ class Database:
         deep_dive_count: int,
         skipped_existing_count: int = 0,
         dedup_merged_count: int = 0,
+        screen_rule_dropped_count: int = 0,
+        screen_kept_count: int = 0,
+        screen_capped_count: int = 0,
         duration_ms: int | None,
         report_id: int | None,
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO analysis_runs (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, skipped_existing_count, dedup_merged_count, duration_ms, report_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "INSERT INTO analysis_runs ("
+                "subreddit, post_count, pain_count, monetizable_count, deep_dive_count, "
+                "skipped_existing_count, dedup_merged_count, screen_rule_dropped_count, "
+                "screen_kept_count, screen_capped_count, duration_ms, report_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
             (
                 subreddit,
                 post_count,
@@ -825,6 +846,9 @@ class Database:
                 deep_dive_count,
                 skipped_existing_count,
                 dedup_merged_count,
+                screen_rule_dropped_count,
+                screen_kept_count,
+                screen_capped_count,
                 duration_ms,
                 report_id,
             ),

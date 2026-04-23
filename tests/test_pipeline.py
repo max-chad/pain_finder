@@ -184,6 +184,9 @@ async def test_analyze_subreddit_skips_already_persisted_posts_before_classifica
     assert latest_run is not None
     assert latest_run["skipped_existing_count"] == 1
     assert latest_run["dedup_merged_count"] == 0
+    assert latest_run["screen_rule_dropped_count"] == 0
+    assert latest_run["screen_kept_count"] == 1
+    assert latest_run["screen_capped_count"] == 0
 
 
 async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_path):
@@ -214,6 +217,7 @@ async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_
     scraper = AsyncMock()
     scraper.fetch_posts.return_value = posts
     classifier = SimpleNamespace(
+        prescreen_posts=MagicMock(return_value=(posts[:1], {"screen_rule_dropped_count": 0, "screen_kept_count": 3, "screen_capped_count": 2})),
         classify_batch=AsyncMock(return_value=[capped_signal]),
         openrouter=AsyncMock(),
     )
@@ -224,14 +228,22 @@ async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_
         db=db,
         reports_dir=str(tmp_path / "reports"),
         llm_max_classifications_per_run=1,
+        screen_max_llm_candidates_per_run=5,
     )
 
     run = await pipeline.analyze_subreddit("python", limit=10)
 
+    classifier.prescreen_posts.assert_called_once()
     classify_arg = classifier.classify_batch.await_args.args[0]
     assert [post.post_id for post in classify_arg] == ["fresh0"]
     assert run.post_count == 3
     assert run.pain_count == 1
+
+    latest_run = await db.get_latest_analysis_run("python")
+    assert latest_run is not None
+    assert latest_run["screen_rule_dropped_count"] == 0
+    assert latest_run["screen_kept_count"] == 3
+    assert latest_run["screen_capped_count"] == 2
 
 
 async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_path, monkeypatch):

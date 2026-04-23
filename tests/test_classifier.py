@@ -201,6 +201,28 @@ async def test_classify_batch_respects_max_concurrency():
     assert peak_in_flight <= 2
 
 
+def test_prescreen_posts_filters_low_signal_and_caps_candidates():
+    clf = Classifier(
+        openrouter=None,
+        mode="legacy",
+        screen_min_rule_score=2,
+        screen_max_llm_candidates_per_run=2,
+    )
+    posts = [
+        make_post(title="Cool launch announcement", body="Just sharing progress", post_id="drop"),
+        make_post(title="Need better approval workflow", body="Manual process every week", post_id="keep1"),
+        make_post(title="Spreadsheet workaround is painful", body="We export CSVs daily", post_id="keep2"),
+        make_post(title="Wish there was a Jira sync", body="Manual handoff between teams", post_id="keep3"),
+    ]
+
+    shortlisted, stats = clf.prescreen_posts(posts)
+
+    assert {post.post_id for post in shortlisted} == {"keep1", "keep2"}
+    assert stats["screen_rule_dropped_count"] == 1
+    assert stats["screen_kept_count"] == 3
+    assert stats["screen_capped_count"] == 1
+
+
 async def test_competitor_tags_are_propagated_and_normalized():
     mock_llm = AsyncMock()
     mock_llm.analyze_post.return_value = AnalysisResult(

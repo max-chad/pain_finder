@@ -116,6 +116,7 @@ async def run() -> None:
         reasoning_effort=config.LLM_REASONING_EFFORT,
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
+        primary_max_output_tokens=config.PRIMARY_MAX_OUTPUT_TOKENS,
     )
     dspy_parser = None
     if config.DSPY_REDDIT_PARSER_ENABLED and config.DSPY_API_KEY:
@@ -136,6 +137,8 @@ async def run() -> None:
         dspy_parser=dspy_parser,
         mode=config.CLASSIFIER_MODE,
         max_concurrency=config.CLASSIFIER_MAX_CONCURRENCY,
+        screen_min_rule_score=config.SCREEN_MIN_RULE_SCORE,
+        screen_max_llm_candidates_per_run=config.SCREEN_MAX_LLM_CANDIDATES_PER_RUN,
     )
     pipeline = AnalysisPipeline(
         scraper=scraper,
@@ -147,6 +150,7 @@ async def run() -> None:
         budget_guard=budget_guard,
         deduplicator=deduplicator,
         llm_max_classifications_per_run=config.LLM_MAX_CLASSIFICATIONS_PER_RUN,
+        screen_max_llm_candidates_per_run=config.SCREEN_MAX_LLM_CANDIDATES_PER_RUN,
         current_opportunity_max_age_days=config.CURRENT_OPPORTUNITY_MAX_AGE_DAYS,
     )
     clusterer = MacroTrendClusterer(

@@ -345,6 +345,9 @@ async def test_record_analysis_run_and_get_latest(db):
         deep_dive_count=2,
         skipped_existing_count=11,
         dedup_merged_count=3,
+        screen_rule_dropped_count=17,
+        screen_kept_count=21,
+        screen_capped_count=4,
         duration_ms=1200,
         report_id=10,
     )
@@ -356,6 +359,127 @@ async def test_record_analysis_run_and_get_latest(db):
     assert latest["monetizable_count"] == 5
     assert latest["skipped_existing_count"] == 11
     assert latest["dedup_merged_count"] == 3
+    assert latest["screen_rule_dropped_count"] == 17
+    assert latest["screen_kept_count"] == 21
+    assert latest["screen_capped_count"] == 4
+
+
+async def test_init_migrates_existing_analysis_runs_with_old_migration_marker(tmp_path):
+    db_path = tmp_path / "legacy_analysis_runs.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE analysis_runs (
+            id INTEGER PRIMARY KEY,
+            subreddit TEXT NOT NULL,
+            post_count INTEGER NOT NULL,
+            pain_count INTEGER NOT NULL,
+            monetizable_count INTEGER NOT NULL,
+            deep_dive_count INTEGER NOT NULL,
+            skipped_existing_count INTEGER DEFAULT 0,
+            dedup_merged_count INTEGER DEFAULT 0,
+            duration_ms INTEGER,
+            report_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE pain_points (
+            id INTEGER PRIMARY KEY,
+            subreddit TEXT NOT NULL,
+            post_id TEXT UNIQUE NOT NULL,
+            willingness_to_pay INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'reddit',
+            source_created_ts INTEGER,
+            opportunity_bucket TEXT DEFAULT 'unknown_age',
+            triage_status TEXT DEFAULT 'new',
+            emb_vector TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE monitored_subreddits (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, interval_hours INTEGER NOT NULL, last_checked TEXT, active INTEGER DEFAULT 1)")
+    conn.execute("CREATE TABLE reports (id INTEGER PRIMARY KEY, subreddit TEXT NOT NULL, run_at TEXT DEFAULT (datetime('now')), post_count INTEGER, pain_count INTEGER, json_path TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE deep_dives (
+            id INTEGER PRIMARY KEY,
+            post_id TEXT UNIQUE NOT NULL,
+            subreddit TEXT NOT NULL,
+            source TEXT DEFAULT 'auto',
+            status TEXT NOT NULL,
+            payload_json TEXT,
+            error TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE pain_point_competitors (post_id TEXT NOT NULL, competitor_tag TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (post_id, competitor_tag))")
+    conn.execute("CREATE TABLE macro_trend_runs (id INTEGER PRIMARY KEY, window_days INTEGER NOT NULL, candidate_count INTEGER NOT NULL, cluster_count INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute(
+        """
+        CREATE TABLE macro_trend_clusters (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            cluster_key TEXT,
+            label TEXT,
+            summary TEXT,
+            estimated_monetization_signal TEXT,
+            item_count INTEGER NOT NULL,
+            aggregate_wtp REAL NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE macro_trend_members (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, cluster_id INTEGER NOT NULL, post_id TEXT NOT NULL, similarity REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute(
+        """
+        CREATE TABLE llm_usage_events (
+            id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
+            post_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE runtime_flags (id INTEGER PRIMARY KEY CHECK (id = 1), llm_paused INTEGER DEFAULT 0, pause_reason TEXT, pause_day TEXT, resume_override_until TEXT, updated_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("CREATE TABLE llm_response_cache (cache_key TEXT PRIMARY KEY, model TEXT NOT NULL, operation TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("CREATE TABLE gtm_assets (id INTEGER PRIMARY KEY, post_id TEXT NOT NULL, model TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("INSERT INTO schema_migrations (name) VALUES ('2026_04_15_analysis_run_efficiency_metrics')")
+    conn.commit()
+    conn.close()
+
+    database = Database(str(db_path))
+    await database.init()
+    try:
+        run_id = await database.record_analysis_run(
+            subreddit="ops",
+            post_count=10,
+            pain_count=4,
+            monetizable_count=2,
+            deep_dive_count=1,
+            screen_rule_dropped_count=3,
+            screen_kept_count=5,
+            screen_capped_count=1,
+            duration_ms=42,
+            report_id=None,
+        )
+        latest = await database.get_latest_analysis_run("ops")
+        assert run_id > 0
+        assert latest is not None
+        assert latest["screen_rule_dropped_count"] == 3
+        assert latest["screen_kept_count"] == 5
+        assert latest["screen_capped_count"] == 1
+    finally:
+        await database.close()
 
 
 async def test_competitor_tags_are_normalized_and_queryable(db):

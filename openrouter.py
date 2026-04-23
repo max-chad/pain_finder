@@ -241,6 +241,7 @@ class OpenRouterClient:
         reasoning_effort: str = "",
         temperature: float | None = None,
         max_tokens: int | None = None,
+        primary_max_output_tokens: int | None = None,
         app_url: str = "https://github.com/max-chad/pain_finder",
         app_name: str = "pain_finder",
     ):
@@ -257,6 +258,7 @@ class OpenRouterClient:
         self.reasoning_effort = reasoning_effort.strip().lower()
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.primary_max_output_tokens = primary_max_output_tokens
         self.app_url = app_url
         self.app_name = app_name
         self.base_url = self._resolve_base_url()
@@ -307,7 +309,7 @@ class OpenRouterClient:
             headers.update(self._build_codex_headers(self.api_key))
         return headers
 
-    def _build_request_body(self, *, model: str, prompt: str) -> dict[str, Any]:
+    def _build_request_body(self, *, model: str, prompt: str, max_output_tokens: int | None = None) -> dict[str, Any]:
         request_body: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -315,11 +317,12 @@ class OpenRouterClient:
         }
         if self.temperature is not None:
             request_body["temperature"] = self.temperature
-        if self.max_tokens is not None:
+        token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
+        if token_limit is not None:
             if self.provider in {"openai", "codex"} and (model.startswith("gpt-5") or model.startswith("o")):
-                request_body["max_completion_tokens"] = self.max_tokens
+                request_body["max_completion_tokens"] = token_limit
             else:
-                request_body["max_tokens"] = self.max_tokens
+                request_body["max_tokens"] = token_limit
         if self.reasoning_effort and self._is_openai_compatible():
             request_body["reasoning_effort"] = self.reasoning_effort
         return request_body
@@ -350,7 +353,13 @@ class OpenRouterClient:
             "completion_tokens": completion_tokens,
         }
 
-    async def _request_codex_responses_payload(self, *, prompt: str, model: str) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+    async def _request_codex_responses_payload(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        max_output_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
         def _run() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
             client = OpenAI(
                 api_key=self.api_key,
@@ -369,6 +378,9 @@ class OpenRouterClient:
                 ],
                 "store": False,
             }
+            token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
+            if token_limit is not None:
+                stream_kwargs["max_output_tokens"] = token_limit
             if self.reasoning_effort:
                 stream_kwargs["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
             with client.responses.stream(**stream_kwargs) as stream:
@@ -435,6 +447,7 @@ class OpenRouterClient:
             validate_payload=self._is_valid_primary_payload,
             schema_version=PRIMARY_SCHEMA_VERSION,
             candidate_stage="primary",
+            max_output_tokens=self.primary_max_output_tokens,
         )
         if payload is None:
             return None
@@ -541,8 +554,17 @@ class OpenRouterClient:
         schema_version: str,
         candidate_stage: str,
         fallback_reason: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any] | None:
-        cache_key = self._build_cache_key(model=model, operation=operation, prompt=prompt)
+        cache_key = self._build_cache_key(
+            model=model,
+            operation=operation,
+            prompt=prompt,
+            provider=self.provider,
+            request_path=self._request_path(),
+            reasoning_effort=self.reasoning_effort,
+            max_output_tokens=max_output_tokens,
+        )
         prompt_hash = self._prompt_hash(prompt)
         cached_payload = await self._get_cached_payload(cache_key)
         if cached_payload is not None:
@@ -562,7 +584,11 @@ class OpenRouterClient:
 
         if self._uses_openai_codex_backend():
             try:
-                payload, usage = await self._request_codex_responses_payload(prompt=prompt, model=model)
+                payload, usage = await self._request_codex_responses_payload(
+                    prompt=prompt,
+                    model=model,
+                    max_output_tokens=max_output_tokens,
+                )
             except Exception as e:
                 logger.warning("OpenAI Codex request failed: %s", e)
                 return None
@@ -591,7 +617,7 @@ class OpenRouterClient:
             return payload
 
         headers = self._build_headers()
-        request_body = self._build_request_body(model=model, prompt=prompt)
+        request_body = self._build_request_body(model=model, prompt=prompt, max_output_tokens=max_output_tokens)
 
         _max_attempts = len(RETRY_BACKOFF_SECONDS)
         try:
@@ -669,9 +695,30 @@ class OpenRouterClient:
         return self.base_url
 
     @classmethod
-    def _build_cache_key(cls, *, model: str, operation: str, prompt: str) -> str:
+    def _build_cache_key(
+        cls,
+        *,
+        model: str,
+        operation: str,
+        prompt: str,
+        provider: str,
+        request_path: str,
+        reasoning_effort: str,
+        max_output_tokens: int | None,
+    ) -> str:
         digest = cls._prompt_hash(prompt)
-        return f"{operation}:{model}:{digest}"
+        config_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "provider": provider,
+                    "request_path": request_path,
+                    "reasoning_effort": reasoning_effort,
+                    "max_output_tokens": max_output_tokens,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"{operation}:{model}:{config_fingerprint}:{digest}"
 
     async def _get_cached_payload(self, cache_key: str) -> dict[str, Any] | None:
         if self.cache_db is None:

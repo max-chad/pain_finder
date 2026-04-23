@@ -326,12 +326,16 @@ class Classifier:
         dspy_parser: Any | None = None,
         mode: str = "dual",
         max_concurrency: int = 8,
+        screen_min_rule_score: int = 1,
+        screen_max_llm_candidates_per_run: int = 0,
     ):
         self.openrouter = openrouter
         self.dspy_parser = dspy_parser
         normalized_mode = mode.lower().strip()
         self.mode = normalized_mode if normalized_mode in self.VALID_MODES else "dual"
         self.max_concurrency = max(1, max_concurrency)
+        self.screen_min_rule_score = max(0, int(screen_min_rule_score))
+        self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
 
     def keyword_score(self, post: Post) -> int:
         text = f"{post.title} {post.body}".lower()
@@ -343,6 +347,54 @@ class Classifier:
         if any(word in text for word in WISH_WORDS):
             score += 1
         return min(score, 3)
+
+    def prescreen_score(self, post: Post) -> int:
+        text = f"{post.title} {post.body}".lower()
+        score = self.keyword_score(post)
+        if any(token in text for token in BUSINESS_CONTEXT_WORDS):
+            score += 1
+        if any(token in text for token in {"manual", "process", "workflow", "spreadsheet", "csv", "approval", "handoff", "sync", "pain"}):
+            score += 1
+        if any(pattern in text for pattern in HIGH_FREQUENCY_PATTERNS):
+            score += 1
+        if self._extract_competitor_hints(post):
+            score += 1
+        if any(comment.strip() for comment in post.top_comments):
+            score += 1
+        if self._infer_first_handness(post, post_type=self._infer_post_type(post, category=self._keyword_category(post))) == "first_hand":
+            score += 1
+        if self._is_likely_b2c_noise(post):
+            score = max(0, score - 1)
+        return max(0, min(score, 7))
+
+    def prescreen_posts(
+        self,
+        posts: list[Post],
+        *,
+        max_candidates: int | None = None,
+    ) -> tuple[list[Post], dict[str, int]]:
+        scored: list[tuple[int, Post]] = []
+        rule_dropped_count = 0
+        for post in posts:
+            score = self.prescreen_score(post)
+            if score < self.screen_min_rule_score:
+                rule_dropped_count += 1
+                continue
+            scored.append((score, post))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        kept_count = len(scored)
+        capped_count = 0
+        shortlisted = [post for _, post in scored]
+        candidate_cap = self.screen_max_llm_candidates_per_run if max_candidates is None else max(0, int(max_candidates))
+        if candidate_cap > 0 and len(shortlisted) > candidate_cap:
+            capped_count = len(shortlisted) - candidate_cap
+            shortlisted = shortlisted[:candidate_cap]
+        return shortlisted, {
+            "screen_rule_dropped_count": rule_dropped_count,
+            "screen_kept_count": kept_count,
+            "screen_capped_count": capped_count,
+        }
 
     def _keyword_category(self, post: Post) -> str:
         text = f"{post.title} {post.body}".lower()
@@ -475,14 +527,19 @@ class Classifier:
         )
 
     async def classify(self, post: Post) -> PainSignal | None:
-        score = self.keyword_score(post)
-        if score == 0:
+        keyword_score = self.keyword_score(post)
+        rule_score = self.prescreen_score(post)
+        if rule_score < self.screen_min_rule_score:
             return None
 
+        heuristic_score = max(keyword_score, min(3, rule_score))
         b2c_noise = self._is_likely_b2c_noise(post)
+        dspy_attempted = False
+        primary_attempted = False
 
         if self.mode in {"b2b", "dual"}:
             if self.dspy_parser is not None:
+                dspy_attempted = True
                 primary = await self.dspy_parser.analyze_post(post)
                 if primary:
                     signal = self._signal_from_analysis(post, primary, mode="dspy_b2b")
@@ -495,6 +552,7 @@ class Classifier:
                         signal.competitor_tags = self._extract_competitor_hints(post)
                     return signal
             if self.openrouter:
+                primary_attempted = True
                 primary = await self.openrouter.analyze_post(title=post.title, body=post.body, post_id=post.post_id)
                 if primary:
                     signal = self._signal_from_analysis(post, primary, mode="b2b")
@@ -510,7 +568,16 @@ class Classifier:
                 return None
 
         if self.mode in {"legacy", "dual"} and self.openrouter:
-            legacy_fallback_reason = "mode_legacy" if self.mode == "legacy" else "primary_unavailable"
+            if self.mode == "legacy":
+                legacy_fallback_reason = "mode_legacy"
+            elif dspy_attempted and primary_attempted:
+                legacy_fallback_reason = "dspy_empty_primary_unavailable"
+            elif dspy_attempted:
+                legacy_fallback_reason = "dspy_empty"
+            elif primary_attempted:
+                legacy_fallback_reason = "primary_unavailable"
+            else:
+                legacy_fallback_reason = "dual_no_primary"
             legacy = await self.openrouter.analyze_legacy_post(
                 title=post.title,
                 body=post.body,
@@ -525,9 +592,9 @@ class Classifier:
                     signal.pain_level = 0
                     signal.niche_category = "B2C-noise"
                 else:
-                    signal.is_monetizable = score >= 2
-                    signal.pain_level = min(10, 4 + score * 2)
-                    signal.willingness_to_pay = min(10, 3 + score * 2)
+                    signal.is_monetizable = heuristic_score >= 2
+                    signal.pain_level = min(10, 4 + heuristic_score * 2)
+                    signal.willingness_to_pay = min(10, 3 + heuristic_score * 2)
                     signal.niche_category = signal.niche_category or "Uncategorized"
                 if not signal.competitor_tags:
                     signal.competitor_tags = self._extract_competitor_hints(post)
@@ -542,10 +609,10 @@ class Classifier:
             post=post,
             category=category,
             summary=post.title[:120],
-            severity="medium" if score >= 2 else "low",
-            is_monetizable=not b2c_noise and score >= 2,
-            pain_level=0 if b2c_noise else min(10, 4 + score * 2),
-            willingness_to_pay=0 if b2c_noise else min(10, 3 + score * 2),
+            severity="medium" if heuristic_score >= 2 else "low",
+            is_monetizable=not b2c_noise and heuristic_score >= 2,
+            pain_level=0 if b2c_noise else min(10, 4 + heuristic_score * 2),
+            willingness_to_pay=0 if b2c_noise else min(10, 3 + heuristic_score * 2),
             niche_category="B2C-noise" if b2c_noise else "Uncategorized",
             competitor_tags=self._extract_competitor_hints(post),
             analysis_mode="legacy",

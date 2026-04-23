@@ -66,6 +66,7 @@ class AnalysisPipeline:
         budget_guard: BudgetGuard | None = None,
         deduplicator: Deduplicator | None = None,
         llm_max_classifications_per_run: int = 0,
+        screen_max_llm_candidates_per_run: int = 0,
         current_opportunity_max_age_days: int = 180,
     ):
         self.scraper = scraper
@@ -77,6 +78,7 @@ class AnalysisPipeline:
         self.budget_guard = budget_guard
         self.deduplicator = deduplicator
         self.llm_max_classifications_per_run = max(0, int(llm_max_classifications_per_run))
+        self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
         self.current_opportunity_max_age_days = max(1, int(current_opportunity_max_age_days))
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
@@ -119,10 +121,22 @@ class AnalysisPipeline:
         existing_ids = await self.db.get_pain_points_by_ids([post.post_id for post in posts])
         fresh_posts = [post for post in posts if post.post_id not in existing_ids]
         skipped_existing_count = len(posts) - len(fresh_posts)
-        llm_capped_count = 0
-        if self.llm_max_classifications_per_run > 0 and len(fresh_posts) > self.llm_max_classifications_per_run:
-            llm_capped_count = len(fresh_posts) - self.llm_max_classifications_per_run
-            fresh_posts = fresh_posts[: self.llm_max_classifications_per_run]
+        fresh_post_count = len(fresh_posts)
+
+        configured_limits = [limit for limit in [self.screen_max_llm_candidates_per_run, self.llm_max_classifications_per_run] if limit > 0]
+        screening_limit = min(configured_limits) if configured_limits else 0
+        screen_rule_dropped_count = 0
+        screen_kept_count = len(fresh_posts)
+        screen_capped_count = 0
+        if hasattr(self.classifier, "prescreen_posts"):
+            fresh_posts, screen_stats = self.classifier.prescreen_posts(
+                fresh_posts,
+                max_candidates=screening_limit,
+            )
+            screen_rule_dropped_count = int(screen_stats.get("screen_rule_dropped_count", 0))
+            screen_kept_count = int(screen_stats.get("screen_kept_count", len(fresh_posts)))
+            screen_capped_count = int(screen_stats.get("screen_capped_count", 0))
+        llm_capped_count = screen_capped_count
 
         classified_signals = await self.classifier.classify_batch(fresh_posts)
         persisted_signals: list[PainSignal] = []
@@ -243,22 +257,27 @@ class AnalysisPipeline:
             deep_dive_count=deep_dive_count,
             skipped_existing_count=skipped_existing_count,
             dedup_merged_count=dedup_merged_count,
+            screen_rule_dropped_count=screen_rule_dropped_count,
+            screen_kept_count=screen_kept_count,
+            screen_capped_count=screen_capped_count,
             duration_ms=duration_ms,
             report_id=report_id,
         )
 
         logger.info(
             "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
-            "post_count=%d fresh_post_count=%d skipped_existing_count=%d llm_capped_count=%d pain_count=%d "
-            "monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d "
-            "discarded_non_pain_count=%d primary_success_count=%d legacy_fallback_count=%d "
-            "deep_dive_skipped_reasons=%s duration_ms=%d",
+            "post_count=%d fresh_post_count=%d skipped_existing_count=%d screen_rule_dropped_count=%d "
+            "screen_kept_count=%d llm_capped_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d "
+            "inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d primary_success_count=%d "
+            "legacy_fallback_count=%d deep_dive_skipped_reasons=%s duration_ms=%d",
             source,
             run_scope,
             analysis_run_id,
             len(posts),
-            len(fresh_posts),
+            fresh_post_count,
             skipped_existing_count,
+            screen_rule_dropped_count,
+            screen_kept_count,
             llm_capped_count,
             inserted_count,
             monetizable_count,

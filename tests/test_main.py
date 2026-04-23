@@ -16,6 +16,9 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("EMBED_MODEL", "text-embedding-3-small")
     monkeypatch.setenv("OPENAI_API_KEY", "dspy-key")
     monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
+    monkeypatch.setenv("SCREEN_MIN_RULE_SCORE", "3")
+    monkeypatch.setenv("SCREEN_MAX_LLM_CANDIDATES_PER_RUN", "21")
+    monkeypatch.setenv("PRIMARY_MAX_OUTPUT_TOKENS", "777")
     monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
 
@@ -93,11 +96,21 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             FakeDSPyParser.instances.append(self)
 
     class FakeClassifier:
-        def __init__(self, openrouter, dspy_parser=None, mode="dual", max_concurrency=8):
+        def __init__(
+            self,
+            openrouter,
+            dspy_parser=None,
+            mode="dual",
+            max_concurrency=8,
+            screen_min_rule_score=1,
+            screen_max_llm_candidates_per_run=0,
+        ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
             self.mode = mode
             self.max_concurrency = max_concurrency
+            self.screen_min_rule_score = screen_min_rule_score
+            self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
 
     class FakePipeline:
         instances = []
@@ -113,6 +126,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             budget_guard=None,
             deduplicator=None,
             llm_max_classifications_per_run=0,
+            screen_max_llm_candidates_per_run=0,
             current_opportunity_max_age_days=180,
         ):
             self.scraper = scraper
@@ -121,6 +135,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             self.reports_dir = reports_dir
             self.budget_guard = budget_guard
             self.llm_max_classifications_per_run = llm_max_classifications_per_run
+            self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
             self.calls = []
             self.deep_dive_calls = []
             self.digest_calls = []
@@ -304,12 +319,15 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert bot.scraper.kwargs["feed_mix"] == main.config.SCRAPER_FEED_MIX
     assert bot.scraper.kwargs["comment_fetch_concurrency"] == main.config.SCRAPER_COMMENT_FETCH_CONCURRENCY
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
+    assert bot.classifier.screen_min_rule_score == main.config.SCREEN_MIN_RULE_SCORE
     assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)
     assert bot.classifier.dspy_parser.kwargs["provider"] == main.config.DSPY_PROVIDER
     assert FakeEmbedder.instances[0].kwargs["provider"] == main.config.EMBED_PROVIDER
     assert FakeOpenRouterClient.instances[0].kwargs["provider"] == main.config.LLM_PROVIDER
     assert FakeOpenRouterClient.instances[0].kwargs["reasoning_effort"] == main.config.LLM_REASONING_EFFORT
+    assert FakeOpenRouterClient.instances[0].kwargs["primary_max_output_tokens"] == main.config.PRIMARY_MAX_OUTPUT_TOKENS
     assert pipeline.llm_max_classifications_per_run == main.config.LLM_MAX_CLASSIFICATIONS_PER_RUN
+    assert pipeline.screen_max_llm_candidates_per_run == main.config.SCREEN_MAX_LLM_CANDIDATES_PER_RUN
     bot = FakeBot.instances[-1]
     assert len(bot.grouped_notifications) == 1
     assert bot.grouped_notifications[0]["label"] == "r/python"
@@ -401,11 +419,21 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             FakeDSPyParser.instances.append(self)
 
     class FakeClassifier:
-        def __init__(self, openrouter, dspy_parser=None, mode="dual", max_concurrency=8):
+        def __init__(
+            self,
+            openrouter,
+            dspy_parser=None,
+            mode="dual",
+            max_concurrency=8,
+            screen_min_rule_score=1,
+            screen_max_llm_candidates_per_run=0,
+        ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
             self.mode = mode
             self.max_concurrency = max_concurrency
+            self.screen_min_rule_score = screen_min_rule_score
+            self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
 
     class FakePipeline:
         instances = []
@@ -414,6 +442,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             self.calls = []
             self.external_calls = []
             self.llm_max_classifications_per_run = kwargs.get("llm_max_classifications_per_run", 0)
+            self.screen_max_llm_candidates_per_run = kwargs.get("screen_max_llm_candidates_per_run", 0)
             FakePipeline.instances.append(self)
 
         async def analyze_subreddit(self, subreddit, limit=100):
@@ -667,11 +696,21 @@ async def test_run_in_hermes_mode_skips_telegram_polling(monkeypatch, tmp_path):
             self.kwargs = kwargs
 
     class FakeClassifier:
-        def __init__(self, openrouter, dspy_parser=None, mode="dual", max_concurrency=8):
+        def __init__(
+            self,
+            openrouter,
+            dspy_parser=None,
+            mode="dual",
+            max_concurrency=8,
+            screen_min_rule_score=1,
+            screen_max_llm_candidates_per_run=0,
+        ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
             self.mode = mode
             self.max_concurrency = max_concurrency
+            self.screen_min_rule_score = screen_min_rule_score
+            self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
 
     class FakePipeline:
         def __init__(self, **kwargs):
