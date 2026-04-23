@@ -37,6 +37,7 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
 - `digest_delivery.py`: `.docx` daily digest builder grouped by niche/source/category tags.
 - `scheduler.py`: monitored subreddit jobs + macro/HN/review jobs.
 - `bot.py`: Telegram command handlers and inline callback actions.
+- `eval_harness.py` + `eval/run_eval.py`: reproducible hand-labeled evaluation flow for the Reddit parser (live Codex/DSPy or offline saved predictions).
 
 ## Telegram Commands
 
@@ -241,6 +242,43 @@ ruff check .
 mypy .
 pytest --cov=. --cov-fail-under=80 -q
 ```
+
+## Evaluation Harness
+
+The Reddit parser now has a checked-in hand-labeled starter eval set under `eval/`.
+
+Run live against the configured runtime (Codex/OpenAI + optional DSPy):
+
+```bash
+python eval/run_eval.py \
+  --dataset eval/seed_posts.jsonl \
+  --labels eval/labels.jsonl \
+  --live \
+  --output-dir eval/artifacts/seed-live \
+  --reference-now-ts 1776729600
+```
+
+Or rescore a saved predictions file without making API calls:
+
+```bash
+python eval/run_eval.py \
+  --dataset eval/seed_posts.jsonl \
+  --labels eval/labels.jsonl \
+  --predictions-path eval/artifacts/seed-live/predictions.jsonl \
+  --output-dir eval/artifacts/seed-rescore \
+  --reference-now-ts 1776729600
+```
+
+Metrics currently include:
+- pain precision / recall / f1
+- monetizable precision / recall / f1
+- stale leakage rate
+- screening false negatives
+- post-type confusion
+- first-handness accuracy
+- buyer-authority accuracy
+
+For labeling rules and the seed-set caveats, see `eval/README.md`.
 
 ## Upgrade Notes
 
