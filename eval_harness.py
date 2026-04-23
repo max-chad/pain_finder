@@ -50,11 +50,50 @@ def _safe_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _require_label_bool(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"invalid {field_name}: {value!r}")
+
+
 def _normalized_choice(value: Any, *, allowed: set[str], fallback: str) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in allowed:
         return normalized
     return fallback
+
+
+def _require_label_choice(value: Any, *, field_name: str, allowed: set[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in allowed:
+        return normalized
+    raise ValueError(f"invalid {field_name}: {value!r}")
+
+
+def _parse_optional_reference_now_ts(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid reference_now_ts: {value!r}") from exc
+    if parsed <= 0:
+        raise ValueError(f"invalid reference_now_ts: {value!r}")
+    return parsed
+
+
+def _ensure_unique_post_ids(post_ids: list[str], *, duplicate_message: str) -> None:
+    seen: set[str] = set()
+    for post_id in post_ids:
+        if post_id in seen:
+            raise ValueError(f"{duplicate_message}: {post_id}")
+        seen.add(post_id)
 
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -110,13 +149,13 @@ def _normalize_label_row(row: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("label row is missing post_id")
     return {
         "post_id": str(row["post_id"]),
-        "is_pain": _safe_bool(row.get("is_pain")),
-        "is_monetizable": _safe_bool(row.get("is_monetizable")),
-        "post_type": _normalized_choice(row.get("post_type"), allowed=VALID_POST_TYPES, fallback="unclassified"),
-        "is_current_opportunity": _safe_bool(row.get("is_current_opportunity")),
-        "first_handness": _normalized_choice(row.get("first_handness"), allowed=VALID_FIRST_HANDNESS, fallback="unknown"),
-        "buyer_authority": _normalized_choice(row.get("buyer_authority"), allowed=VALID_BUYER_AUTHORITY, fallback="unknown"),
-        "reference_now_ts": _safe_int(row.get("reference_now_ts"), default=0) or None,
+        "is_pain": _require_label_bool(row.get("is_pain"), field_name="is_pain"),
+        "is_monetizable": _require_label_bool(row.get("is_monetizable"), field_name="is_monetizable"),
+        "post_type": _require_label_choice(row.get("post_type"), field_name="post_type", allowed=VALID_POST_TYPES - {"unclassified"}),
+        "is_current_opportunity": _require_label_bool(row.get("is_current_opportunity"), field_name="is_current_opportunity"),
+        "first_handness": _require_label_choice(row.get("first_handness"), field_name="first_handness", allowed=VALID_FIRST_HANDNESS),
+        "buyer_authority": _require_label_choice(row.get("buyer_authority"), field_name="buyer_authority", allowed=VALID_BUYER_AUTHORITY),
+        "reference_now_ts": _parse_optional_reference_now_ts(row.get("reference_now_ts")),
         "notes": str(row.get("notes", "")),
     }
 
@@ -126,10 +165,15 @@ def labels_from_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def reference_now_ts_from_labels(labels: list[dict[str, Any]], fallback: int | None = None) -> int | None:
-    for label in labels:
-        value = _safe_int(label.get("reference_now_ts"), default=0)
-        if value > 0:
-            return value
+    timestamps = {
+        parsed
+        for parsed in (_parse_optional_reference_now_ts(label.get("reference_now_ts")) for label in labels)
+        if parsed is not None
+    }
+    if len(timestamps) > 1:
+        raise ValueError("labels contain multiple reference_now_ts values")
+    if timestamps:
+        return next(iter(timestamps))
     return fallback
 
 
@@ -275,9 +319,14 @@ def evaluate_predictions(
     current_opportunity_max_age_days: int = 180,
 ) -> dict[str, Any]:
     normalized_labels = [_normalize_label_row(row) for row in labels]
-    resolved_reference_now_ts = reference_now_ts or reference_now_ts_from_labels(normalized_labels)
+    label_reference_now_ts = reference_now_ts_from_labels(normalized_labels)
+    resolved_reference_now_ts = reference_now_ts or label_reference_now_ts
     if resolved_reference_now_ts is None:
         raise ValueError("reference_now_ts is required")
+
+    _ensure_unique_post_ids([post.post_id for post in posts], duplicate_message="duplicate post_id in posts")
+    _ensure_unique_post_ids([label["post_id"] for label in normalized_labels], duplicate_message="duplicate label post_id")
+    _ensure_unique_post_ids([str(row["post_id"]) for row in predictions if row.get("post_id")], duplicate_message="duplicate prediction post_id")
 
     posts_by_id = {post.post_id: post for post in posts}
     label_by_post_id = {label["post_id"]: label for label in normalized_labels}

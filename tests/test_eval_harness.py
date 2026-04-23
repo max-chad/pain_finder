@@ -316,3 +316,166 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     stdout = capsys.readouterr().out
     assert "dataset_size=1" in stdout
     assert "pain_precision=1.000" in stdout
+
+
+def test_labels_from_jsonl_rejects_invalid_values(eval_harness_module, tmp_path):
+    labels_path = tmp_path / "labels.jsonl"
+    _write_jsonl(
+        labels_path,
+        [
+            {
+                "post_id": "reddit:bad",
+                "is_pain": "tru",
+                "is_monetizable": True,
+                "post_type": "first_person_paiin",
+                "is_current_opportunity": True,
+                "first_handness": "first_hand",
+                "buyer_authority": "founder_owner",
+                "reference_now_ts": REFERENCE_NOW_TS,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="invalid"):
+        eval_harness_module.labels_from_jsonl(labels_path)
+
+
+def test_evaluate_predictions_rejects_mixed_reference_now_ts(eval_harness_module, sample_posts, sample_predictions):
+    labels = [
+        {
+            "post_id": "reddit:p1",
+            "is_pain": True,
+            "is_monetizable": True,
+            "post_type": "first_person_pain",
+            "is_current_opportunity": True,
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "reference_now_ts": REFERENCE_NOW_TS,
+        },
+        {
+            "post_id": "reddit:p2",
+            "is_pain": False,
+            "is_monetizable": False,
+            "post_type": "advice_thread",
+            "is_current_opportunity": False,
+            "first_handness": "unknown",
+            "buyer_authority": "unknown",
+            "reference_now_ts": REFERENCE_NOW_TS + 86400,
+        },
+    ]
+
+    with pytest.raises(ValueError, match="reference_now_ts"):
+        eval_harness_module.evaluate_predictions(
+            posts=sample_posts,
+            labels=labels,
+            predictions=sample_predictions,
+        )
+
+
+@pytest.mark.parametrize(
+    ("posts", "label_rows", "prediction_rows", "expected_message"),
+    [
+        (
+            [
+                Post(
+                    post_id="reddit:p1",
+                    subreddit="ops",
+                    title="dup one",
+                    body="a",
+                    url="https://reddit.com/p1a",
+                    score=1,
+                    source_created_at="2026-04-18T00:00:00+00:00",
+                    source_created_ts=1776470400,
+                ),
+                Post(
+                    post_id="reddit:p1",
+                    subreddit="ops",
+                    title="dup two",
+                    body="b",
+                    url="https://reddit.com/p1b",
+                    score=2,
+                    source_created_at="2026-04-19T00:00:00+00:00",
+                    source_created_ts=1776556800,
+                ),
+            ],
+            None,
+            None,
+            "duplicate post_id in posts",
+        ),
+        (
+            None,
+            [
+                {
+                    "post_id": "reddit:p1",
+                    "is_pain": True,
+                    "is_monetizable": True,
+                    "post_type": "first_person_pain",
+                    "is_current_opportunity": True,
+                    "first_handness": "first_hand",
+                    "buyer_authority": "founder_owner",
+                    "reference_now_ts": REFERENCE_NOW_TS,
+                },
+                {
+                    "post_id": "reddit:p1",
+                    "is_pain": False,
+                    "is_monetizable": False,
+                    "post_type": "advice_thread",
+                    "is_current_opportunity": False,
+                    "first_handness": "unknown",
+                    "buyer_authority": "unknown",
+                    "reference_now_ts": REFERENCE_NOW_TS,
+                },
+            ],
+            None,
+            "duplicate label post_id",
+        ),
+        (
+            None,
+            None,
+            [
+                {
+                    "post_id": "reddit:p1",
+                    "prediction_status": "classified",
+                    "prescreen_score": 6,
+                    "is_pain": True,
+                    "is_monetizable": True,
+                    "post_type": "first_person_pain",
+                    "first_handness": "first_hand",
+                    "buyer_authority": "founder_owner",
+                    "opportunity_bucket": "current_opportunity",
+                    "analysis_mode": "dspy_b2b",
+                },
+                {
+                    "post_id": "reddit:p1",
+                    "prediction_status": "classified",
+                    "prescreen_score": 3,
+                    "is_pain": False,
+                    "is_monetizable": False,
+                    "post_type": "advice_thread",
+                    "first_handness": "unknown",
+                    "buyer_authority": "unknown",
+                    "opportunity_bucket": "evergreen_pain",
+                    "analysis_mode": "legacy_llm",
+                },
+            ],
+            "duplicate prediction post_id",
+        ),
+    ],
+)
+def test_evaluate_predictions_rejects_duplicate_post_ids(
+    eval_harness_module,
+    sample_posts,
+    sample_labels,
+    sample_predictions,
+    posts,
+    label_rows,
+    prediction_rows,
+    expected_message,
+):
+    with pytest.raises(ValueError, match=expected_message):
+        eval_harness_module.evaluate_predictions(
+            posts=posts or sample_posts,
+            labels=label_rows or sample_labels,
+            predictions=prediction_rows or sample_predictions,
+            reference_now_ts=REFERENCE_NOW_TS,
+        )
