@@ -30,6 +30,7 @@ class DigestPayload(TypedDict, total=False):
     subreddit: str | None
     total: int
     top_items: list[DigestItem]
+    top_clusters: list[dict[str, object]]
     niche_counts: dict[str, int]
     source_counts: dict[str, int]
     recurring_blockers: list[str]
@@ -571,6 +572,12 @@ class PainFinderBot:
         if digest.get("source_counts"):
             top_sources = sorted(digest["source_counts"].items(), key=lambda item: item[1], reverse=True)[:3]
             lines.append("Sources: " + ", ".join(f"{name} ({count})" for name, count in top_sources))
+        if digest.get("top_clusters"):
+            lines.append("Top canonical clusters:")
+            for cluster in digest["top_clusters"][:3]:
+                lines.append(
+                    f"- {cluster.get('label', 'Recurring pain cluster')} | avg_opp={cluster.get('avg_opportunity_score', 0)}"
+                )
         for row in digest["top_items"][:5]:
             lines.append(
                 f"- {row.get('post_id')} | score={row.get('weighted_score', 0)} wtp={row.get('willingness_to_pay', 0)} | {row.get('summary', '')[:80]}"

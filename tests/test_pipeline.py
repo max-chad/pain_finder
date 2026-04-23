@@ -387,13 +387,66 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         reports_dir=str(tmp_path / "reports"),
     )
 
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="alert-fatigue",
+        cluster_key="d1",
+        label="Alert fatigue",
+        summary="Multiple teams complain about noisy alerting and weak escalation.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=16.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.75,
+        incumbents=["pagerduty"],
+        avg_opportunity_score=74.25,
+        latest_source_created_ts=1713772800,
+        members=[("d1", 0.9), ("d2", 0.88)],
+    )
+
     digest = await pipeline.generate_digest(subreddit="python", hours=24)
     assert digest["total"] == 2
     assert digest["top_items"][0]["post_id"] == "d1"
     assert digest["top_items"][0]["opportunity_score"] == 87.5
     assert digest["top_items"][1]["post_id"] == "d2"
     assert digest["niche_counts"]["DevOps"] == 2
+    assert digest["top_clusters"][0]["canonical_key"] == "alert-fatigue"
     assert "Need better alerts" in digest["recurring_blockers"]
+
+
+async def test_generate_digest_returns_no_clusters_when_no_rows(db, tmp_path):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="unrelated-cluster",
+        cluster_key="x1",
+        label="Unrelated cluster",
+        summary="No matching posts in this digest window.",
+        estimated_monetization_signal="medium",
+        item_count=1,
+        aggregate_wtp=9.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.6,
+        incumbents=["asana"],
+        avg_opportunity_score=55.0,
+        latest_source_created_ts=1713772800,
+        members=[("x1", 0.9)],
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    digest = await pipeline.generate_digest(subreddit="missing", hours=24)
+
+    assert digest["total"] == 0
+    assert digest["top_clusters"] == []
 
 
 async def test_analyze_external_posts_records_source(db, tmp_path):

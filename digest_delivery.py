@@ -36,6 +36,9 @@ class DailyDigestDocumentService:
         if not filtered_rows:
             return DigestDocumentResult(docx_path=None, total_items=0, group_count=0, group_sizes={})
 
+        filtered_post_ids = [str(row.get("post_id")) for row in filtered_rows if row.get("post_id")]
+        canonical_clusters = await self.db.get_latest_canonical_clusters(limit=6, post_ids=filtered_post_ids)
+
         current_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "current_opportunity"]
         evergreen_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "evergreen_pain"]
         unknown_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "unknown_age"]
@@ -73,6 +76,10 @@ class DailyDigestDocumentService:
             blockers_paragraph = document.add_paragraph()
             blockers_paragraph.add_run("Recurring blockers: ").bold = True
             blockers_paragraph.add_run(" | ".join(blockers))
+
+        if canonical_clusters:
+            document.add_heading("Canonical pain clusters", level=1)
+            self._render_cluster_section(document, canonical_clusters)
 
         if current_groups:
             document.add_heading("Current opportunities", level=1)
@@ -133,6 +140,24 @@ class DailyDigestDocumentService:
         if bucket == "evergreen_pain":
             return "evergreen_pain"
         return "unknown_age"
+
+    def _render_cluster_section(self, document: Document, clusters: list[dict[str, Any]]) -> None:
+        for cluster in clusters:
+            label = (str(cluster.get("label") or "Recurring pain cluster").strip() or "Recurring pain cluster")
+            summary = (str(cluster.get("summary") or "No summary available.").strip() or "No summary available.")
+            avg_score = float(cluster.get("avg_opportunity_score") or 0.0)
+            fresh_post_count = int(cluster.get("fresh_post_count") or 0)
+            evergreen_post_count = int(cluster.get("evergreen_post_count") or 0)
+            incumbents = cluster.get("incumbents") or []
+            incumbents_text = ", ".join(str(item) for item in incumbents[:4]) or "none"
+
+            document.add_heading(label, level=2)
+            metrics = document.add_paragraph(
+                f"Avg opp {avg_score:.1f} | Fresh {fresh_post_count} | Evergreen {evergreen_post_count}"
+            )
+            metrics.style = "Intense Quote"
+            document.add_paragraph(summary)
+            document.add_paragraph(f"Dominant incumbents: {incumbents_text}")
 
     def _render_grouped_section(
         self,

@@ -51,6 +51,21 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
         },
     ]
 
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "revops-handoff-breakage",
+            "label": "RevOps handoff breakage",
+            "summary": "Multiple ops teams still move onboarding data via CSV handoffs.",
+            "fresh_post_count": 2,
+            "evergreen_post_count": 0,
+            "median_buyer_authority": 0.82,
+            "incumbents": ["hubspot", "salesforce"],
+            "avg_opportunity_score": 88.2,
+            "latest_source_created_ts": 1713772800,
+            "post_ids": ["p1", "p3"],
+        }
+    ]
+
     service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
 
     result = await service.build_document(hours=24, group_by="niche", min_wtp=8, max_items_per_group=5)
@@ -64,6 +79,8 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
         xml = archive.read("word/document.xml").decode("utf-8")
 
     assert "Pain Finder Daily Digest" in xml
+    assert "Canonical pain clusters" in xml
+    assert "RevOps handoff breakage" in xml
     assert "Current opportunities" in xml
     assert "Evergreen pain index" in xml
     assert "RevOps" in xml
@@ -76,6 +93,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
 async def test_daily_digest_document_service_returns_empty_result_without_rows(tmp_path):
     db = AsyncMock()
     db.get_recent_pain_points.return_value = []
+    db.get_latest_canonical_clusters.return_value = []
 
     service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
 
@@ -121,6 +139,7 @@ async def test_daily_digest_document_orders_rows_by_opportunity_score_within_gro
         },
     ]
 
+    db.get_latest_canonical_clusters.return_value = []
     service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
     result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
 

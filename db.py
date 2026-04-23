@@ -131,12 +131,19 @@ CREATE_MACRO_TREND_CLUSTERS = """
 CREATE TABLE IF NOT EXISTS macro_trend_clusters (
     id INTEGER PRIMARY KEY,
     run_id INTEGER NOT NULL,
+    canonical_key TEXT,
     cluster_key TEXT,
     label TEXT,
     summary TEXT,
     estimated_monetization_signal TEXT,
     item_count INTEGER NOT NULL,
     aggregate_wtp REAL NOT NULL,
+    fresh_post_count INTEGER DEFAULT 0,
+    evergreen_post_count INTEGER DEFAULT 0,
+    median_buyer_authority REAL DEFAULT 0,
+    incumbents_json TEXT DEFAULT '[]',
+    avg_opportunity_score REAL DEFAULT 0,
+    latest_source_created_ts INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -216,7 +223,9 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_analysis_runs_created_at ON analysis_runs(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_point_competitors_tag ON pain_point_competitors(competitor_tag)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_run ON macro_trend_clusters(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_canonical ON macro_trend_clusters(canonical_key)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_run ON macro_trend_members(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_post ON macro_trend_members(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created ON llm_usage_events(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_stage ON llm_usage_events(candidate_stage, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
@@ -279,6 +288,16 @@ LLM_USAGE_EVENT_COLUMNS = {
     "provider": "TEXT",
     "request_path": "TEXT",
     "candidate_stage": "TEXT",
+}
+
+MACRO_TREND_CLUSTER_COLUMNS = {
+    "canonical_key": "TEXT",
+    "fresh_post_count": "INTEGER DEFAULT 0",
+    "evergreen_post_count": "INTEGER DEFAULT 0",
+    "median_buyer_authority": "REAL DEFAULT 0",
+    "incumbents_json": "TEXT DEFAULT '[]'",
+    "avg_opportunity_score": "REAL DEFAULT 0",
+    "latest_source_created_ts": "INTEGER",
 }
 
 
@@ -350,6 +369,12 @@ class Database:
             for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
                 await self._ensure_column("llm_usage_events", column_name, ddl)
             await self._mark_migration_applied(llm_usage_migration)
+
+        canonical_cluster_migration = "2026_04_22_canonical_pain_clusters"
+        if not await self._is_migration_applied(canonical_cluster_migration):
+            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+                await self._ensure_column("macro_trend_clusters", column_name, ddl)
+            await self._mark_migration_applied(canonical_cluster_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -868,17 +893,45 @@ class Database:
         self,
         *,
         run_id: int,
+        canonical_key: str | None = None,
         cluster_key: str,
         label: str,
         summary: str,
         estimated_monetization_signal: str,
         item_count: int,
         aggregate_wtp: float,
+        fresh_post_count: int = 0,
+        evergreen_post_count: int = 0,
+        median_buyer_authority: float = 0.0,
+        incumbents: list[str] | None = None,
+        avg_opportunity_score: float = 0.0,
+        latest_source_created_ts: int | None = None,
         members: list[tuple[str, float]],
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO macro_trend_clusters (run_id, cluster_key, label, summary, estimated_monetization_signal, item_count, aggregate_wtp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (run_id, cluster_key, label, summary, estimated_monetization_signal, item_count, aggregate_wtp),
+            """
+            INSERT INTO macro_trend_clusters (
+                run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
+                item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
+                median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                canonical_key,
+                cluster_key,
+                label,
+                summary,
+                estimated_monetization_signal,
+                item_count,
+                aggregate_wtp,
+                fresh_post_count,
+                evergreen_post_count,
+                median_buyer_authority,
+                json.dumps(incumbents or [], ensure_ascii=False),
+                avg_opportunity_score,
+                latest_source_created_ts,
+            ),
         ) as cursor:
             cluster_id = int(cursor.lastrowid)
         for post_id, similarity in members:
@@ -902,7 +955,7 @@ class Database:
             LEFT JOIN macro_trend_members m ON m.cluster_id = c.id
             WHERE c.run_id = ?
             GROUP BY c.id
-            ORDER BY c.item_count DESC, c.aggregate_wtp DESC
+            ORDER BY c.avg_opportunity_score DESC, c.latest_source_created_ts DESC, c.item_count DESC, c.aggregate_wtp DESC
             """,
             (run_id,),
         ) as cursor:
@@ -912,6 +965,14 @@ class Database:
             row_dict = dict(row)
             post_ids = row_dict.get("post_ids")
             row_dict["post_ids"] = post_ids.split(",") if isinstance(post_ids, str) and post_ids else []
+            incumbents_raw = row_dict.get("incumbents_json")
+            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
+                try:
+                    row_dict["incumbents"] = json.loads(incumbents_raw)
+                except json.JSONDecodeError:
+                    row_dict["incumbents"] = []
+            else:
+                row_dict["incumbents"] = []
             out.append(row_dict)
         return out
 
@@ -929,7 +990,66 @@ class Database:
             (post_id,),
         ) as cursor:
             row = await cursor.fetchone()
-            return dict(row) if row else None
+            if row is None:
+                return None
+            row_dict = dict(row)
+            incumbents_raw = row_dict.get("incumbents_json")
+            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
+                try:
+                    row_dict["incumbents"] = json.loads(incumbents_raw)
+                except json.JSONDecodeError:
+                    row_dict["incumbents"] = []
+            else:
+                row_dict["incumbents"] = []
+            return row_dict
+
+    async def get_latest_canonical_clusters(
+        self,
+        *,
+        limit: int = 10,
+        post_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        post_filter_sql = ""
+        if post_ids:
+            placeholders = ",".join("?" * len(post_ids))
+            post_filter_sql = f"WHERE EXISTS (SELECT 1 FROM macro_trend_members mf WHERE mf.cluster_id = c.id AND mf.post_id IN ({placeholders}))"  # nosec B608
+            params.extend(post_ids)
+        async with self._conn.execute(
+            f"""
+            SELECT c.*, r.created_at AS run_created_at, GROUP_CONCAT(m.post_id) AS post_ids
+            FROM macro_trend_clusters c
+            JOIN macro_trend_runs r ON r.id = c.run_id
+            LEFT JOIN macro_trend_members m ON m.cluster_id = c.id
+            {post_filter_sql}
+            GROUP BY c.id
+            ORDER BY r.created_at DESC, r.id DESC, c.avg_opportunity_score DESC, c.latest_source_created_ts DESC, c.item_count DESC, c.aggregate_wtp DESC
+            """,
+            tuple(params),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out = []
+        seen_keys: set[str] = set()
+        for row in rows:
+            row_dict = dict(row)
+            canonical_key = str(row_dict.get("canonical_key") or "").strip()
+            if not canonical_key or canonical_key in seen_keys:
+                continue
+            seen_keys.add(canonical_key)
+            post_ids = row_dict.get("post_ids")
+            row_dict["post_ids"] = post_ids.split(",") if isinstance(post_ids, str) and post_ids else []
+            incumbents_raw = row_dict.get("incumbents_json")
+            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
+                try:
+                    row_dict["incumbents"] = json.loads(incumbents_raw)
+                except json.JSONDecodeError:
+                    row_dict["incumbents"] = []
+            else:
+                row_dict["incumbents"] = []
+            out.append(row_dict)
+            if len(out) >= limit:
+                break
+        return out
 
     async def get_macro_candidates(self, *, window_days: int, min_wtp: int) -> list[dict[str, Any]]:
         async with self._conn.execute(

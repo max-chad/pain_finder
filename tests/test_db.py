@@ -542,12 +542,19 @@ async def test_macro_tables_persist_and_query(db):
     run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
     cluster_id = await db.save_macro_cluster(
         run_id=run_id,
+        canonical_key="api-timeout-failures",
         cluster_key="reddit:m1",
         label="API trend",
         summary="Recurring API failures",
         estimated_monetization_signal="high",
         item_count=2,
         aggregate_wtp=17.0,
+        fresh_post_count=1,
+        evergreen_post_count=1,
+        median_buyer_authority=0.8,
+        incumbents=["quickbooks", "jira"],
+        avg_opportunity_score=84.5,
+        latest_source_created_ts=1713772800,
         members=[("reddit:m1", 0.9), ("reddit:m2", 0.88)],
     )
     assert cluster_id > 0
@@ -559,14 +566,154 @@ async def test_macro_tables_persist_and_query(db):
     clusters = await db.get_macro_clusters(run_id)
     assert len(clusters) == 1
     assert set(clusters[0]["post_ids"]) == {"reddit:m1", "reddit:m2"}
+    assert clusters[0]["canonical_key"] == "api-timeout-failures"
+    assert clusters[0]["fresh_post_count"] == 1
+    assert clusters[0]["evergreen_post_count"] == 1
+    assert clusters[0]["incumbents"] == ["quickbooks", "jira"]
 
     by_post = await db.get_latest_macro_cluster_for_post("reddit:m1")
     assert by_post is not None
     assert by_post["label"] == "API trend"
+    assert by_post["canonical_key"] == "api-timeout-failures"
+
+    latest_canonical = await db.get_latest_canonical_clusters(limit=5)
+    assert len(latest_canonical) == 1
+    assert latest_canonical[0]["canonical_key"] == "api-timeout-failures"
+    assert latest_canonical[0]["avg_opportunity_score"] == 84.5
 
     candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
     ids = {row["post_id"] for row in candidates}
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
+
+
+async def test_get_latest_canonical_clusters_filters_before_limit(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=4, cluster_count=2)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="high-score-unrelated",
+        cluster_key="reddit:z1",
+        label="Unrelated cluster",
+        summary="Not relevant to the requested digest slice.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=18.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.9,
+        incumbents=["salesforce"],
+        avg_opportunity_score=99.0,
+        latest_source_created_ts=1713772800,
+        members=[("reddit:z1", 0.93), ("reddit:z2", 0.91)],
+    )
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="target-cluster",
+        cluster_key="reddit:t1",
+        label="Target cluster",
+        summary="Relevant cluster that should survive post-id filtering.",
+        estimated_monetization_signal="medium",
+        item_count=2,
+        aggregate_wtp=14.0,
+        fresh_post_count=1,
+        evergreen_post_count=1,
+        median_buyer_authority=0.7,
+        incumbents=["quickbooks"],
+        avg_opportunity_score=61.0,
+        latest_source_created_ts=1713770000,
+        members=[("reddit:t1", 0.89), ("reddit:t2", 0.88)],
+    )
+
+    filtered = await db.get_latest_canonical_clusters(limit=1, post_ids=["reddit:t1"])
+
+    assert len(filtered) == 1
+    assert filtered[0]["canonical_key"] == "target-cluster"
+
+
+async def test_get_latest_canonical_clusters_deduplicates_duplicate_keys(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=3, cluster_count=2)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="duplicate-key",
+        cluster_key="reddit:d1",
+        label="Primary cluster",
+        summary="Higher scoring duplicate key entry.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=15.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.8,
+        incumbents=["hubspot"],
+        avg_opportunity_score=88.0,
+        latest_source_created_ts=1713772800,
+        members=[("reddit:d1", 0.9), ("reddit:d2", 0.87)],
+    )
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="duplicate-key",
+        cluster_key="reddit:d3",
+        label="Secondary duplicate",
+        summary="Lower scoring duplicate key entry.",
+        estimated_monetization_signal="medium",
+        item_count=1,
+        aggregate_wtp=7.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.5,
+        incumbents=["hubspot"],
+        avg_opportunity_score=44.0,
+        latest_source_created_ts=1713770000,
+        members=[("reddit:d3", 0.84)],
+    )
+
+    clusters = await db.get_latest_canonical_clusters(limit=5)
+
+    assert len(clusters) == 1
+    assert clusters[0]["label"] == "Primary cluster"
+
+
+async def test_get_latest_canonical_clusters_can_return_older_matching_run(db):
+    older_run = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=older_run,
+        canonical_key="older-target",
+        cluster_key="reddit:o1",
+        label="Older target cluster",
+        summary="Relevant cluster from an earlier run.",
+        estimated_monetization_signal="high",
+        item_count=1,
+        aggregate_wtp=9.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.7,
+        incumbents=["quickbooks"],
+        avg_opportunity_score=72.0,
+        latest_source_created_ts=1713772800,
+        members=[("reddit:o1", 0.9)],
+    )
+    newer_run = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=newer_run,
+        canonical_key="newer-unrelated",
+        cluster_key="reddit:n1",
+        label="Newer unrelated cluster",
+        summary="Different run without matching membership.",
+        estimated_monetization_signal="medium",
+        item_count=1,
+        aggregate_wtp=7.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.5,
+        incumbents=["asana"],
+        avg_opportunity_score=65.0,
+        latest_source_created_ts=1713772900,
+        members=[("reddit:n1", 0.85)],
+    )
+
+    clusters = await db.get_latest_canonical_clusters(limit=5, post_ids=["reddit:o1"])
+
+    assert len(clusters) == 1
+    assert clusters[0]["canonical_key"] == "older-target"
 
 
 async def test_llm_response_cache_roundtrip(db):

@@ -404,10 +404,14 @@ class AnalysisPipeline:
                 "subreddit": subreddit,
                 "total": 0,
                 "top_items": [],
+                "top_clusters": [],
                 "niche_counts": {},
                 "source_counts": {},
                 "recurring_blockers": [],
             }
+
+        row_post_ids = [str(row.get("post_id")) for row in rows if row.get("post_id")]
+        top_clusters = await self.db.get_latest_canonical_clusters(limit=5, post_ids=row_post_ids)
 
         scored_rows = []
         niche_counts: dict[str, int] = {}
@@ -456,6 +460,7 @@ class AnalysisPipeline:
             "subreddit": subreddit,
             "total": len(rows),
             "top_items": scored_rows[:5],
+            "top_clusters": top_clusters,
             "niche_counts": niche_counts,
             "source_counts": source_counts,
             "recurring_blockers": recurring_blockers,

@@ -1,8 +1,11 @@
+import hashlib
 import json
 import logging
 import math
 import re
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
+from statistics import mean, median
 from typing import Any
 
 from budget import BudgetCapReachedError
@@ -44,6 +47,29 @@ TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 # (ephemeral, per-run macro-trend snapshots) non-reproducibility is acceptable,
 # but it is worth knowing when debugging unexpected cluster differences.
 EMBED_DIM = 96
+STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "because",
+    "before",
+    "between",
+    "breaks",
+    "daily",
+    "every",
+    "from",
+    "have",
+    "keeps",
+    "manual",
+    "need",
+    "still",
+    "team",
+    "teams",
+    "their",
+    "this",
+    "with",
+    "your",
+}
 
 
 @dataclass
@@ -55,6 +81,13 @@ class MacroTrendCluster:
     item_count: int
     aggregate_wtp: float
     post_ids: list[str]
+    canonical_key: str = ""
+    fresh_post_count: int = 0
+    evergreen_post_count: int = 0
+    median_buyer_authority: float = 0.0
+    incumbents: list[str] = field(default_factory=list)
+    avg_opportunity_score: float = 0.0
+    latest_source_created_ts: int | None = None
 
 
 @dataclass
@@ -110,10 +143,30 @@ class MacroTrendClusterer:
             sample_lines = [self._compose_cluster_line(row) for row in members[:12]]
             cluster_text = "\n".join(sample_lines)
             aggregate_wtp = sum(float(row.get("willingness_to_pay") or 0) for row in members)
+            fresh_post_count = sum(1 for row in members if str(row.get("opportunity_bucket") or "").strip().lower() == "current_opportunity")
+            evergreen_post_count = sum(1 for row in members if str(row.get("opportunity_bucket") or "").strip().lower() == "evergreen_pain")
+            authority_values = [float(row.get("buyer_authority_score") or 0.0) for row in members]
+            median_buyer_authority = round(float(median(authority_values)), 3) if authority_values else 0.0
+            incumbents = self._aggregate_incumbents(members)
+            opportunity_scores = [float(row.get("opportunity_score") or 0.0) for row in members]
+            avg_opportunity_score = round(float(mean(opportunity_scores)), 2) if opportunity_scores else 0.0
+            latest_source_created_ts = max(int(row.get("source_created_ts") or 0) for row in members) or None
             label = await self._label_cluster(
                 cluster_text=cluster_text,
                 cluster_size=len(members),
                 aggregate_wtp=aggregate_wtp,
+            )
+            canonical_key = self._canonical_key(members, label=label)
+            resolved_label = label.label if label.label != "Trend Detected" else self._humanize_canonical_key(canonical_key)
+            resolved_summary = (
+                label.summary
+                if label.label != "Trend Detected"
+                else self._fallback_cluster_summary(
+                    members=members,
+                    fresh_post_count=fresh_post_count,
+                    evergreen_post_count=evergreen_post_count,
+                    incumbents=incumbents,
+                )
             )
 
             member_rows = []
@@ -124,26 +177,49 @@ class MacroTrendClusterer:
 
             cluster_id = await self.db.save_macro_cluster(
                 run_id=run_id,
+                canonical_key=canonical_key,
                 cluster_key=str(members[0]["post_id"]),
-                label=label.label,
-                summary=label.summary,
+                label=resolved_label,
+                summary=resolved_summary,
                 estimated_monetization_signal=label.estimated_monetization_signal,
                 item_count=len(members),
                 aggregate_wtp=aggregate_wtp,
+                fresh_post_count=fresh_post_count,
+                evergreen_post_count=evergreen_post_count,
+                median_buyer_authority=median_buyer_authority,
+                incumbents=incumbents,
+                avg_opportunity_score=avg_opportunity_score,
+                latest_source_created_ts=latest_source_created_ts,
                 members=member_rows,
             )
             persisted_clusters.append(
                 MacroTrendCluster(
                     cluster_id=cluster_id,
-                    label=label.label,
-                    summary=label.summary,
+                    label=resolved_label,
+                    summary=resolved_summary,
                     estimated_monetization_signal=label.estimated_monetization_signal,
                     item_count=len(members),
                     aggregate_wtp=aggregate_wtp,
                     post_ids=[str(member["post_id"]) for member in members],
+                    canonical_key=canonical_key,
+                    fresh_post_count=fresh_post_count,
+                    evergreen_post_count=evergreen_post_count,
+                    median_buyer_authority=median_buyer_authority,
+                    incumbents=incumbents,
+                    avg_opportunity_score=avg_opportunity_score,
+                    latest_source_created_ts=latest_source_created_ts,
                 )
             )
 
+        persisted_clusters.sort(
+            key=lambda cluster: (
+                cluster.avg_opportunity_score,
+                cluster.latest_source_created_ts or 0,
+                cluster.item_count,
+                cluster.aggregate_wtp,
+            ),
+            reverse=True,
+        )
         logger.info(
             "macro_trend_complete stage=clustering run_id=%s window_days=%d candidates=%d clusters=%d",
             run_id,
@@ -214,6 +290,81 @@ class MacroTrendClusterer:
             f"- post={row.get('post_id')} "
             f"wtp={row.get('willingness_to_pay', 0)} "
             f"summary={str(row.get('summary') or '')[:180]}"
+        )
+
+    @staticmethod
+    def _parse_tags(raw: Any) -> list[str]:
+        if isinstance(raw, list):
+            return [str(item).strip().lower() for item in raw if str(item).strip()]
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return [str(item).strip().lower() for item in parsed if str(item).strip()]
+        return []
+
+    @classmethod
+    def _aggregate_incumbents(cls, members: list[dict[str, Any]]) -> list[str]:
+        counts: Counter[str] = Counter()
+        for row in members:
+            counts.update(cls._parse_tags(row.get("competitor_tags")))
+        return [tag for tag, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5]]
+
+    @classmethod
+    def _canonical_key(cls, members: list[dict[str, Any]], label: MacroClusterLabel | None = None) -> str:
+        counts: Counter[str] = Counter()
+        if label is not None and label.label.strip().lower() != "trend detected":
+            for phrase in [label.label, *label.key_complaints]:
+                for token in TOKEN_RE.findall(str(phrase).lower()):
+                    if len(token) < 4 or token in STOPWORDS:
+                        continue
+                    counts[token] += 3
+        normalized_fragments: list[str] = []
+        for row in members:
+            text = " ".join(
+                str(part or "")
+                for part in [row.get("title"), row.get("summary"), row.get("deep_dive_summary")]
+            )
+            normalized_fragments.append(text.lower().strip())
+            for token in TOKEN_RE.findall(text.lower()):
+                if len(token) < 4 or token in STOPWORDS:
+                    continue
+                counts[token] += 1
+        parts: list[str] = []
+        for token, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            if token in parts:
+                continue
+            parts.append(token)
+            if len(parts) >= 4:
+                break
+        if parts:
+            return "-".join(parts)[:96].strip("-")
+        fingerprint = hashlib.sha1("|".join(sorted(fragment for fragment in normalized_fragments if fragment)).encode("utf-8")).hexdigest()[:10]
+        return f"cluster-{fingerprint}"
+
+    @staticmethod
+    def _humanize_canonical_key(canonical_key: str) -> str:
+        if canonical_key.startswith("cluster-"):
+            return "Recurring pain cluster"
+        words = [segment for segment in canonical_key.replace("_", "-").split("-") if segment]
+        if not words:
+            return "Recurring pain cluster"
+        return " ".join(word.capitalize() for word in words[:6])
+
+    @staticmethod
+    def _fallback_cluster_summary(
+        *,
+        members: list[dict[str, Any]],
+        fresh_post_count: int,
+        evergreen_post_count: int,
+        incumbents: list[str],
+    ) -> str:
+        incumbent_text = ", ".join(incumbents[:3]) or "none"
+        return (
+            f"{len(members)} related pain posts grouped into one recurring problem. "
+            f"Fresh={fresh_post_count}, evergreen={evergreen_post_count}, incumbents={incumbent_text}."
         )
 
     @staticmethod
