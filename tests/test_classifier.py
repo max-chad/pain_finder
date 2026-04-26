@@ -282,6 +282,76 @@ def test_prescreen_posts_filters_low_signal_and_caps_candidates():
     assert stats["screen_rule_dropped_count"] == 1
     assert stats["screen_kept_count"] == 3
     assert stats["screen_capped_count"] == 1
+    assert stats["screen_high_recall_candidate_count"] >= 3
+
+
+def test_prescreen_keeps_hidden_operational_pain_without_complaint_words():
+    clf = Classifier(openrouter=None, mode="legacy", screen_min_rule_score=1)
+    post = make_post(
+        title="How are you handling Stripe payout reconciliation?",
+        body="We export CSVs every week, copy paste invoices into QuickBooks, and need a sane way to sync this.",
+        post_id="ops-hidden",
+    )
+
+    assert clf.keyword_score(post) == 0
+    assert clf.operational_consequence_score(post) >= 3
+    shortlisted, stats = clf.prescreen_posts([post])
+
+    assert [item.post_id for item in shortlisted] == ["ops-hidden"]
+    assert stats["screen_high_recall_candidate_count"] == 1
+
+
+async def test_semantic_candidate_retrieval_can_rescue_below_rule_threshold():
+    class FakeEmbedder:
+        async def embed_many(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+        async def embed(self, text):
+            if "expense approval routing" in text.lower():
+                return [1.0, 0.0]
+            return [0.0, 1.0]
+
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="wish",
+        summary="Expense approvals need automation",
+        severity="medium",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=7,
+        niche_category="Finance Ops",
+        post_type="buying_question",
+        first_handness="first_hand",
+        buyer_authority="team_lead",
+        evidence_spans=["expense approval routing"],
+        confidence=0.74,
+    )
+    clf = Classifier(
+        openrouter=mock_llm,
+        mode="b2b",
+        screen_min_rule_score=10,
+        semantic_candidate_queries=["expense approval routing workflow pain"],
+    )
+    rescued = make_post(
+        title="Expense approval routing",
+        body="Expense approval routing takes days for our finance team.",
+        post_id="semantic-rescue",
+    )
+    unrelated = make_post(title="Team offsite photos", body="Nice week", post_id="drop")
+
+    selected, stats = await clf.select_candidates(
+        [unrelated, rescued],
+        semantic_embedder=FakeEmbedder(),
+        semantic_max_candidates=1,
+        semantic_min_similarity=0.9,
+    )
+    signal = await clf.classify(rescued)
+
+    assert [post.post_id for post in selected] == ["semantic-rescue"]
+    assert stats["screen_semantic_rescued_count"] == 1
+    assert stats["screen_rule_dropped_count"] == 1
+    assert signal is not None
+    mock_llm.analyze_post.assert_awaited_once()
 
 
 async def test_competitor_tags_are_propagated_and_normalized():

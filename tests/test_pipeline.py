@@ -778,6 +778,108 @@ async def test_evidence_first_promotion_demotes_unverified_high_wtp_signals(db, 
     assert [item["post_id"] for item in digest["needs_review_items"]] == ["unsupported"]
 
 
+async def test_pipeline_uses_semantic_candidates_and_routes_low_confidence_to_review(db, tmp_path):
+    post = Post(
+        post_id="semantic-low-confidence",
+        subreddit="financeops",
+        title="Expense approval routing takes days",
+        body="As ops lead, expense approval routing takes days and blocks vendor payments.",
+        url="https://example.com/semantic-low-confidence",
+        score=6,
+    )
+    signal = PainSignal(
+        post=post,
+        category="wish",
+        summary="Expense approvals are slow",
+        severity="medium",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=7,
+        niche_category="Finance Ops",
+        analysis_mode="b2b",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="team_lead",
+        evidence_spans=["expense approval routing takes days"],
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="expense approval routing takes days",
+                source_type="body",
+                post_id="semantic-low-confidence",
+                comment_id=None,
+                permalink="https://example.com/semantic-low-confidence",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=None,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        confidence=0.42,
+        needs_human_review=False,
+        analysis_payload={"confidence": 0.42},
+    )
+    fake_embedder = object()
+    classifier = SimpleNamespace(
+        select_candidates=AsyncMock(
+            return_value=(
+                [post],
+                {
+                    "screen_rule_dropped_count": 1,
+                    "screen_kept_count": 1,
+                    "screen_capped_count": 0,
+                    "screen_high_recall_candidate_count": 1,
+                    "screen_semantic_candidate_count": 1,
+                    "screen_semantic_scored_count": 2,
+                    "screen_semantic_dropped_count": 1,
+                    "screen_semantic_rescued_count": 1,
+                    "screen_semantic_max_similarity": 0.91,
+                    "screen_candidate_cap": 5,
+                },
+            )
+        ),
+        classify_batch=AsyncMock(return_value=[signal]),
+        openrouter=None,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+        screen_max_llm_candidates_per_run=5,
+        semantic_candidate_retrieval_enabled=True,
+        semantic_embedder=fake_embedder,
+        semantic_candidate_max_per_run=2,
+        semantic_candidate_min_similarity=0.3,
+        semantic_candidate_max_pool=50,
+        min_confidence_for_promotion=0.55,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[post], source="hn", run_scope="financeops")
+
+    classifier.select_candidates.assert_awaited_once()
+    select_kwargs = classifier.select_candidates.await_args.kwargs
+    assert select_kwargs["semantic_embedder"] is fake_embedder
+    assert select_kwargs["semantic_max_candidates"] == 2
+    assert run.source_coverage["candidate_generation"]["screen_semantic_rescued_count"] == 1
+    assert run.pain_count == 1
+
+    row = await db.get_pain_point("semantic-low-confidence")
+    assert row is not None
+    components = json.loads(row["score_components_json"])
+    assert row["needs_human_review"] == 1
+    assert components["promotion_eligible"] is False
+    assert components["evidence_rejection_reason"] == "low_confidence_needs_review"
+    assert components["low_confidence"] is True
+
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    candidate_generation = report_payload[0]["source_coverage"]["candidate_generation"]
+    assert candidate_generation["screen_semantic_candidate_count"] == 1
+    assert candidate_generation["screen_high_recall_candidate_count"] == 1
+
+
 async def test_generate_digest_returns_no_clusters_when_no_rows(db, tmp_path):
     run_id = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
     await db.save_macro_cluster(

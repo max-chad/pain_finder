@@ -72,6 +72,23 @@ def _bow_embed(text: str) -> list[float]:
     return [v / norm for v in vector]
 
 
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    """Return cosine similarity for two vectors without raising.
+
+    Candidate retrieval uses this as a bounded, deterministic fallback path in
+    tests and when remote embedding providers are unavailable.  Dimension
+    mismatches are treated as no semantic match instead of risking accidental
+    promotion from malformed vectors.
+    """
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+
+
 class Embedder:
     """Three-tier embedding with graceful fallback.
 
@@ -88,7 +105,7 @@ class Embedder:
 
     async def embed(self, text: str) -> list[float]:
         """Return an embedding vector. Always succeeds."""
-        if self._provider in {"bow", "hash", "disabled", "none"}:
+        if self._provider in {"bow", "hash", "disabled", "none"} or not self._api_key:
             return _bow_embed(text)
 
         try:
@@ -108,6 +125,10 @@ class Embedder:
             logger.warning("sentence-transformers embed failed (%s), using bag-of-words", exc)
 
         return _bow_embed(text)
+
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """Embed a bounded batch sequentially through the same fail-soft path."""
+        return [await self.embed(text) for text in texts]
 
     def _st_embed(self, text: str) -> list[float]:
         """Lazy-load SentenceTransformer and encode text. Raises if not installed."""

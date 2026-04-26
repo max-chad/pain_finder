@@ -19,6 +19,12 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("SCREEN_MIN_RULE_SCORE", "3")
     monkeypatch.setenv("SCREEN_MAX_LLM_CANDIDATES_PER_RUN", "21")
     monkeypatch.setenv("LLM_MAX_CLASSIFICATIONS_PER_RUN", "33")
+    monkeypatch.setenv("SEMANTIC_CANDIDATE_RETRIEVAL_ENABLED", "1")
+    monkeypatch.setenv("SEMANTIC_CANDIDATE_MAX_PER_RUN", "11")
+    monkeypatch.setenv("SEMANTIC_CANDIDATE_MAX_POOL", "123")
+    monkeypatch.setenv("SEMANTIC_CANDIDATE_MIN_SIMILARITY", "0.31")
+    monkeypatch.setenv("SEMANTIC_CANDIDATE_QUERIES_JSON", '["manual reconciliation", "approval routing"]')
+    monkeypatch.setenv("MIN_CONFIDENCE_FOR_PROMOTION", "0.61")
     monkeypatch.setenv("PRIMARY_MAX_OUTPUT_TOKENS", "777")
     monkeypatch.setenv("DEEP_DIVE_WTP_THRESHOLD", "9")
     monkeypatch.setenv("DEEP_DIVE_MAX_COMMENTS", "300")
@@ -68,6 +74,12 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.SCREEN_MIN_RULE_SCORE == 3
     assert config_module.SCREEN_MAX_LLM_CANDIDATES_PER_RUN == 21
     assert config_module.LLM_MAX_CLASSIFICATIONS_PER_RUN == 33
+    assert config_module.SEMANTIC_CANDIDATE_RETRIEVAL_ENABLED is True
+    assert config_module.SEMANTIC_CANDIDATE_MAX_PER_RUN == 11
+    assert config_module.SEMANTIC_CANDIDATE_MAX_POOL == 123
+    assert config_module.SEMANTIC_CANDIDATE_MIN_SIMILARITY == 0.31
+    assert config_module.SEMANTIC_CANDIDATE_QUERIES == ["manual reconciliation", "approval routing"]
+    assert config_module.MIN_CONFIDENCE_FOR_PROMOTION == 0.61
     assert config_module.PRIMARY_MAX_OUTPUT_TOKENS == 777
     assert config_module.DEEP_DIVE_WTP_THRESHOLD == 9
     assert config_module.DEEP_DIVE_MAX_COMMENTS == 300

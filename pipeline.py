@@ -73,6 +73,12 @@ class AnalysisPipeline:
         llm_max_classifications_per_run: int = 0,
         screen_max_llm_candidates_per_run: int = 0,
         current_opportunity_max_age_days: int = 180,
+        semantic_candidate_retrieval_enabled: bool = False,
+        semantic_embedder: Any | None = None,
+        semantic_candidate_max_per_run: int = 0,
+        semantic_candidate_min_similarity: float = 0.22,
+        semantic_candidate_max_pool: int = 200,
+        min_confidence_for_promotion: float = 0.55,
     ):
         self.scraper = scraper
         self.classifier = classifier
@@ -85,6 +91,12 @@ class AnalysisPipeline:
         self.llm_max_classifications_per_run = max(0, int(llm_max_classifications_per_run))
         self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
         self.current_opportunity_max_age_days = max(1, int(current_opportunity_max_age_days))
+        self.semantic_candidate_retrieval_enabled = bool(semantic_candidate_retrieval_enabled)
+        self.semantic_embedder = semantic_embedder
+        self.semantic_candidate_max_per_run = max(0, int(semantic_candidate_max_per_run))
+        self.semantic_candidate_min_similarity = max(0.0, min(1.0, float(semantic_candidate_min_similarity)))
+        self.semantic_candidate_max_pool = max(0, int(semantic_candidate_max_pool))
+        self.min_confidence_for_promotion = max(0.0, min(1.0, float(min_confidence_for_promotion)))
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
         prior_cursor = await self.db.get_source_ingestion_cursor(source="reddit", subreddit=subreddit, timeframe="day")
@@ -141,14 +153,35 @@ class AnalysisPipeline:
         screen_rule_dropped_count = 0
         screen_kept_count = len(fresh_posts)
         screen_capped_count = 0
-        if hasattr(self.classifier, "prescreen_posts"):
+        screen_stats: dict[str, Any] = {
+            "screen_rule_dropped_count": 0,
+            "screen_kept_count": len(fresh_posts),
+            "screen_capped_count": 0,
+            "screen_high_recall_candidate_count": 0,
+            "screen_semantic_candidate_count": 0,
+            "screen_semantic_scored_count": 0,
+            "screen_semantic_dropped_count": 0,
+            "screen_semantic_rescued_count": 0,
+            "screen_semantic_max_similarity": 0.0,
+            "screen_candidate_cap": screening_limit,
+        }
+        if hasattr(self.classifier, "select_candidates"):
+            fresh_posts, screen_stats = await self.classifier.select_candidates(
+                fresh_posts,
+                max_candidates=screening_limit,
+                semantic_embedder=self.semantic_embedder if self.semantic_candidate_retrieval_enabled else None,
+                semantic_min_similarity=self.semantic_candidate_min_similarity,
+                semantic_max_candidates=self.semantic_candidate_max_per_run if self.semantic_candidate_retrieval_enabled else 0,
+                semantic_max_pool=self.semantic_candidate_max_pool,
+            )
+        elif hasattr(self.classifier, "prescreen_posts"):
             fresh_posts, screen_stats = self.classifier.prescreen_posts(
                 fresh_posts,
                 max_candidates=screening_limit,
             )
-            screen_rule_dropped_count = int(screen_stats.get("screen_rule_dropped_count", 0))
-            screen_kept_count = int(screen_stats.get("screen_kept_count", len(fresh_posts)))
-            screen_capped_count = int(screen_stats.get("screen_capped_count", 0))
+        screen_rule_dropped_count = int(screen_stats.get("screen_rule_dropped_count", 0))
+        screen_kept_count = int(screen_stats.get("screen_kept_count", len(fresh_posts)))
+        screen_capped_count = int(screen_stats.get("screen_capped_count", 0))
         llm_capped_count = screen_capped_count
 
         classified_signals = await self.classifier.classify_batch(fresh_posts)
@@ -272,6 +305,7 @@ class AnalysisPipeline:
             scope=run_scope,
             skipped_duplicates=skipped_existing_count + dedup_merged_count,
             duration_ms=duration_ms,
+            candidate_generation=screen_stats,
         )
         await self.db.record_source_coverage_run(
             source=source,
@@ -343,7 +377,8 @@ class AnalysisPipeline:
         logger.info(
             "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
             "post_count=%d fresh_post_count=%d skipped_existing_count=%d screen_rule_dropped_count=%d "
-            "screen_kept_count=%d llm_capped_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d "
+            "screen_kept_count=%d llm_capped_count=%d semantic_rescued_count=%d high_recall_candidate_count=%d "
+            "pain_count=%d monetizable_count=%d deep_dive_count=%d "
             "inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d primary_success_count=%d "
             "legacy_fallback_count=%d deep_dive_skipped_reasons=%s duration_ms=%d",
             source,
@@ -355,6 +390,8 @@ class AnalysisPipeline:
             screen_rule_dropped_count,
             screen_kept_count,
             llm_capped_count,
+            int(screen_stats.get("screen_semantic_rescued_count", 0)),
+            int(screen_stats.get("screen_high_recall_candidate_count", 0)),
             inserted_count,
             monetizable_count,
             deep_dive_count,
@@ -675,6 +712,7 @@ class AnalysisPipeline:
         scope: str,
         skipped_duplicates: int,
         duration_ms: int,
+        candidate_generation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         source_method_used = ""
         failed_requests = 0
@@ -699,6 +737,7 @@ class AnalysisPipeline:
             "failed_requests": failed_requests,
             "source_method_used": source_method_used,
             "duration_ms": int(duration_ms),
+            "candidate_generation": dict(candidate_generation or {}),
         }
 
     @staticmethod
@@ -843,10 +882,18 @@ class AnalysisPipeline:
         has_first_hand_or_buyer_signal = (
             signal.first_handness == "first_hand" or authority_score >= PROMOTION_BUYER_AUTHORITY_MIN_SCORE
         )
+        low_confidence = self._has_explicit_confidence(signal) and signal.confidence < self.min_confidence_for_promotion
+        if low_confidence:
+            signal.needs_human_review = True
+            confidence_reason = f"model confidence {signal.confidence:.2f} below promotion threshold {self.min_confidence_for_promotion:.2f}"
+            if signal.uncertainty_reason:
+                signal.uncertainty_reason = f"{signal.uncertainty_reason}; {confidence_reason}"
+            else:
+                signal.uncertainty_reason = confidence_reason
         if exact_evidence_count <= 0:
             evidence_rejection_reason = "no_verified_exact_quote"
         elif signal.needs_human_review:
-            evidence_rejection_reason = "needs_human_review"
+            evidence_rejection_reason = "low_confidence_needs_review" if low_confidence else "needs_human_review"
         elif not has_first_hand_or_buyer_signal:
             evidence_rejection_reason = "missing_first_hand_or_buyer_signal"
         else:
@@ -885,6 +932,9 @@ class AnalysisPipeline:
             "opportunity_score": signal.opportunity_score,
             "promotion_eligible": signal.promotion_eligible,
             "evidence_rejection_reason": signal.evidence_rejection_reason,
+            "confidence": round(float(signal.confidence or 0.0), 3),
+            "min_confidence_for_promotion": self.min_confidence_for_promotion,
+            "low_confidence": low_confidence,
             "evidence_match_rate": round(effective_match_rate, 3),
             "exact_evidence_count": exact_evidence_count,
             "fuzzy_evidence_count": fuzzy_evidence_count,
@@ -903,6 +953,13 @@ class AnalysisPipeline:
         if isinstance(signal.analysis_payload, dict):
             signal.analysis_payload.setdefault("comment_sample", signal.comment_sample)
             signal.analysis_payload.setdefault("score_components", signal.score_components)
+
+    @staticmethod
+    def _has_explicit_confidence(signal: PainSignal) -> bool:
+        if signal.confidence > 0:
+            return True
+        payload = signal.analysis_payload
+        return isinstance(payload, dict) and "confidence" in payload
 
     def _recency_profile(self, post: Post, bucket: str) -> tuple[float, float]:
         if not post.source_created_ts:

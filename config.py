@@ -79,10 +79,33 @@ REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 CLASSIFIER_MODE = os.getenv("CLASSIFIER_MODE", "dual").strip().lower()
 CLASSIFIER_MAX_CONCURRENCY = int(os.getenv("CLASSIFIER_MAX_CONCURRENCY", "8"))
 LLM_MAX_CLASSIFICATIONS_PER_RUN = int(os.getenv("LLM_MAX_CLASSIFICATIONS_PER_RUN", "0"))
-SCREEN_MIN_RULE_SCORE = int(os.getenv("SCREEN_MIN_RULE_SCORE", "2"))
+SCREEN_MIN_RULE_SCORE = int(os.getenv("SCREEN_MIN_RULE_SCORE", "1"))
 SCREEN_MAX_LLM_CANDIDATES_PER_RUN = int(
     os.getenv("SCREEN_MAX_LLM_CANDIDATES_PER_RUN", str(LLM_MAX_CLASSIFICATIONS_PER_RUN))
 )
+SEMANTIC_CANDIDATE_RETRIEVAL_ENABLED = os.getenv("SEMANTIC_CANDIDATE_RETRIEVAL_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
+SEMANTIC_CANDIDATE_MAX_PER_RUN = int(os.getenv("SEMANTIC_CANDIDATE_MAX_PER_RUN", "25"))
+SEMANTIC_CANDIDATE_MAX_POOL = int(os.getenv("SEMANTIC_CANDIDATE_MAX_POOL", "200"))
+SEMANTIC_CANDIDATE_MIN_SIMILARITY = float(os.getenv("SEMANTIC_CANDIDATE_MIN_SIMILARITY", "0.22"))
+DEFAULT_SEMANTIC_CANDIDATE_QUERIES_JSON = json.dumps(
+    [
+        "manual workflow workaround causes repeated operational overhead",
+        "reconcile payments invoices payouts between business systems",
+        "tool sync integration failure export csv spreadsheet handoff",
+        "switching from incumbent software because pricing support reliability is painful",
+        "deadline approval customer escalation caused by broken internal process",
+    ]
+)
+SEMANTIC_CANDIDATE_QUERIES_JSON = os.getenv(
+    "SEMANTIC_CANDIDATE_QUERIES_JSON",
+    DEFAULT_SEMANTIC_CANDIDATE_QUERIES_JSON,
+)
+MIN_CONFIDENCE_FOR_PROMOTION = float(os.getenv("MIN_CONFIDENCE_FOR_PROMOTION", "0.55"))
 PRIMARY_MAX_OUTPUT_TOKENS = int(os.getenv("PRIMARY_MAX_OUTPUT_TOKENS", str(min(1200, LLM_MAX_TOKENS))))
 DEEP_DIVE_WTP_THRESHOLD = int(os.getenv("DEEP_DIVE_WTP_THRESHOLD", "8"))
 DEEP_DIVE_MAX_COMMENTS = int(os.getenv("DEEP_DIVE_MAX_COMMENTS", "250"))
@@ -171,3 +194,8 @@ SCRAPER_SEARCH_QUERIES = parse_json_env(SCRAPER_SEARCH_QUERIES_JSON, [])
 if not isinstance(SCRAPER_SEARCH_QUERIES, list):
     SCRAPER_SEARCH_QUERIES = []
 SCRAPER_SEARCH_QUERIES = [str(query).strip() for query in SCRAPER_SEARCH_QUERIES if str(query).strip()]
+
+SEMANTIC_CANDIDATE_QUERIES = parse_json_env(SEMANTIC_CANDIDATE_QUERIES_JSON, [])
+if not isinstance(SEMANTIC_CANDIDATE_QUERIES, list):
+    SEMANTIC_CANDIDATE_QUERIES = []
+SEMANTIC_CANDIDATE_QUERIES = [str(query).strip() for query in SEMANTIC_CANDIDATE_QUERIES if str(query).strip()]

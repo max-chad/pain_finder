@@ -101,6 +101,18 @@ class TestOpenRouterEmbed:
         assert isinstance(result, list)
         assert len(result) == 96
 
+    async def test_empty_api_key_skips_remote_embedding_call(self):
+        from unittest.mock import AsyncMock
+
+        remote_mock = AsyncMock(side_effect=AssertionError("should not call remote"))
+        with patch("embedder._provider_embed_raw", remote_mock):
+            e = _make_embedder(api_key="", provider="openrouter")
+            result = await e.embed("manual reconciliation pain")
+
+        remote_mock.assert_not_called()
+        assert isinstance(result, list)
+        assert len(result) == 96
+
     @respx.mock
     async def test_embed_never_raises(self):
         """embed() must not propagate any exception."""

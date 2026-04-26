@@ -139,6 +139,7 @@ async def run() -> None:
         max_concurrency=config.CLASSIFIER_MAX_CONCURRENCY,
         screen_min_rule_score=config.SCREEN_MIN_RULE_SCORE,
         screen_max_llm_candidates_per_run=config.SCREEN_MAX_LLM_CANDIDATES_PER_RUN,
+        semantic_candidate_queries=config.SEMANTIC_CANDIDATE_QUERIES,
     )
     pipeline = AnalysisPipeline(
         scraper=scraper,
@@ -152,6 +153,12 @@ async def run() -> None:
         llm_max_classifications_per_run=config.LLM_MAX_CLASSIFICATIONS_PER_RUN,
         screen_max_llm_candidates_per_run=config.SCREEN_MAX_LLM_CANDIDATES_PER_RUN,
         current_opportunity_max_age_days=config.CURRENT_OPPORTUNITY_MAX_AGE_DAYS,
+        semantic_candidate_retrieval_enabled=config.SEMANTIC_CANDIDATE_RETRIEVAL_ENABLED,
+        semantic_embedder=embedder,
+        semantic_candidate_max_per_run=config.SEMANTIC_CANDIDATE_MAX_PER_RUN,
+        semantic_candidate_min_similarity=config.SEMANTIC_CANDIDATE_MIN_SIMILARITY,
+        semantic_candidate_max_pool=config.SEMANTIC_CANDIDATE_MAX_POOL,
+        min_confidence_for_promotion=config.MIN_CONFIDENCE_FOR_PROMOTION,
     )
     clusterer = MacroTrendClusterer(
         db=db,

@@ -104,6 +104,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             max_concurrency=8,
             screen_min_rule_score=1,
             screen_max_llm_candidates_per_run=0,
+            semantic_candidate_queries=None,
         ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
@@ -111,6 +112,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             self.max_concurrency = max_concurrency
             self.screen_min_rule_score = screen_min_rule_score
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
+            self.semantic_candidate_queries = semantic_candidate_queries or []
 
     class FakePipeline:
         instances = []
@@ -128,6 +130,12 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             llm_max_classifications_per_run=0,
             screen_max_llm_candidates_per_run=0,
             current_opportunity_max_age_days=180,
+            semantic_candidate_retrieval_enabled=False,
+            semantic_embedder=None,
+            semantic_candidate_max_per_run=0,
+            semantic_candidate_min_similarity=0.22,
+            semantic_candidate_max_pool=200,
+            min_confidence_for_promotion=0.55,
         ):
             self.scraper = scraper
             self.classifier = classifier
@@ -136,6 +144,12 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             self.budget_guard = budget_guard
             self.llm_max_classifications_per_run = llm_max_classifications_per_run
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
+            self.semantic_candidate_retrieval_enabled = semantic_candidate_retrieval_enabled
+            self.semantic_embedder = semantic_embedder
+            self.semantic_candidate_max_per_run = semantic_candidate_max_per_run
+            self.semantic_candidate_min_similarity = semantic_candidate_min_similarity
+            self.semantic_candidate_max_pool = semantic_candidate_max_pool
+            self.min_confidence_for_promotion = min_confidence_for_promotion
             self.calls = []
             self.deep_dive_calls = []
             self.digest_calls = []
@@ -427,6 +441,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             max_concurrency=8,
             screen_min_rule_score=1,
             screen_max_llm_candidates_per_run=0,
+            semantic_candidate_queries=None,
         ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
@@ -434,6 +449,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             self.max_concurrency = max_concurrency
             self.screen_min_rule_score = screen_min_rule_score
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
+            self.semantic_candidate_queries = semantic_candidate_queries or []
 
     class FakePipeline:
         instances = []
@@ -704,6 +720,7 @@ async def test_run_in_hermes_mode_skips_telegram_polling(monkeypatch, tmp_path):
             max_concurrency=8,
             screen_min_rule_score=1,
             screen_max_llm_candidates_per_run=0,
+            semantic_candidate_queries=None,
         ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
@@ -711,6 +728,7 @@ async def test_run_in_hermes_mode_skips_telegram_polling(monkeypatch, tmp_path):
             self.max_concurrency = max_concurrency
             self.screen_min_rule_score = screen_min_rule_score
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
+            self.semantic_candidate_queries = semantic_candidate_queries or []
 
     class FakePipeline:
         def __init__(self, **kwargs):

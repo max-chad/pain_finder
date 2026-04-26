@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from evidence import EvidenceSource, VerifiedEvidence, verify_evidence_spans
+from embedder import cosine_similarity
 from openrouter import AnalysisResult, OpenRouterClient
 from scraper import Post
 
@@ -201,6 +202,55 @@ HIGH_FREQUENCY_PATTERNS = (
     "every time",
     "constantly",
 )
+OPERATIONAL_CONSEQUENCE_PATTERNS = (
+    "reconcile",
+    "reconciliation",
+    "sync",
+    "integration",
+    "export",
+    "csv",
+    "handoff",
+    "approval",
+    "deadline",
+    "sla",
+    "manual work",
+    "manual process",
+    "workaround",
+    "switching",
+    "migration",
+    "pricing lock",
+    "lock-in",
+    "lock in",
+    "payout",
+    "payroll",
+    "invoice",
+    "duplicate entry",
+    "copy paste",
+    "copy/paste",
+    "spreadsheet",
+    "quickbooks",
+    "shopify",
+)
+HIDDEN_PAIN_QUESTION_PATTERNS = (
+    "does anyone have",
+    "anyone have",
+    "sane way",
+    "better way",
+    "how are you handling",
+    "how do you handle",
+    "what do you use",
+    "any tool",
+    "tool for",
+    "alternative to",
+    "recommend",
+)
+SEMANTIC_CANDIDATE_QUERIES = (
+    "manual workflow workaround causes repeated operational overhead",
+    "reconcile payments invoices payouts between business systems",
+    "tool sync integration failure export csv spreadsheet handoff",
+    "switching from incumbent software because pricing support reliability is painful",
+    "deadline approval customer escalation caused by broken internal process",
+)
 
 
 def buyer_authority_score(authority: str | None) -> float:
@@ -346,6 +396,7 @@ class Classifier:
         max_concurrency: int = 8,
         screen_min_rule_score: int = 1,
         screen_max_llm_candidates_per_run: int = 0,
+        semantic_candidate_queries: list[str] | None = None,
     ):
         self.openrouter = openrouter
         self.dspy_parser = dspy_parser
@@ -354,6 +405,12 @@ class Classifier:
         self.max_concurrency = max(1, max_concurrency)
         self.screen_min_rule_score = max(0, int(screen_min_rule_score))
         self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
+        self.semantic_candidate_queries = [
+            str(query).strip()
+            for query in (semantic_candidate_queries or list(SEMANTIC_CANDIDATE_QUERIES))
+            if isinstance(query, str) and query.strip()
+        ]
+        self._semantic_rescue_post_ids: set[str] = set()
 
     def keyword_score(self, post: Post) -> int:
         text = f"{post.title} {post.body}".lower()
@@ -366,9 +423,40 @@ class Classifier:
             score += 1
         return min(score, 3)
 
+    @staticmethod
+    def candidate_text(post: Post) -> str:
+        return "\n".join(
+            part
+            for part in [post.title, post.body, *(post.top_comments or [])]
+            if isinstance(part, str) and part.strip()
+        ).lower()
+
+    def operational_consequence_score(self, post: Post) -> int:
+        """High-recall deterministic score for implicit operational pain.
+
+        This catches posts that ask for a sane/better way to do work across
+        tools without saying "hate", "broken", or "problem" explicitly.
+        """
+        text = self.candidate_text(post)
+        consequence_hits = sum(1 for pattern in OPERATIONAL_CONSEQUENCE_PATTERNS if pattern in text)
+        if consequence_hits <= 0:
+            return 0
+
+        score = min(2, consequence_hits)
+        if any(pattern in text for pattern in HIDDEN_PAIN_QUESTION_PATTERNS):
+            score += 1
+        competitor_hits = self._extract_competitor_hints(post)
+        if len(competitor_hits) >= 2 and any(pattern in text for pattern in {"sync", "reconcile", "integration", "export", "payout"}):
+            score += 1
+        if any(pattern in text for pattern in {"deadline", "sla", "blocked", "blocking", "customer escalation", "customers complain"}):
+            score += 1
+        return min(score, 5)
+
     def prescreen_score(self, post: Post) -> int:
-        text = f"{post.title} {post.body}".lower()
+        text = self.candidate_text(post)
         score = self.keyword_score(post)
+        operational_score = self.operational_consequence_score(post)
+        score += operational_score
         if any(token in text for token in BUSINESS_CONTEXT_WORDS):
             score += 1
         if any(token in text for token in {"manual", "process", "workflow", "spreadsheet", "csv", "approval", "handoff", "sync", "pain"}):
@@ -383,27 +471,31 @@ class Classifier:
             score += 1
         if self._is_likely_b2c_noise(post):
             score = max(0, score - 1)
-        return max(0, min(score, 7))
+        return max(0, min(score, 10))
 
     def prescreen_posts(
         self,
         posts: list[Post],
         *,
         max_candidates: int | None = None,
-    ) -> tuple[list[Post], dict[str, int]]:
-        scored: list[tuple[int, Post]] = []
+    ) -> tuple[list[Post], dict[str, Any]]:
+        scored: list[tuple[int, int, int, Post]] = []
         rule_dropped_count = 0
-        for post in posts:
+        high_recall_candidate_count = 0
+        for index, post in enumerate(posts):
             score = self.prescreen_score(post)
+            operational_score = self.operational_consequence_score(post)
+            if operational_score > 0:
+                high_recall_candidate_count += 1
             if score < self.screen_min_rule_score:
                 rule_dropped_count += 1
                 continue
-            scored.append((score, post))
+            scored.append((score, operational_score, -index, post))
 
-        scored.sort(key=lambda item: item[0], reverse=True)
+        scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         kept_count = len(scored)
         capped_count = 0
-        shortlisted = [post for _, post in scored]
+        shortlisted = [post for _, _, _, post in scored]
         candidate_cap = self.screen_max_llm_candidates_per_run if max_candidates is None else max(0, int(max_candidates))
         if candidate_cap > 0 and len(shortlisted) > candidate_cap:
             capped_count = len(shortlisted) - candidate_cap
@@ -412,7 +504,105 @@ class Classifier:
             "screen_rule_dropped_count": rule_dropped_count,
             "screen_kept_count": kept_count,
             "screen_capped_count": capped_count,
+            "screen_high_recall_candidate_count": high_recall_candidate_count,
+            "screen_semantic_candidate_count": 0,
+            "screen_semantic_scored_count": 0,
+            "screen_semantic_dropped_count": 0,
+            "screen_semantic_rescued_count": 0,
         }
+
+    async def semantic_candidate_posts(
+        self,
+        posts: list[Post],
+        *,
+        embedder: Any | None,
+        max_candidates: int,
+        min_similarity: float,
+        max_pool: int = 200,
+    ) -> tuple[list[Post], dict[str, Any]]:
+        """Select supplemental candidates by semantic similarity to pain-query prototypes."""
+        if embedder is None or max_candidates <= 0 or not posts or not self.semantic_candidate_queries:
+            return [], {
+                "screen_semantic_candidate_count": 0,
+                "screen_semantic_scored_count": 0,
+                "screen_semantic_dropped_count": 0,
+                "screen_semantic_rescued_count": 0,
+                "screen_semantic_max_similarity": 0.0,
+            }
+
+        pool = list(posts)
+        pool.sort(key=lambda post: (self.operational_consequence_score(post), self.prescreen_score(post)), reverse=True)
+        if max_pool > 0:
+            pool = pool[:max_pool]
+
+        query_vectors = await embedder.embed_many(self.semantic_candidate_queries)
+        scored: list[tuple[float, int, int, Post]] = []
+        max_similarity = 0.0
+        for index, post in enumerate(pool):
+            vector = await embedder.embed(self.candidate_text(post))
+            similarity = max((cosine_similarity(vector, query_vector) for query_vector in query_vectors), default=0.0)
+            max_similarity = max(max_similarity, similarity)
+            if similarity >= min_similarity:
+                scored.append((similarity, self.operational_consequence_score(post), -index, post))
+
+        scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        shortlisted = [post for _, _, _, post in scored[:max_candidates]]
+        return shortlisted, {
+            "screen_semantic_candidate_count": len(shortlisted),
+            "screen_semantic_scored_count": len(pool),
+            "screen_semantic_dropped_count": max(0, len(pool) - len(scored)),
+            "screen_semantic_rescued_count": len(shortlisted),
+            "screen_semantic_max_similarity": round(max_similarity, 3),
+        }
+
+    async def select_candidates(
+        self,
+        posts: list[Post],
+        *,
+        max_candidates: int | None = None,
+        semantic_embedder: Any | None = None,
+        semantic_min_similarity: float = 0.22,
+        semantic_max_candidates: int = 0,
+        semantic_max_pool: int = 200,
+    ) -> tuple[list[Post], dict[str, Any]]:
+        self._semantic_rescue_post_ids = set()
+        deterministic_posts, deterministic_stats = self.prescreen_posts(posts, max_candidates=0)
+        deterministic_ids = {post.post_id for post in deterministic_posts}
+        dropped_posts = [post for post in posts if post.post_id not in deterministic_ids]
+        semantic_posts, semantic_stats = await self.semantic_candidate_posts(
+            dropped_posts,
+            embedder=semantic_embedder,
+            max_candidates=semantic_max_candidates,
+            min_similarity=max(0.0, min(1.0, float(semantic_min_similarity))),
+            max_pool=max(0, int(semantic_max_pool)),
+        )
+        combined_by_id: dict[str, Post] = {post.post_id: post for post in deterministic_posts}
+        semantic_rescue_ids: set[str] = set()
+        for post in semantic_posts:
+            if post.post_id not in combined_by_id:
+                semantic_rescue_ids.add(post.post_id)
+            combined_by_id.setdefault(post.post_id, post)
+        combined = list(combined_by_id.values())
+        combined.sort(key=lambda post: (self.prescreen_score(post), self.operational_consequence_score(post)), reverse=True)
+
+        kept_count = len(combined)
+        candidate_cap = self.screen_max_llm_candidates_per_run if max_candidates is None else max(0, int(max_candidates))
+        capped_count = 0
+        if candidate_cap > 0 and len(combined) > candidate_cap:
+            capped_count = len(combined) - candidate_cap
+            combined = combined[:candidate_cap]
+
+        final_semantic_rescue_ids = {post.post_id for post in combined if post.post_id in semantic_rescue_ids}
+        self._semantic_rescue_post_ids = final_semantic_rescue_ids
+
+        stats = dict(deterministic_stats)
+        stats.update(semantic_stats)
+        stats["screen_rule_dropped_count"] = max(0, len(posts) - kept_count)
+        stats["screen_kept_count"] = kept_count
+        stats["screen_capped_count"] = capped_count
+        stats["screen_semantic_rescued_count"] = len(final_semantic_rescue_ids)
+        stats["screen_candidate_cap"] = candidate_cap
+        return combined, stats
 
     def _keyword_category(self, post: Post) -> str:
         text = f"{post.title} {post.body}".lower()
@@ -654,7 +844,8 @@ class Classifier:
     async def classify(self, post: Post) -> PainSignal | None:
         keyword_score = self.keyword_score(post)
         rule_score = self.prescreen_score(post)
-        if rule_score < self.screen_min_rule_score:
+        semantic_rescue = post.post_id in self._semantic_rescue_post_ids
+        if rule_score < self.screen_min_rule_score and not semantic_rescue:
             return None
 
         heuristic_score = max(keyword_score, min(3, rule_score))
@@ -764,4 +955,5 @@ class Classifier:
                 return await self.classify(post)
 
         signals = await asyncio.gather(*(_classify_with_limit(post) for post in posts))
+        self._semantic_rescue_post_ids.difference_update(post.post_id for post in posts)
         return [s for s in signals if s is not None]

@@ -440,7 +440,9 @@ async def generate_live_predictions(
 ) -> list[dict[str, Any]]:
     screen_min_rule_score = max(0, _safe_int(getattr(classifier, "screen_min_rule_score", 0), default=0))
     prescreen_scores = {post.post_id: _safe_int(classifier.prescreen_score(post), default=0) for post in posts}
-    if hasattr(classifier, "prescreen_posts"):
+    if hasattr(classifier, "select_candidates"):
+        candidate_posts, _screen_stats = await classifier.select_candidates(posts, max_candidates=None)
+    elif hasattr(classifier, "prescreen_posts"):
         candidate_posts, _screen_stats = classifier.prescreen_posts(posts, max_candidates=None)
     else:
         scored = [(prescreen_scores[post.post_id], post) for post in posts if prescreen_scores[post.post_id] >= screen_min_rule_score]
