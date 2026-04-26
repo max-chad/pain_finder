@@ -13,20 +13,47 @@ except Exception:  # ImportError or any init-time failure
 
 logger = logging.getLogger(__name__)
 
-_EMBED_URL = "https://openrouter.ai/api/v1/embeddings"
+_DEFAULT_EMBED_BASE_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1/embeddings",
+    "codex": "https://api.openai.com/v1/embeddings",
+    "openai": "https://api.openai.com/v1/embeddings",
+}
 _EMBED_DIM = 96  # bag-of-words fallback dimension (matches clusterer.py)
 _TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 
 
-async def _openrouter_embed_raw(*, api_key: str, model: str, text: str) -> list[float]:
-    """POST to OpenRouter embeddings endpoint. Raises on non-200 or parse failure."""
+def _embed_url_for_provider(provider: str, api_base: str) -> str:
+    normalized = provider.strip().lower() or "openrouter"
+    if api_base:
+        return f"{api_base.rstrip('/')}/embeddings"
+    return _DEFAULT_EMBED_BASE_URLS.get(normalized, _DEFAULT_EMBED_BASE_URLS["openai"])
+
+
+async def _provider_embed_raw(
+    *,
+    api_key: str,
+    model: str,
+    text: str,
+    provider: str,
+    api_base: str = "",
+) -> list[float]:
+    """POST to the configured embeddings endpoint. Raises on non-200 or parse failure."""
+    url = _embed_url_for_provider(provider, api_base)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    if provider.strip().lower() == "openrouter":
+        headers.update(
+            {
+                "HTTP-Referer": "https://github.com/max-chad/pain_finder",
+                "X-Title": "pain_finder",
+            }
+        )
+
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
-            _EMBED_URL,
+            url,
             headers=headers,
             json={"model": model, "input": text},
         )
@@ -48,23 +75,32 @@ def _bow_embed(text: str) -> list[float]:
 class Embedder:
     """Three-tier embedding with graceful fallback.
 
-    Priority: OpenRouter API → sentence-transformers (local) → bag-of-words.
+    Priority: configured API provider → sentence-transformers (local) → bag-of-words.
     embed() never raises; it always returns a list[float].
     """
 
-    def __init__(self, *, api_key: str, model: str) -> None:
+    def __init__(self, *, api_key: str, model: str, provider: str = "openrouter", api_base: str = "") -> None:
         self._api_key = api_key
         self._model = model
+        self._provider = provider.strip().lower() or "openrouter"
+        self._api_base = api_base.strip()
         self._st_model: Any = None  # lazy-loaded SentenceTransformer instance
 
     async def embed(self, text: str) -> list[float]:
         """Return an embedding vector. Always succeeds."""
+        if self._provider in {"bow", "hash", "disabled", "none"}:
+            return _bow_embed(text)
+
         try:
-            return await _openrouter_embed_raw(
-                api_key=self._api_key, model=self._model, text=text
+            return await _provider_embed_raw(
+                api_key=self._api_key,
+                model=self._model,
+                text=text,
+                provider=self._provider,
+                api_base=self._api_base,
             )
         except Exception as exc:
-            logger.warning("OpenRouter embed failed (%s), trying sentence-transformers", exc)
+            logger.warning("Provider embed failed (%s), trying sentence-transformers", exc)
 
         try:
             return self._st_embed(text)
@@ -75,12 +111,8 @@ class Embedder:
 
     def _st_embed(self, text: str) -> list[float]:
         """Lazy-load SentenceTransformer and encode text. Raises if not installed."""
-        # Check sys.modules at call-time so that tests can disable the dependency
-        # by setting sys.modules["sentence_transformers"] = None.
         if sys.modules.get("sentence_transformers") is None:
             raise ImportError("sentence-transformers is not installed")
-        # Use the module-level SentenceTransformer name so tests can patch it via
-        # patch("embedder.SentenceTransformer", ...).
         if SentenceTransformer is None:
             raise ImportError("sentence-transformers is not installed")
         if self._st_model is None:

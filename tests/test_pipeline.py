@@ -28,6 +28,13 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
         body="Still broken",
         url="https://reddit.com/p1",
         score=10,
+        top_comments=[
+            "Same here — we still do this every week.",
+            "Manual workaround: export CSV and patch rows in Sheets.",
+        ],
+        source_created_at="2026-04-20T10:00:00+00:00",
+        source_created_ts=1776688800,
+        author_name="ops_owner",
     )
     signal = PainSignal(
         post=post,
@@ -40,6 +47,11 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
         niche_category="DevTools",
         analysis_mode="b2b",
         analysis_payload={"sample": True},
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["still broken", "can't make this work"],
+        opportunity_bucket="current_opportunity",
     )
 
     scraper = AsyncMock()
@@ -83,6 +95,15 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     with open(run.json_path, "r", encoding="utf-8") as handle:
         report_payload = json.load(handle)
     assert report_payload[0]["post_id"] == "p1"
+    assert report_payload[0]["source_created_ts"] == 1776688800
+    assert report_payload[0]["post_type"] == "first_person_pain"
+    assert report_payload[0]["buyer_authority"] == "founder_owner"
+    assert report_payload[0]["opportunity_bucket"] == "current_opportunity"
+    assert report_payload[0]["comment_same_here_count"] == 1
+    assert report_payload[0]["comment_workaround_count"] == 1
+    assert report_payload[0]["comment_tool_mentions"] == []
+    assert report_payload[0]["opportunity_score"] > 0
+    assert report_payload[0]["score_components"]["consensus_score"] > 0
 
     latest = await db.get_latest_report(subreddit="python")
     assert latest is not None
@@ -92,6 +113,9 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert len(rows) == 1
     assert rows[0]["post_id"] == "p1"
     assert rows[0]["deep_dive_status"] == "completed"
+    assert rows[0]["comment_same_here_count"] == 1
+    assert rows[0]["comment_workaround_count"] == 1
+    assert rows[0]["opportunity_score"] > 0
 
 
 async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):
@@ -160,6 +184,9 @@ async def test_analyze_subreddit_skips_already_persisted_posts_before_classifica
     assert latest_run is not None
     assert latest_run["skipped_existing_count"] == 1
     assert latest_run["dedup_merged_count"] == 0
+    assert latest_run["screen_rule_dropped_count"] == 0
+    assert latest_run["screen_kept_count"] == 1
+    assert latest_run["screen_capped_count"] == 0
 
 
 async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_path):
@@ -190,6 +217,7 @@ async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_
     scraper = AsyncMock()
     scraper.fetch_posts.return_value = posts
     classifier = SimpleNamespace(
+        prescreen_posts=MagicMock(return_value=(posts[:1], {"screen_rule_dropped_count": 0, "screen_kept_count": 3, "screen_capped_count": 2})),
         classify_batch=AsyncMock(return_value=[capped_signal]),
         openrouter=AsyncMock(),
     )
@@ -200,14 +228,22 @@ async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_
         db=db,
         reports_dir=str(tmp_path / "reports"),
         llm_max_classifications_per_run=1,
+        screen_max_llm_candidates_per_run=5,
     )
 
     run = await pipeline.analyze_subreddit("python", limit=10)
 
+    classifier.prescreen_posts.assert_called_once()
     classify_arg = classifier.classify_batch.await_args.args[0]
     assert [post.post_id for post in classify_arg] == ["fresh0"]
     assert run.post_count == 3
     assert run.pain_count == 1
+
+    latest_run = await db.get_latest_analysis_run("python")
+    assert latest_run is not None
+    assert latest_run["screen_rule_dropped_count"] == 0
+    assert latest_run["screen_kept_count"] == 3
+    assert latest_run["screen_capped_count"] == 2
 
 
 async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_path, monkeypatch):
@@ -320,10 +356,12 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         summary="s1",
         severity="high",
         is_monetizable=True,
-        pain_level=9,
-        willingness_to_pay=8,
+        pain_level=7,
+        willingness_to_pay=7,
         niche_category="DevOps",
         deep_dive_summary="Need better alerts",
+        opportunity_score=87.5,
+        score_components={"consensus_score": 0.9, "impact_score": 0.8},
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -335,9 +373,11 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         summary="s2",
         severity="medium",
         is_monetizable=True,
-        pain_level=7,
-        willingness_to_pay=7,
+        pain_level=9,
+        willingness_to_pay=9,
         niche_category="DevOps",
+        opportunity_score=61.0,
+        score_components={"consensus_score": 0.2, "impact_score": 0.5},
     )
 
     pipeline = AnalysisPipeline(
@@ -347,11 +387,66 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         reports_dir=str(tmp_path / "reports"),
     )
 
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="alert-fatigue",
+        cluster_key="d1",
+        label="Alert fatigue",
+        summary="Multiple teams complain about noisy alerting and weak escalation.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=16.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.75,
+        incumbents=["pagerduty"],
+        avg_opportunity_score=74.25,
+        latest_source_created_ts=1713772800,
+        members=[("d1", 0.9), ("d2", 0.88)],
+    )
+
     digest = await pipeline.generate_digest(subreddit="python", hours=24)
     assert digest["total"] == 2
     assert digest["top_items"][0]["post_id"] == "d1"
+    assert digest["top_items"][0]["opportunity_score"] == 87.5
+    assert digest["top_items"][1]["post_id"] == "d2"
     assert digest["niche_counts"]["DevOps"] == 2
+    assert digest["top_clusters"][0]["canonical_key"] == "alert-fatigue"
     assert "Need better alerts" in digest["recurring_blockers"]
+
+
+async def test_generate_digest_returns_no_clusters_when_no_rows(db, tmp_path):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="unrelated-cluster",
+        cluster_key="x1",
+        label="Unrelated cluster",
+        summary="No matching posts in this digest window.",
+        estimated_monetization_signal="medium",
+        item_count=1,
+        aggregate_wtp=9.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.6,
+        incumbents=["asana"],
+        avg_opportunity_score=55.0,
+        latest_source_created_ts=1713772800,
+        members=[("x1", 0.9)],
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    digest = await pipeline.generate_digest(subreddit="missing", hours=24)
+
+    assert digest["total"] == 0
+    assert digest["top_clusters"] == []
 
 
 async def test_analyze_external_posts_records_source(db, tmp_path):

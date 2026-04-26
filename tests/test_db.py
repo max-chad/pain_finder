@@ -1,5 +1,6 @@
 ﻿import pytest_asyncio
 import pytest
+import sqlite3
 from unittest.mock import patch
 
 from db import Database
@@ -29,12 +30,17 @@ async def test_insert_and_fetch_pain_point(db):
         pain_level=8,
         willingness_to_pay=9,
         niche_category="DevTools",
+        source_created_at="2026-04-20T10:00:00+00:00",
+        source_created_ts=1776688800,
+        opportunity_bucket="current_opportunity",
     )
     results = await db.get_pain_points(subreddit="python")
     assert len(results) == 1
     assert results[0]["post_id"] == "abc123"
     assert results[0]["category"] == "complaint"
     assert results[0]["willingness_to_pay"] == 9
+    assert results[0]["source_created_ts"] == 1776688800
+    assert results[0]["opportunity_bucket"] == "current_opportunity"
 
 
 async def test_duplicate_post_id_upserts(db):
@@ -128,6 +134,47 @@ async def test_migrations_are_idempotent(db):
     assert row[0] == 1
 
 
+async def test_init_migrates_legacy_pain_points_before_creating_new_indexes(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE pain_points (
+            id INTEGER PRIMARY KEY,
+            subreddit TEXT NOT NULL,
+            post_id TEXT UNIQUE NOT NULL,
+            url TEXT,
+            title TEXT,
+            body TEXT,
+            category TEXT,
+            summary TEXT,
+            severity TEXT,
+            is_monetizable INTEGER DEFAULT 0,
+            pain_level INTEGER DEFAULT 0,
+            willingness_to_pay INTEGER DEFAULT 0,
+            niche_category TEXT DEFAULT '',
+            competitor_tags TEXT DEFAULT '[]',
+            source TEXT DEFAULT 'reddit',
+            triage_status TEXT DEFAULT 'new',
+            analysis_mode TEXT DEFAULT 'legacy',
+            deep_dive_status TEXT DEFAULT 'not_requested',
+            deep_dive_summary TEXT,
+            analysis_payload_json TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))) ")
+    conn.commit()
+    conn.close()
+
+    database = Database(str(db_path))
+    await database.init()
+    row = await database.get_pain_point("missing")
+    assert row is None
+    await database.close()
+
+
 async def test_triage_and_deep_dive_helpers(db):
     await db.insert_pain_point(
         subreddit="python",
@@ -179,6 +226,8 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         severity="low",
         willingness_to_pay=2,
         pain_level=2,
+        source_created_ts=1776688800,
+        opportunity_bucket="evergreen_pain",
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -192,6 +241,8 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         willingness_to_pay=9,
         pain_level=8,
         is_monetizable=True,
+        source_created_ts=1776775200,
+        opportunity_bucket="current_opportunity",
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -206,6 +257,8 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         pain_level=2,
         is_monetizable=False,
         triage_status="favorite",
+        source_created_ts=1776775201,
+        opportunity_bucket="current_opportunity",
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -219,14 +272,68 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
         willingness_to_pay=10,
         pain_level=10,
         triage_status="discarded",
+        source_created_ts=1776775202,
+        opportunity_bucket="current_opportunity",
     )
 
-    rows = await db.list_export_rows(subreddit="python", min_wtp=8, include_favorites=True)
+    rows = await db.list_export_rows(
+        subreddit="python",
+        min_wtp=8,
+        include_favorites=True,
+        opportunity_bucket="current_opportunity",
+    )
     ids = {row["post_id"] for row in rows}
     assert "r2" in ids
     assert "r3" in ids
     assert "r1" not in ids
     assert "r4" not in ids
+
+
+async def test_get_recent_pain_points_filters_by_opportunity_bucket_and_source_age(db):
+    now = datetime.now(UTC)
+    fresh_ts = int((now - timedelta(days=5)).timestamp())
+    stale_ts = int((now - timedelta(days=400)).timestamp())
+
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="fresh-current",
+        url="",
+        title="Need better approvals",
+        body="",
+        category="complaint",
+        summary="fresh",
+        severity="high",
+        willingness_to_pay=9,
+        pain_level=8,
+        is_monetizable=True,
+        source_created_ts=fresh_ts,
+        source_created_at=datetime.fromtimestamp(fresh_ts, UTC).isoformat(),
+        opportunity_bucket="current_opportunity",
+    )
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="stale-evergreen",
+        url="",
+        title="Still migrating QuickBooks",
+        body="",
+        category="complaint",
+        summary="stale",
+        severity="high",
+        willingness_to_pay=8,
+        pain_level=8,
+        is_monetizable=True,
+        source_created_ts=stale_ts,
+        source_created_at=datetime.fromtimestamp(stale_ts, UTC).isoformat(),
+        opportunity_bucket="evergreen_pain",
+    )
+
+    current_rows = await db.get_recent_pain_points(hours=24 * 24, opportunity_bucket="current_opportunity")
+    evergreen_rows = await db.get_recent_pain_points(hours=24 * 24, opportunity_bucket="evergreen_pain")
+    aged_rows = await db.get_recent_pain_points(hours=24 * 24, max_source_age_days=180)
+
+    assert {row["post_id"] for row in current_rows} == {"fresh-current"}
+    assert {row["post_id"] for row in evergreen_rows} == {"stale-evergreen"}
+    assert {row["post_id"] for row in aged_rows} == {"fresh-current"}
 
 
 async def test_record_analysis_run_and_get_latest(db):
@@ -238,6 +345,9 @@ async def test_record_analysis_run_and_get_latest(db):
         deep_dive_count=2,
         skipped_existing_count=11,
         dedup_merged_count=3,
+        screen_rule_dropped_count=17,
+        screen_kept_count=21,
+        screen_capped_count=4,
         duration_ms=1200,
         report_id=10,
     )
@@ -249,6 +359,127 @@ async def test_record_analysis_run_and_get_latest(db):
     assert latest["monetizable_count"] == 5
     assert latest["skipped_existing_count"] == 11
     assert latest["dedup_merged_count"] == 3
+    assert latest["screen_rule_dropped_count"] == 17
+    assert latest["screen_kept_count"] == 21
+    assert latest["screen_capped_count"] == 4
+
+
+async def test_init_migrates_existing_analysis_runs_with_old_migration_marker(tmp_path):
+    db_path = tmp_path / "legacy_analysis_runs.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE analysis_runs (
+            id INTEGER PRIMARY KEY,
+            subreddit TEXT NOT NULL,
+            post_count INTEGER NOT NULL,
+            pain_count INTEGER NOT NULL,
+            monetizable_count INTEGER NOT NULL,
+            deep_dive_count INTEGER NOT NULL,
+            skipped_existing_count INTEGER DEFAULT 0,
+            dedup_merged_count INTEGER DEFAULT 0,
+            duration_ms INTEGER,
+            report_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE pain_points (
+            id INTEGER PRIMARY KEY,
+            subreddit TEXT NOT NULL,
+            post_id TEXT UNIQUE NOT NULL,
+            willingness_to_pay INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'reddit',
+            source_created_ts INTEGER,
+            opportunity_bucket TEXT DEFAULT 'unknown_age',
+            triage_status TEXT DEFAULT 'new',
+            emb_vector TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE monitored_subreddits (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, interval_hours INTEGER NOT NULL, last_checked TEXT, active INTEGER DEFAULT 1)")
+    conn.execute("CREATE TABLE reports (id INTEGER PRIMARY KEY, subreddit TEXT NOT NULL, run_at TEXT DEFAULT (datetime('now')), post_count INTEGER, pain_count INTEGER, json_path TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE deep_dives (
+            id INTEGER PRIMARY KEY,
+            post_id TEXT UNIQUE NOT NULL,
+            subreddit TEXT NOT NULL,
+            source TEXT DEFAULT 'auto',
+            status TEXT NOT NULL,
+            payload_json TEXT,
+            error TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE pain_point_competitors (post_id TEXT NOT NULL, competitor_tag TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (post_id, competitor_tag))")
+    conn.execute("CREATE TABLE macro_trend_runs (id INTEGER PRIMARY KEY, window_days INTEGER NOT NULL, candidate_count INTEGER NOT NULL, cluster_count INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute(
+        """
+        CREATE TABLE macro_trend_clusters (
+            id INTEGER PRIMARY KEY,
+            run_id INTEGER NOT NULL,
+            cluster_key TEXT,
+            label TEXT,
+            summary TEXT,
+            estimated_monetization_signal TEXT,
+            item_count INTEGER NOT NULL,
+            aggregate_wtp REAL NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE macro_trend_members (id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, cluster_id INTEGER NOT NULL, post_id TEXT NOT NULL, similarity REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute(
+        """
+        CREATE TABLE llm_usage_events (
+            id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
+            post_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE runtime_flags (id INTEGER PRIMARY KEY CHECK (id = 1), llm_paused INTEGER DEFAULT 0, pause_reason TEXT, pause_day TEXT, resume_override_until TEXT, updated_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("CREATE TABLE llm_response_cache (cache_key TEXT PRIMARY KEY, model TEXT NOT NULL, operation TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("CREATE TABLE gtm_assets (id INTEGER PRIMARY KEY, post_id TEXT NOT NULL, model TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("INSERT INTO schema_migrations (name) VALUES ('2026_04_15_analysis_run_efficiency_metrics')")
+    conn.commit()
+    conn.close()
+
+    database = Database(str(db_path))
+    await database.init()
+    try:
+        run_id = await database.record_analysis_run(
+            subreddit="ops",
+            post_count=10,
+            pain_count=4,
+            monetizable_count=2,
+            deep_dive_count=1,
+            screen_rule_dropped_count=3,
+            screen_kept_count=5,
+            screen_capped_count=1,
+            duration_ms=42,
+            report_id=None,
+        )
+        latest = await database.get_latest_analysis_run("ops")
+        assert run_id > 0
+        assert latest is not None
+        assert latest["screen_rule_dropped_count"] == 3
+        assert latest["screen_kept_count"] == 5
+        assert latest["screen_capped_count"] == 1
+    finally:
+        await database.close()
 
 
 async def test_competitor_tags_are_normalized_and_queryable(db):
@@ -311,12 +542,19 @@ async def test_macro_tables_persist_and_query(db):
     run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
     cluster_id = await db.save_macro_cluster(
         run_id=run_id,
+        canonical_key="api-timeout-failures",
         cluster_key="reddit:m1",
         label="API trend",
         summary="Recurring API failures",
         estimated_monetization_signal="high",
         item_count=2,
         aggregate_wtp=17.0,
+        fresh_post_count=1,
+        evergreen_post_count=1,
+        median_buyer_authority=0.8,
+        incumbents=["quickbooks", "jira"],
+        avg_opportunity_score=84.5,
+        latest_source_created_ts=1713772800,
         members=[("reddit:m1", 0.9), ("reddit:m2", 0.88)],
     )
     assert cluster_id > 0
@@ -328,14 +566,154 @@ async def test_macro_tables_persist_and_query(db):
     clusters = await db.get_macro_clusters(run_id)
     assert len(clusters) == 1
     assert set(clusters[0]["post_ids"]) == {"reddit:m1", "reddit:m2"}
+    assert clusters[0]["canonical_key"] == "api-timeout-failures"
+    assert clusters[0]["fresh_post_count"] == 1
+    assert clusters[0]["evergreen_post_count"] == 1
+    assert clusters[0]["incumbents"] == ["quickbooks", "jira"]
 
     by_post = await db.get_latest_macro_cluster_for_post("reddit:m1")
     assert by_post is not None
     assert by_post["label"] == "API trend"
+    assert by_post["canonical_key"] == "api-timeout-failures"
+
+    latest_canonical = await db.get_latest_canonical_clusters(limit=5)
+    assert len(latest_canonical) == 1
+    assert latest_canonical[0]["canonical_key"] == "api-timeout-failures"
+    assert latest_canonical[0]["avg_opportunity_score"] == 84.5
 
     candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
     ids = {row["post_id"] for row in candidates}
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
+
+
+async def test_get_latest_canonical_clusters_filters_before_limit(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=4, cluster_count=2)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="high-score-unrelated",
+        cluster_key="reddit:z1",
+        label="Unrelated cluster",
+        summary="Not relevant to the requested digest slice.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=18.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.9,
+        incumbents=["salesforce"],
+        avg_opportunity_score=99.0,
+        latest_source_created_ts=1713772800,
+        members=[("reddit:z1", 0.93), ("reddit:z2", 0.91)],
+    )
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="target-cluster",
+        cluster_key="reddit:t1",
+        label="Target cluster",
+        summary="Relevant cluster that should survive post-id filtering.",
+        estimated_monetization_signal="medium",
+        item_count=2,
+        aggregate_wtp=14.0,
+        fresh_post_count=1,
+        evergreen_post_count=1,
+        median_buyer_authority=0.7,
+        incumbents=["quickbooks"],
+        avg_opportunity_score=61.0,
+        latest_source_created_ts=1713770000,
+        members=[("reddit:t1", 0.89), ("reddit:t2", 0.88)],
+    )
+
+    filtered = await db.get_latest_canonical_clusters(limit=1, post_ids=["reddit:t1"])
+
+    assert len(filtered) == 1
+    assert filtered[0]["canonical_key"] == "target-cluster"
+
+
+async def test_get_latest_canonical_clusters_deduplicates_duplicate_keys(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=3, cluster_count=2)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="duplicate-key",
+        cluster_key="reddit:d1",
+        label="Primary cluster",
+        summary="Higher scoring duplicate key entry.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=15.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.8,
+        incumbents=["hubspot"],
+        avg_opportunity_score=88.0,
+        latest_source_created_ts=1713772800,
+        members=[("reddit:d1", 0.9), ("reddit:d2", 0.87)],
+    )
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="duplicate-key",
+        cluster_key="reddit:d3",
+        label="Secondary duplicate",
+        summary="Lower scoring duplicate key entry.",
+        estimated_monetization_signal="medium",
+        item_count=1,
+        aggregate_wtp=7.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.5,
+        incumbents=["hubspot"],
+        avg_opportunity_score=44.0,
+        latest_source_created_ts=1713770000,
+        members=[("reddit:d3", 0.84)],
+    )
+
+    clusters = await db.get_latest_canonical_clusters(limit=5)
+
+    assert len(clusters) == 1
+    assert clusters[0]["label"] == "Primary cluster"
+
+
+async def test_get_latest_canonical_clusters_can_return_older_matching_run(db):
+    older_run = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=older_run,
+        canonical_key="older-target",
+        cluster_key="reddit:o1",
+        label="Older target cluster",
+        summary="Relevant cluster from an earlier run.",
+        estimated_monetization_signal="high",
+        item_count=1,
+        aggregate_wtp=9.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.7,
+        incumbents=["quickbooks"],
+        avg_opportunity_score=72.0,
+        latest_source_created_ts=1713772800,
+        members=[("reddit:o1", 0.9)],
+    )
+    newer_run = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=newer_run,
+        canonical_key="newer-unrelated",
+        cluster_key="reddit:n1",
+        label="Newer unrelated cluster",
+        summary="Different run without matching membership.",
+        estimated_monetization_signal="medium",
+        item_count=1,
+        aggregate_wtp=7.0,
+        fresh_post_count=1,
+        evergreen_post_count=0,
+        median_buyer_authority=0.5,
+        incumbents=["asana"],
+        avg_opportunity_score=65.0,
+        latest_source_created_ts=1713772900,
+        members=[("reddit:n1", 0.85)],
+    )
+
+    clusters = await db.get_latest_canonical_clusters(limit=5, post_ids=["reddit:o1"])
+
+    assert len(clusters) == 1
+    assert clusters[0]["canonical_key"] == "older-target"
 
 
 async def test_llm_response_cache_roundtrip(db):
@@ -356,6 +734,12 @@ async def test_usage_ledger_and_runtime_flags(db):
         completion_tokens=50,
         cost_usd=0.12,
         post_id="reddit:u1",
+        prompt_hash="abc123",
+        fallback_reason=None,
+        schema_version="primary_v2",
+        provider="openai-codex",
+        request_path="https://chatgpt.com/backend-api/codex/responses",
+        candidate_stage="primary",
     )
     await db.record_llm_usage(
         model="model-a",
@@ -364,7 +748,26 @@ async def test_usage_ledger_and_runtime_flags(db):
         completion_tokens=75,
         cost_usd=0.34,
         post_id="reddit:u2",
+        prompt_hash="def456",
+        fallback_reason="primary_invalid",
+        schema_version="deep_dive_v1",
+        provider="openrouter",
+        request_path="https://openrouter.ai/api/v1/chat/completions",
+        candidate_stage="deep_dive",
     )
+
+    async with db._conn.execute(
+        "SELECT prompt_hash, fallback_reason, schema_version, provider, request_path, candidate_stage "
+        "FROM llm_usage_events WHERE post_id = ?",
+        ("reddit:u2",),
+    ) as cursor:
+        usage_row = await cursor.fetchone()
+
+    assert usage_row["prompt_hash"] == "def456"
+    assert usage_row["fallback_reason"] == "primary_invalid"
+    assert usage_row["schema_version"] == "deep_dive_v1"
+    assert usage_row["provider"] == "openrouter"
+    assert usage_row["candidate_stage"] == "deep_dive"
 
     spend = await db.get_daily_spend_usd()
     assert spend >= 0.46

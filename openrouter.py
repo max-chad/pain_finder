@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -7,6 +8,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from openai import OpenAI
 
 if TYPE_CHECKING:
     from budget import BudgetGuard
@@ -16,8 +18,34 @@ logger = logging.getLogger(__name__)
 VALID_CATEGORIES = {"complaint", "unsolved", "wish"}
 VALID_SEVERITIES = {"low", "medium", "high"}
 VALID_SIGNAL_LEVELS = {"low", "medium", "high"}
+VALID_POST_TYPES = {
+    "first_person_pain",
+    "solution_request",
+    "founder_pitch",
+    "news_analysis",
+    "tool_comparison",
+    "advice_thread",
+    "vendor_rant",
+}
+VALID_FIRST_HANDNESS = {"first_hand", "second_hand", "aggregated", "speculative", "unknown"}
+VALID_BUYER_AUTHORITIES = {
+    "intern",
+    "ic",
+    "engineer",
+    "manager",
+    "head_of_ops",
+    "founder_owner",
+    "agency_operator",
+    "unknown",
+}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = (0.5, 1.0)
+PRIMARY_SCHEMA_VERSION = "primary_v2"
+LEGACY_SCHEMA_VERSION = "legacy_v2"
+DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
+CLUSTER_SCHEMA_VERSION = "cluster_v1"
+GTM_SCHEMA_VERSION = "gtm_v1"
+
 
 PRIMARY_PROMPT_TEMPLATE = """You are a B2B SaaS product manager analyzing Reddit pain signals.
 
@@ -26,7 +54,10 @@ Task:
 2. Score pain intensity and willingness to pay.
 3. Categorize the niche.
 4. Extract competitor software names mentioned negatively.
-5. Keep compatibility fields (category, severity).
+5. Classify the post type before monetization scoring.
+6. Identify first-handness and buyer authority.
+7. Return 1-3 short evidence spans copied from the post text.
+8. Keep compatibility fields (category, severity).
 
 Reject non-business consumer venting as non-monetizable with low scores.
 
@@ -39,13 +70,21 @@ Return ONLY valid JSON with this exact schema:
   "competitor_tags": ["shopify", "quickbooks"],
   "summary": "One sentence summary",
   "category": "complaint",
-  "severity": "low"
+  "severity": "low",
+  "post_type": "first_person_pain",
+  "first_handness": "first_hand",
+  "buyer_authority": "founder_owner",
+  "evidence_spans": ["copied evidence"]
 }
 
 Rules:
 - pain_level: integer 0..10
 - willingness_to_pay: integer 0..10
 - competitor_tags: array of lowercase software tags, empty array if none
+- post_type: one of first_person_pain, solution_request, founder_pitch, news_analysis, tool_comparison, advice_thread, vendor_rant
+- first_handness: one of first_hand, second_hand, aggregated, speculative, unknown
+- buyer_authority: one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown
+- evidence_spans: array with 1..3 short quotes copied from the post, max 160 chars each
 
 Title: {title}
 Body: {body}
@@ -55,7 +94,11 @@ LEGACY_PROMPT_TEMPLATE = """Analyze this post and extract pain point JSON:
 {
   "category": "complaint",
   "summary": "one sentence summary",
-  "severity": "low"
+  "severity": "low",
+  "post_type": "advice_thread",
+  "first_handness": "unknown",
+  "buyer_authority": "unknown",
+  "evidence_spans": ["copied evidence"]
 }
 
 Title: {title}
@@ -119,6 +162,12 @@ class UsageEvent:
     completion_tokens: int
     cost_usd: float
     post_id: str | None = None
+    prompt_hash: str | None = None
+    fallback_reason: str | None = None
+    schema_version: str | None = None
+    provider: str | None = None
+    request_path: str | None = None
+    candidate_stage: str | None = None
 
 
 @dataclass
@@ -131,6 +180,10 @@ class AnalysisResult:
     willingness_to_pay: int = 0
     niche_category: str = ""
     competitor_tags: list[str] = field(default_factory=list)
+    post_type: str = "advice_thread"
+    first_handness: str = "unknown"
+    buyer_authority: str = "unknown"
+    evidence_spans: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
 
 
@@ -166,7 +219,12 @@ class GTMGenerationResult:
 
 
 class OpenRouterClient:
-    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    DEFAULT_BASE_URLS = {
+        "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+        "codex": "https://api.openai.com/v1/chat/completions",
+        "openai": "https://api.openai.com/v1/chat/completions",
+        "openai-codex": "https://chatgpt.com/backend-api/codex",
+    }
 
     def __init__(
         self,
@@ -178,6 +236,14 @@ class OpenRouterClient:
         pricing_map: dict[str, dict[str, float]] | None = None,
         budget_guard: "BudgetGuard | None" = None,
         cache_db: Any | None = None,
+        provider: str = "openrouter",
+        api_base: str = "",
+        reasoning_effort: str = "",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        primary_max_output_tokens: int | None = None,
+        app_url: str = "https://github.com/max-chad/pain_finder",
+        app_name: str = "pain_finder",
     ):
         self.api_key = api_key
         self.model = model
@@ -187,6 +253,186 @@ class OpenRouterClient:
         self.pricing_map = pricing_map or {}
         self.budget_guard = budget_guard
         self.cache_db = cache_db
+        self.provider = provider.strip().lower() or "openrouter"
+        self.api_base = api_base.strip()
+        self.reasoning_effort = reasoning_effort.strip().lower()
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.primary_max_output_tokens = primary_max_output_tokens
+        self.app_url = app_url
+        self.app_name = app_name
+        self.base_url = self._resolve_base_url()
+
+    def _resolve_base_url(self) -> str:
+        if self.api_base:
+            if self.provider == "openai-codex":
+                return self.api_base.rstrip("/")
+            return f"{self.api_base.rstrip('/')}/chat/completions"
+        return self.DEFAULT_BASE_URLS.get(self.provider, self.DEFAULT_BASE_URLS["openai"])
+
+    def _uses_openai_codex_backend(self) -> bool:
+        return self.provider == "openai-codex" or "chatgpt.com/backend-api/codex" in self.base_url.lower()
+
+    def _is_openai_compatible(self) -> bool:
+        return self.provider in {"openai", "codex", "openrouter", "openai-codex"}
+
+    @staticmethod
+    def _build_codex_headers(access_token: str) -> dict[str, str]:
+        headers = {
+            "User-Agent": "codex_cli_rs/0.0.0 (pain_finder)",
+            "originator": "codex_cli_rs",
+        }
+        if not isinstance(access_token, str) or not access_token.strip():
+            return headers
+        try:
+            parts = access_token.split(".")
+            if len(parts) < 2:
+                return headers
+            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+            auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+            account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+            if isinstance(account_id, str) and account_id.strip():
+                headers["ChatGPT-Account-ID"] = account_id.strip()
+        except Exception:
+            pass
+        return headers
+
+    def _build_headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.provider == "openrouter":
+            headers.update({"HTTP-Referer": self.app_url, "X-Title": self.app_name})
+        if self._uses_openai_codex_backend():
+            headers.update(self._build_codex_headers(self.api_key))
+        return headers
+
+    def _build_request_body(self, *, model: str, prompt: str, max_output_tokens: int | None = None) -> dict[str, Any]:
+        request_body: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+        }
+        if self.temperature is not None:
+            request_body["temperature"] = self.temperature
+        token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
+        if token_limit is not None:
+            if self.provider in {"openai", "codex"} and (model.startswith("gpt-5") or model.startswith("o")):
+                request_body["max_completion_tokens"] = token_limit
+            else:
+                request_body["max_tokens"] = token_limit
+        if self.reasoning_effort and self._is_openai_compatible():
+            request_body["reasoning_effort"] = self.reasoning_effort
+        return request_body
+
+    @staticmethod
+    def _extract_responses_text(final_response: Any, streamed_parts: list[str]) -> str:
+        text = "".join(part for part in streamed_parts if part).strip()
+        if text:
+            return text
+        direct = getattr(final_response, "output_text", "")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        for item in getattr(final_response, "output", []) or []:
+            for content in getattr(item, "content", []) or []:
+                maybe_text = getattr(content, "text", "")
+                if isinstance(maybe_text, str) and maybe_text.strip():
+                    return maybe_text.strip()
+        return ""
+
+    @staticmethod
+    def _responses_usage_to_dict(usage: Any) -> dict[str, int] | None:
+        if usage is None:
+            return None
+        prompt_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        }
+
+    async def _request_codex_responses_payload(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        max_output_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+        def _run() -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                default_headers=self._build_codex_headers(self.api_key),
+            )
+            streamed_parts: list[str] = []
+            stream_kwargs: dict[str, Any] = {
+                "model": model,
+                "instructions": "Return only the JSON object requested by the user task.",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}],
+                    }
+                ],
+                "store": False,
+            }
+            token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
+            if token_limit is not None:
+                stream_kwargs["max_output_tokens"] = token_limit
+            if self.reasoning_effort:
+                stream_kwargs["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
+            with client.responses.stream(**stream_kwargs) as stream:
+                for event in stream:
+                    event_type = getattr(event, "type", "")
+                    if event_type in {"response.output_text.delta", "output_text.delta"}:
+                        delta = getattr(event, "delta", "")
+                        if delta:
+                            streamed_parts.append(delta)
+                final_response = stream.get_final_response()
+            raw_text = self._extract_responses_text(final_response, streamed_parts)
+            if not raw_text:
+                return None, self._responses_usage_to_dict(getattr(final_response, "usage", None))
+            payload = self._safe_json_load(raw_text)
+            usage = self._responses_usage_to_dict(getattr(final_response, "usage", None))
+            return payload, usage
+
+        return await asyncio.to_thread(_run)
+
+    async def _record_usage_from_usage_dict(
+        self,
+        *,
+        usage: dict[str, int] | None,
+        model: str,
+        operation: str,
+        post_id: str | None,
+        prompt_hash: str,
+        fallback_reason: str | None,
+        schema_version: str,
+        candidate_stage: str,
+    ) -> None:
+        if not usage:
+            return
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
+
+        if self.budget_guard is not None:
+            await self.budget_guard.record_usage(
+                model=model,
+                operation=operation,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+                post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                provider=self.provider,
+                request_path=self._request_path(),
+                candidate_stage=candidate_stage,
+            )
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -199,6 +445,9 @@ class OpenRouterClient:
             operation="classify_primary",
             post_id=post_id,
             validate_payload=self._is_valid_primary_payload,
+            schema_version=PRIMARY_SCHEMA_VERSION,
+            candidate_stage="primary",
+            max_output_tokens=self.primary_max_output_tokens,
         )
         if payload is None:
             return None
@@ -207,7 +456,13 @@ class OpenRouterClient:
             logger.warning("OpenRouter primary output failed validation: %s", payload)
         return result
 
-    async def analyze_legacy_post(self, title: str, body: str, post_id: str | None = None) -> AnalysisResult | None:
+    async def analyze_legacy_post(
+        self,
+        title: str,
+        body: str,
+        post_id: str | None = None,
+        fallback_reason: str | None = None,
+    ) -> AnalysisResult | None:
         prompt = LEGACY_PROMPT_TEMPLATE.replace("{title}", title).replace("{body}", body[:4000])
         payload = await self._request_json_response(
             prompt=prompt,
@@ -215,6 +470,9 @@ class OpenRouterClient:
             operation="classify_legacy",
             post_id=post_id,
             validate_payload=self._is_valid_legacy_payload,
+            schema_version=LEGACY_SCHEMA_VERSION,
+            fallback_reason=fallback_reason,
+            candidate_stage="primary_fallback",
         )
         if payload is None:
             return None
@@ -231,6 +489,8 @@ class OpenRouterClient:
             operation="deep_dive",
             post_id=post_id,
             validate_payload=self._is_valid_deep_dive_payload,
+            schema_version=DEEP_DIVE_SCHEMA_VERSION,
+            candidate_stage="deep_dive",
         )
         if payload is None:
             return None
@@ -255,6 +515,8 @@ class OpenRouterClient:
             operation="cluster_label",
             post_id=post_id,
             validate_payload=self._is_valid_cluster_label_payload,
+            schema_version=CLUSTER_SCHEMA_VERSION,
+            candidate_stage="cluster",
         )
         if payload is None:
             return None
@@ -271,6 +533,8 @@ class OpenRouterClient:
             operation="generate_gtm",
             post_id=post_id,
             validate_payload=self._is_valid_gtm_payload,
+            schema_version=GTM_SCHEMA_VERSION,
+            candidate_stage="gtm",
         )
         if payload is None:
             return None
@@ -287,8 +551,21 @@ class OpenRouterClient:
         operation: str,
         post_id: str | None,
         validate_payload: Callable[[dict[str, Any]], bool] | None = None,
+        schema_version: str,
+        candidate_stage: str,
+        fallback_reason: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any] | None:
-        cache_key = self._build_cache_key(model=model, operation=operation, prompt=prompt)
+        cache_key = self._build_cache_key(
+            model=model,
+            operation=operation,
+            prompt=prompt,
+            provider=self.provider,
+            request_path=self._request_path(),
+            reasoning_effort=self.reasoning_effort,
+            max_output_tokens=max_output_tokens,
+        )
+        prompt_hash = self._prompt_hash(prompt)
         cached_payload = await self._get_cached_payload(cache_key)
         if cached_payload is not None:
             if validate_payload is not None and not validate_payload(cached_payload):
@@ -305,23 +582,49 @@ class OpenRouterClient:
         if self.budget_guard is not None:
             await self.budget_guard.ensure_can_spend(operation)
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        request_body = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-        }
+        if self._uses_openai_codex_backend():
+            try:
+                payload, usage = await self._request_codex_responses_payload(
+                    prompt=prompt,
+                    model=model,
+                    max_output_tokens=max_output_tokens,
+                )
+            except Exception as e:
+                logger.warning("OpenAI Codex request failed: %s", e)
+                return None
+            if payload is None:
+                return None
+            is_valid_payload = validate_payload(payload) if validate_payload is not None else True
+            if is_valid_payload:
+                await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
+            else:
+                logger.warning(
+                    "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
+                    model,
+                    operation,
+                    cache_key,
+                )
+            await self._record_usage_from_usage_dict(
+                usage=usage,
+                model=model,
+                operation=operation,
+                post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                candidate_stage=candidate_stage,
+            )
+            return payload
+
+        headers = self._build_headers()
+        request_body = self._build_request_body(model=model, prompt=prompt, max_output_tokens=max_output_tokens)
 
         _max_attempts = len(RETRY_BACKOFF_SECONDS)
         try:
             async with httpx.AsyncClient(timeout=45) as client:
                 for attempt in range(1, _max_attempts + 1):
                     try:
-                        response = await client.post(self.BASE_URL, json=request_body, headers=headers)
+                        response = await client.post(self.base_url, json=request_body, headers=headers)
                         response.raise_for_status()
                         response_json = response.json()
                         content = response_json["choices"][0]["message"]["content"]
@@ -341,6 +644,10 @@ class OpenRouterClient:
                             model=model,
                             operation=operation,
                             post_id=post_id,
+                            prompt_hash=prompt_hash,
+                            fallback_reason=fallback_reason,
+                            schema_version=schema_version,
+                            candidate_stage=candidate_stage,
                         )
                         return payload
                     except httpx.HTTPStatusError as e:
@@ -379,9 +686,39 @@ class OpenRouterClient:
             return None
 
     @staticmethod
-    def _build_cache_key(*, model: str, operation: str, prompt: str) -> str:
-        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        return f"{operation}:{model}:{digest}"
+    def _prompt_hash(prompt: str) -> str:
+        return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+    def _request_path(self) -> str:
+        if self._uses_openai_codex_backend():
+            return f"{self.base_url.rstrip('/')}/responses"
+        return self.base_url
+
+    @classmethod
+    def _build_cache_key(
+        cls,
+        *,
+        model: str,
+        operation: str,
+        prompt: str,
+        provider: str,
+        request_path: str,
+        reasoning_effort: str,
+        max_output_tokens: int | None,
+    ) -> str:
+        digest = cls._prompt_hash(prompt)
+        config_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "provider": provider,
+                    "request_path": request_path,
+                    "reasoning_effort": reasoning_effort,
+                    "max_output_tokens": max_output_tokens,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"{operation}:{model}:{config_fingerprint}:{digest}"
 
     async def _get_cached_payload(self, cache_key: str) -> dict[str, Any] | None:
         if self.cache_db is None:
@@ -420,6 +757,10 @@ class OpenRouterClient:
         model: str,
         operation: str,
         post_id: str | None,
+        prompt_hash: str,
+        fallback_reason: str | None,
+        schema_version: str,
+        candidate_stage: str,
     ) -> None:
         usage = response_json.get("usage")
         if not isinstance(usage, dict):
@@ -437,6 +778,12 @@ class OpenRouterClient:
                 completion_tokens=completion_tokens,
                 cost_usd=cost_usd,
                 post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                provider=self.provider,
+                request_path=self._request_path(),
+                candidate_stage=candidate_stage,
             )
 
     def _estimate_cost_usd(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -474,6 +821,14 @@ class OpenRouterClient:
     def _is_valid_gtm_payload(self, payload: dict[str, Any]) -> bool:
         return self._parse_gtm_result(payload) is not None
 
+    @staticmethod
+    def _default_post_type_for_category(category: str) -> str:
+        if category == "complaint":
+            return "first_person_pain"
+        if category == "unsolved":
+            return "solution_request"
+        return "advice_thread"
+
     def _parse_primary_result(self, payload: dict[str, Any]) -> AnalysisResult | None:
         category = payload.get("category")
         severity = payload.get("severity")
@@ -483,6 +838,10 @@ class OpenRouterClient:
         willingness_to_pay = payload.get("willingness_to_pay")
         niche_category = payload.get("niche_category")
         competitor_tags = payload.get("competitor_tags", [])
+        post_type = payload.get("post_type", self._default_post_type_for_category(str(category)))
+        first_handness = payload.get("first_handness", "unknown")
+        buyer_authority = payload.get("buyer_authority", "unknown")
+        evidence_spans = payload.get("evidence_spans", [])
 
         if category not in VALID_CATEGORIES:
             return None
@@ -500,6 +859,15 @@ class OpenRouterClient:
             return None
         if not isinstance(competitor_tags, list) or any(not isinstance(item, str) for item in competitor_tags):
             return None
+        if post_type not in VALID_POST_TYPES:
+            return None
+        if first_handness not in VALID_FIRST_HANDNESS:
+            return None
+        if buyer_authority not in VALID_BUYER_AUTHORITIES:
+            return None
+        if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
+            return None
+        cleaned_evidence = [item.strip()[:160] for item in evidence_spans if item.strip()][:3]
 
         return AnalysisResult(
             category=category,
@@ -510,6 +878,10 @@ class OpenRouterClient:
             willingness_to_pay=willingness_to_pay if monetizable else min(willingness_to_pay, 3),
             niche_category=niche_category.strip(),
             competitor_tags=[item.strip().lower() for item in competitor_tags if item.strip()],
+            post_type=post_type,
+            first_handness=first_handness,
+            buyer_authority=buyer_authority,
+            evidence_spans=cleaned_evidence,
             raw_payload=payload,
         )
 
@@ -518,6 +890,10 @@ class OpenRouterClient:
         severity = payload.get("severity")
         summary = payload.get("summary")
         competitor_tags = payload.get("competitor_tags", [])
+        post_type = payload.get("post_type", self._default_post_type_for_category(str(category)))
+        first_handness = payload.get("first_handness", "unknown")
+        buyer_authority = payload.get("buyer_authority", "unknown")
+        evidence_spans = payload.get("evidence_spans", [])
 
         if category not in VALID_CATEGORIES:
             return None
@@ -527,12 +903,24 @@ class OpenRouterClient:
             return None
         if not isinstance(competitor_tags, list) or any(not isinstance(item, str) for item in competitor_tags):
             competitor_tags = []
+        if post_type not in VALID_POST_TYPES:
+            return None
+        if first_handness not in VALID_FIRST_HANDNESS:
+            return None
+        if buyer_authority not in VALID_BUYER_AUTHORITIES:
+            return None
+        if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
+            evidence_spans = []
 
         return AnalysisResult(
             category=category,
             summary=summary.strip(),
             severity=severity,
             competitor_tags=[item.strip().lower() for item in competitor_tags if isinstance(item, str) and item.strip()],
+            post_type=post_type,
+            first_handness=first_handness,
+            buyer_authority=buyer_authority,
+            evidence_spans=[item.strip()[:160] for item in evidence_spans if isinstance(item, str) and item.strip()][:3],
             raw_payload=payload,
         )
 

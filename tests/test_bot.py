@@ -323,6 +323,7 @@ async def test_cmd_digest_formats_result():
             "top_items": [
                 {"post_id": "p1", "weighted_score": 9, "willingness_to_pay": 9, "pain_level": 9, "summary": "Need better sync"}
             ],
+            "top_clusters": [{"label": "Alert fatigue", "avg_opportunity_score": 74.25}],
             "niche_counts": {"DevOps": 2},
             "recurring_blockers": ["Need better sync"],
         }
@@ -342,6 +343,9 @@ async def test_cmd_digest_formats_result():
 
     digest_fn.assert_awaited_once_with("python", 24)
     update.message.reply_text.assert_awaited_once()
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert "Top canonical clusters:" in sent_text
+    assert "Alert fatigue" in sent_text
 
 
 async def test_cmd_digest_usage_on_bad_args():

@@ -17,9 +17,14 @@ async def test_post_dataclass_fields():
         score=42,
         permalink="/r/python/comments/t3_abc/example/",
         top_comments=["same issue"],
+        source_created_at="2026-04-20T10:00:00Z",
+        source_created_ts=1776688800,
+        author_name="alice",
     )
     assert post.post_id == "t3_abc"
     assert post.top_comments == ["same issue"]
+    assert post.source_created_ts == 1776688800
+    assert post.author_name == "alice"
 
 
 async def test_scraper_no_credentials_sets_use_praw_false():
@@ -56,6 +61,8 @@ async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
                                 "selftext": "body text",
                                 "url": "https://reddit.com/abc1",
                                 "score": 10,
+                                "created_utc": 1713600000,
+                                "author": "alice",
                                 "subreddit": "python",
                                 "permalink": "/r/python/comments/abc1/test_post/",
                             }
@@ -89,6 +96,64 @@ async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
     assert posts[0].post_id == "reddit:abc1"
     assert posts[0].top_comments == ["first top comment", "second top comment"]
     assert "Top comments:" in posts[0].body
+    assert posts[0].source_created_ts == 1713600000
+    assert posts[0].source_created_at == "2024-04-20T08:00:00+00:00"
+    assert posts[0].author_name == "alice"
+
+
+def test_parse_rss_entries_preserves_source_timestamp_and_author():
+    xml_text = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>tag:reddit.com,2005:comments/abc123</id>
+        <title>Manual payroll process still breaks</title>
+        <published>2026-04-19T08:15:00+00:00</published>
+        <updated>2026-04-21T08:15:00+00:00</updated>
+        <author><name>ops_owner</name></author>
+        <summary>We still export CSV files every Friday.</summary>
+        <link href="https://old.reddit.com/r/smallbusiness/comments/abc123/payroll/" />
+      </entry>
+    </feed>
+    """
+
+    posts = RedditScraper._parse_rss_entries("smallbusiness", xml_text)
+
+    assert len(posts) == 1
+    assert posts[0].post_id == "reddit:abc123"
+    assert posts[0].source_created_at == "2026-04-19T08:15:00+00:00"
+    assert posts[0].source_created_ts == 1776586500
+    assert posts[0].author_name == "ops_owner"
+
+
+def test_merge_post_keeps_earliest_source_timestamp():
+    posts_by_id = {
+        "reddit:abc123": Post(
+            post_id="reddit:abc123",
+            subreddit="smallbusiness",
+            title="Older",
+            body="",
+            url="https://reddit.com/r/smallbusiness/comments/abc123/older/",
+            score=5,
+            source_created_at="2026-04-19T08:15:00+00:00",
+            source_created_ts=1776586500,
+        )
+    }
+    newer_variant = Post(
+        post_id="reddit:abc123",
+        subreddit="smallbusiness",
+        title="Newer",
+        body="",
+        url="https://reddit.com/r/smallbusiness/comments/abc123/newer/",
+        score=10,
+        source_created_at="2026-04-21T08:15:00+00:00",
+        source_created_ts=1776759300,
+    )
+
+    RedditScraper._merge_post(posts_by_id, newer_variant)
+
+    assert posts_by_id["reddit:abc123"].score == 10
+    assert posts_by_id["reddit:abc123"].source_created_at == "2026-04-19T08:15:00+00:00"
+    assert posts_by_id["reddit:abc123"].source_created_ts == 1776586500
 
 
 async def test_fetch_public_json_handles_http_error(respx_mock):
@@ -311,6 +376,77 @@ async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_moc
     assert {post.post_id for post in posts} == {"reddit:same", "reddit:fresh"}
 
 
+async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_query(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "same",
+                                "title": "Top duplicate",
+                                "selftext": "body",
+                                "url": "https://reddit.com/same",
+                                "score": 10,
+                                "permalink": "/r/python/comments/same/top/",
+                            }
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    search_route = respx_mock.get("https://www.reddit.com/r/python/search.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "same",
+                                "title": "Top duplicate",
+                                "selftext": "body",
+                                "url": "https://reddit.com/same",
+                                "score": 10,
+                                "permalink": "/r/python/comments/same/top/",
+                            }
+                        },
+                        {
+                            "data": {
+                                "id": "searchonly",
+                                "title": "Spreadsheet workaround pain",
+                                "selftext": "Still doing this manually",
+                                "url": "https://reddit.com/searchonly",
+                                "score": 12,
+                                "permalink": "/r/python/comments/searchonly/search/",
+                            }
+                        },
+                    ]
+                }
+            },
+        )
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["spreadsheet workaround"],
+    )
+    posts = await scraper._fetch_public_json("python", limit=5)
+
+    assert {post.post_id for post in posts} == {"reddit:same", "reddit:searchonly"}
+    by_id = {post.post_id: post for post in posts}
+    assert by_id["reddit:same"].discovery_query == "spreadsheet workaround"
+    assert by_id["reddit:searchonly"].discovery_query == "spreadsheet workaround"
+    assert search_route.call_count == 1
+
+
 async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_mock):
     from unittest.mock import AsyncMock, patch
 
@@ -380,6 +516,85 @@ async def test_fetch_public_json_requests_feeds_concurrently():
 
     assert posts == []
     assert elapsed < 0.12
+
+
+async def test_fetch_posts_falls_back_to_rss_when_public_json_is_blocked():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    fallback_posts = [
+        Post(
+            post_id="reddit:rss1",
+            subreddit="python",
+            title="RSS fallback post",
+            body="manual workaround",
+            url="https://reddit.com/r/python/comments/rss1/example/",
+            score=11,
+        )
+    ]
+    blocked_response = httpx.Response(
+        403,
+        request=httpx.Request("GET", "https://www.reddit.com/r/python/top.json"),
+    )
+    blocked_error = httpx.HTTPStatusError("blocked", request=blocked_response.request, response=blocked_response)
+
+    with patch.object(scraper, "_fetch_public_json", new=AsyncMock(side_effect=blocked_error)):
+        with patch.object(scraper, "_fetch_rss", new=AsyncMock(return_value=fallback_posts)) as rss_mock:
+            posts = await scraper.fetch_posts("python", limit=5)
+
+    rss_mock.assert_awaited_once_with("python", 5, "day")
+    assert posts == fallback_posts
+
+
+async def test_fetch_rss_merges_feed_and_search_results(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_same</id>
+        <title>Need better alerts</title>
+        <summary>Still doing manual checks</summary>
+        <link href='https://reddit.com/r/python/comments/same/need-better-alerts/' />
+      </entry>
+    </feed>
+    """
+    search_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_same</id>
+        <title>Need better alerts</title>
+        <summary>Still doing manual checks</summary>
+        <link href='https://reddit.com/r/python/comments/same/need-better-alerts/' />
+      </entry>
+      <entry>
+        <id>t3_rssonly</id>
+        <title>Spreadsheet workaround pain</title>
+        <summary>We export CSV files every week</summary>
+        <link href='https://reddit.com/r/python/comments/rssonly/spreadsheet-workaround-pain/' />
+      </entry>
+    </feed>
+    """
+
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+    search_route = respx_mock.get("https://old.reddit.com/r/python/search.rss").mock(
+        return_value=httpx.Response(200, text=search_xml)
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["spreadsheet workaround"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert {post.post_id for post in posts} == {"reddit:same", "reddit:rssonly"}
+    by_id = {post.post_id: post for post in posts}
+    assert by_id["reddit:same"].discovery_query == "spreadsheet workaround"
+    assert by_id["reddit:rssonly"].discovery_query == "spreadsheet workaround"
+    assert search_route.call_count == 1
 
 
 async def test_fetch_oauth_json_requests_feeds_concurrently():

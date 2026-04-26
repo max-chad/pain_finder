@@ -1,9 +1,14 @@
 ﻿import asyncio
+import html
 import logging
 import math
 import random
+import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -12,6 +17,9 @@ logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 ALLOWED_FEEDS = {"top", "new", "rising"}
 DEFAULT_FEEDS = ("top",)
+ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
 
 
 @dataclass
@@ -25,6 +33,10 @@ class Post:
     permalink: str = ""
     top_comments: list[str] = field(default_factory=list)
     source: str = "reddit"
+    discovery_query: str = ""
+    source_created_at: str | None = None
+    source_created_ts: int | None = None
+    author_name: str | None = None
 
 
 class RedditScraper:
@@ -38,6 +50,7 @@ class RedditScraper:
         retry_max_attempts: int = 5,
         retry_base_delay: float = 1.0,
         feed_mix: list[str] | tuple[str, ...] | None = None,
+        search_queries: list[str] | tuple[str, ...] | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -48,6 +61,7 @@ class RedditScraper:
         self.retry_base_delay = max(0.1, retry_base_delay)
         self._use_praw = bool(client_id and client_secret)
         self.feed_mix = self._normalize_feeds(feed_mix)
+        self.search_queries = self._normalize_search_queries(search_queries)
         self._oauth_access_token: str = ""
         self._oauth_token_expires_at = 0.0
 
@@ -61,7 +75,11 @@ class RedditScraper:
                 return await self._fetch_oauth_json(subreddit, limit, timeframe)
             except Exception as e:
                 logger.warning("OAuth JSON failed (%s), falling back to public JSON", e)
-        return await self._fetch_public_json(subreddit, limit, timeframe)
+        try:
+            return await self._fetch_public_json(subreddit, limit, timeframe)
+        except Exception as e:
+            logger.warning("Public JSON failed (%s), falling back to RSS", e)
+            return await self._fetch_rss(subreddit, limit, timeframe)
 
     async def fetch_full_thread(
         self,
@@ -108,6 +126,206 @@ class RedditScraper:
             normalized.append(feed)
         return normalized or list(DEFAULT_FEEDS)
 
+    @staticmethod
+    def _normalize_search_queries(search_queries: list[str] | tuple[str, ...] | None) -> list[str]:
+        if not search_queries:
+            return []
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in search_queries:
+            query = str(raw).strip()
+            if not query:
+                continue
+            lowered = query.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(query)
+        return normalized
+
+    def _iter_search_requests(self, *, limit: int) -> list[tuple[str, dict[str, Any]]]:
+        if not self.search_queries:
+            return []
+        per_query_limit = max(1, min(100, math.ceil(max(1, limit) / max(1, len(self.search_queries)))))
+        return [
+            (
+                query,
+                {
+                    "q": query,
+                    "restrict_sr": "on",
+                    "sort": "relevance",
+                    "limit": per_query_limit,
+                    "raw_json": 1,
+                },
+            )
+            for query in self.search_queries
+        ]
+
+    @staticmethod
+    def _build_post(subreddit: str, post_data: dict[str, Any], *, discovery_query: str = "") -> Post | None:
+        post_id = post_data.get("id")
+        if not post_id:
+            return None
+        prefixed_post_id = RedditScraper._external_post_id(post_id)
+        permalink = post_data.get("permalink", "")
+        if permalink and not permalink.startswith("http"):
+            full_url = f"https://reddit.com{permalink}"
+        else:
+            full_url = post_data.get("url", "")
+        source_created_at, source_created_ts = RedditScraper._normalize_source_timestamp(post_data.get("created_utc"))
+        return Post(
+            post_id=prefixed_post_id,
+            subreddit=subreddit,
+            title=post_data.get("title", ""),
+            body=post_data.get("selftext", ""),
+            url=full_url,
+            score=int(post_data.get("score", 0) or 0),
+            permalink=permalink,
+            discovery_query=discovery_query,
+            source_created_at=source_created_at,
+            source_created_ts=source_created_ts,
+            author_name=(post_data.get("author") or None),
+        )
+
+    @staticmethod
+    def _normalize_source_timestamp(raw_ts: Any) -> tuple[str | None, int | None]:
+        if raw_ts in {None, ""}:
+            return None, None
+        try:
+            ts = int(float(raw_ts))
+        except (TypeError, ValueError):
+            return None, None
+        if ts <= 0:
+            return None, None
+        dt = datetime.fromtimestamp(ts, UTC)
+        return dt.isoformat(), ts
+
+    @staticmethod
+    def _parse_datetime_text(raw_text: str) -> tuple[str | None, int | None]:
+        text = (raw_text or "").strip()
+        if not text:
+            return None, None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                dt = parsedate_to_datetime(text)
+            except (TypeError, ValueError):
+                return None, None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt.isoformat(), int(dt.timestamp())
+
+    @staticmethod
+    def _merge_post(posts_by_id: dict[str, Post], post: Post) -> None:
+        existing = posts_by_id.get(post.post_id)
+        if existing is None:
+            posts_by_id[post.post_id] = post
+            return
+        if post.score > existing.score:
+            existing.score = post.score
+        if post.discovery_query and not existing.discovery_query:
+            existing.discovery_query = post.discovery_query
+        if not existing.permalink and post.permalink:
+            existing.permalink = post.permalink
+        if not existing.url and post.url:
+            existing.url = post.url
+        if post.source_created_ts and (
+            existing.source_created_ts is None or post.source_created_ts < existing.source_created_ts
+        ):
+            existing.source_created_ts = post.source_created_ts
+            existing.source_created_at = post.source_created_at
+        elif existing.source_created_at is None and post.source_created_at is not None:
+            existing.source_created_at = post.source_created_at
+        if not existing.author_name and post.author_name:
+            existing.author_name = post.author_name
+
+    @staticmethod
+    def _rss_feed_url(subreddit: str, feed: str) -> str:
+        if feed == "top":
+            return f"https://old.reddit.com/r/{subreddit}/top/.rss"
+        if feed == "new":
+            return f"https://old.reddit.com/r/{subreddit}/new/.rss"
+        return f"https://old.reddit.com/r/{subreddit}/rising/.rss"
+
+    @staticmethod
+    def _sanitize_rss_text(raw: str) -> str:
+        if not raw:
+            return ""
+        cleaned = HTML_TAG_RE.sub(" ", raw)
+        cleaned = html.unescape(cleaned)
+        return " ".join(cleaned.split())
+
+    @staticmethod
+    def _extract_rss_post_id(entry_id: str, link: str) -> str:
+        value = (entry_id or "").strip()
+        if value.startswith("t3_"):
+            return value[3:]
+        match = REDDIT_COMMENT_PATH_RE.search(link or "")
+        if match:
+            return match.group(1)
+        if value:
+            return value.rsplit("/", 1)[-1]
+        return ""
+
+    @classmethod
+    def _parse_rss_entries(cls, subreddit: str, xml_text: str, *, discovery_query: str = "") -> list[Post]:
+        root = ET.fromstring(xml_text)
+        posts: list[Post] = []
+        for entry in root.findall("atom:entry", ATOM_NS):
+            entry_id = entry.findtext("atom:id", default="", namespaces=ATOM_NS)
+            title = cls._sanitize_rss_text(entry.findtext("atom:title", default="", namespaces=ATOM_NS))
+            summary = cls._sanitize_rss_text(entry.findtext("atom:summary", default="", namespaces=ATOM_NS))
+            content = cls._sanitize_rss_text(entry.findtext("atom:content", default="", namespaces=ATOM_NS))
+            updated = entry.findtext("atom:updated", default="", namespaces=ATOM_NS)
+            published = entry.findtext("atom:published", default="", namespaces=ATOM_NS)
+            source_created_at, source_created_ts = cls._parse_datetime_text(published or updated)
+            author_name = cls._sanitize_rss_text(entry.findtext("atom:author/atom:name", default="", namespaces=ATOM_NS)) or None
+            link = ""
+            permalink = ""
+            for link_node in entry.findall("atom:link", ATOM_NS):
+                href = (link_node.attrib.get("href") or "").strip()
+                if href:
+                    link = href
+                    if href.startswith("https://www.reddit.com"):
+                        link = href.replace("https://www.reddit.com", "https://reddit.com", 1)
+                    elif href.startswith("https://old.reddit.com"):
+                        link = href.replace("https://old.reddit.com", "https://reddit.com", 1)
+                    if link.startswith("https://reddit.com/r/"):
+                        permalink = link.removeprefix("https://reddit.com")
+                    break
+            raw_post_id = cls._extract_rss_post_id(entry_id, link)
+            if not raw_post_id:
+                continue
+            body = summary or content
+            posts.append(
+                Post(
+                    post_id=cls._external_post_id(raw_post_id),
+                    subreddit=subreddit,
+                    title=title,
+                    body=body,
+                    url=link,
+                    score=0,
+                    permalink=permalink,
+                    discovery_query=discovery_query,
+                    source_created_at=source_created_at,
+                    source_created_ts=source_created_ts,
+                    author_name=author_name,
+                )
+            )
+        return posts
+
+    def _rss_request_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        filtered: dict[str, Any] = {}
+        for key, value in params.items():
+            if key in {"raw_json", "limit"}:
+                continue
+            filtered[key] = value
+        return filtered
+
     def _iter_feed_requests(self, *, limit: int, timeframe: str) -> list[tuple[str, dict[str, Any]]]:
         per_feed_limit = max(1, min(100, math.ceil(max(1, limit) / max(1, len(self.feed_mix)))))
         requests: list[tuple[str, dict[str, Any]]] = []
@@ -153,6 +371,7 @@ class RedditScraper:
                             logger.debug("Unable to fetch top comments for %s: %s", submission.id, e)
 
                     body = self._append_comments(submission.selftext or "", top_comments)
+                    source_created_at, source_created_ts = self._normalize_source_timestamp(getattr(submission, "created_utc", None))
                     post = Post(
                         post_id=self._external_post_id(submission.id),
                         subreddit=subreddit,
@@ -162,8 +381,36 @@ class RedditScraper:
                         score=submission.score,
                         permalink=submission.permalink,
                         top_comments=top_comments,
+                        source_created_at=source_created_at,
+                        source_created_ts=source_created_ts,
+                        author_name=str(getattr(submission, "author", "") or "") or None,
                     )
-                    posts_by_id[post.post_id] = post
+                    self._merge_post(posts_by_id, post)
+
+            for query, params in self._iter_search_requests(limit=limit):
+                search_limit = int(params.get("limit", limit))
+                iterator = sub.search(
+                    query,
+                    sort="relevance",
+                    time_filter=timeframe,
+                    limit=search_limit,
+                )
+                for submission in iterator:
+                    source_created_at, source_created_ts = self._normalize_source_timestamp(getattr(submission, "created_utc", None))
+                    post = Post(
+                        post_id=self._external_post_id(submission.id),
+                        subreddit=subreddit,
+                        title=submission.title,
+                        body=submission.selftext or "",
+                        url=f"https://reddit.com{submission.permalink}",
+                        score=submission.score,
+                        permalink=submission.permalink,
+                        discovery_query=query,
+                        source_created_at=source_created_at,
+                        source_created_ts=source_created_ts,
+                        author_name=str(getattr(submission, "author", "") or "") or None,
+                    )
+                    self._merge_post(posts_by_id, post)
 
             posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)
             return posts[:limit]
@@ -190,29 +437,96 @@ class RedditScraper:
 
             for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
-                    post_data = child.get("data", {})
-                    post_id = post_data.get("id")
-                    if not post_id:
+                    post = self._build_post(subreddit, child.get("data", {}))
+                    if post is None:
                         continue
-                    prefixed_post_id = self._external_post_id(post_id)
-                    permalink = post_data.get("permalink", "")
-                    if permalink and not permalink.startswith("http"):
-                        full_url = f"https://reddit.com{permalink}"
-                    else:
-                        full_url = post_data.get("url", "")
+                    self._merge_post(posts_by_id, post)
 
-                    posts_by_id[prefixed_post_id] = Post(
-                        post_id=prefixed_post_id,
-                        subreddit=subreddit,
-                        title=post_data.get("title", ""),
-                        body=post_data.get("selftext", ""),
-                        url=full_url,
-                        score=int(post_data.get("score", 0) or 0),
-                        permalink=permalink,
-                    )
+            async def fetch_search(query: str, params: dict[str, Any]) -> Any:
+                url = f"https://www.reddit.com/r/{subreddit}/search.json"
+                return await self._request_json_with_retries(
+                    client=client,
+                    url=url,
+                    params=params,
+                    headers=headers,
+                )
+
+            search_payloads = await asyncio.gather(
+                *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
+            )
+            for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
+                for child in payload.get("data", {}).get("children", []):
+                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                    if post is None:
+                        continue
+                    self._merge_post(posts_by_id, post)
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
 
+            if self.top_comments_limit <= 0 or not base_posts:
+                return base_posts
+
+            semaphore = asyncio.Semaphore(self.comment_fetch_concurrency)
+
+            async def hydrate_comments(post: Post) -> Post:
+                async with semaphore:
+                    comments = await self._fetch_top_comments_json(
+                        client=client,
+                        post_id=post.post_id,
+                        limit=self.top_comments_limit,
+                    )
+                post.top_comments = comments
+                post.body = self._append_comments(post.body, comments)
+                return post
+
+            hydrated = await asyncio.gather(*(hydrate_comments(post) for post in base_posts))
+            return list(hydrated)
+
+    async def _fetch_rss(self, subreddit: str, limit: int, timeframe: str = "day") -> list[Post]:
+        headers = {"User-Agent": self.user_agent}
+
+        async with httpx.AsyncClient() as client:
+            posts_by_id: dict[str, Post] = {}
+            feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+
+            async def fetch_feed(feed: str, params: dict[str, Any]) -> str:
+                response = await client.get(
+                    self._rss_feed_url(subreddit, feed),
+                    params=self._rss_request_params(params),
+                    headers=headers,
+                    timeout=20,
+                )
+                response.raise_for_status()
+                return response.text
+
+            feed_payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            for payload in feed_payloads:
+                for post in self._parse_rss_entries(subreddit, payload):
+                    self._merge_post(posts_by_id, post)
+
+            async def fetch_search(query: str, params: dict[str, Any]) -> str | None:
+                try:
+                    response = await client.get(
+                        f"https://old.reddit.com/r/{subreddit}/search.rss",
+                        params=self._rss_request_params(params),
+                        headers=headers,
+                        timeout=20,
+                    )
+                    response.raise_for_status()
+                    return response.text
+                except Exception as e:
+                    logger.warning("RSS search failed for r/%s query %r: %s", subreddit, query, e)
+                    return None
+
+            search_requests = self._iter_search_requests(limit=limit)
+            search_payloads = await asyncio.gather(*(fetch_search(query, params) for query, params in search_requests))
+            for (query, _), payload in zip(search_requests, search_payloads, strict=False):
+                if not payload:
+                    continue
+                for post in self._parse_rss_entries(subreddit, payload, discovery_query=query):
+                    self._merge_post(posts_by_id, post)
+
+            base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
             if self.top_comments_limit <= 0 or not base_posts:
                 return base_posts
 
@@ -248,26 +562,27 @@ class RedditScraper:
 
             for payload in payloads:
                 for child in payload.get("data", {}).get("children", []):
-                    post_data = child.get("data", {})
-                    post_id = post_data.get("id")
-                    if not post_id:
+                    post = self._build_post(subreddit, child.get("data", {}))
+                    if post is None:
                         continue
-                    prefixed_post_id = self._external_post_id(post_id)
-                    permalink = post_data.get("permalink", "")
-                    if permalink and not permalink.startswith("http"):
-                        full_url = f"https://reddit.com{permalink}"
-                    else:
-                        full_url = post_data.get("url", "")
+                    self._merge_post(posts_by_id, post)
 
-                    posts_by_id[prefixed_post_id] = Post(
-                        post_id=prefixed_post_id,
-                        subreddit=subreddit,
-                        title=post_data.get("title", ""),
-                        body=post_data.get("selftext", ""),
-                        url=full_url,
-                        score=int(post_data.get("score", 0) or 0),
-                        permalink=permalink,
-                    )
+            async def fetch_search(query: str, params: dict[str, Any]) -> Any:
+                return await self._request_oauth_json(
+                    client=client,
+                    path=f"/r/{subreddit}/search.json",
+                    params=params,
+                )
+
+            search_payloads = await asyncio.gather(
+                *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
+            )
+            for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
+                for child in payload.get("data", {}).get("children", []):
+                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                    if post is None:
+                        continue
+                    self._merge_post(posts_by_id, post)
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
             if self.top_comments_limit <= 0 or not base_posts:

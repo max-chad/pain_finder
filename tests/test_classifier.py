@@ -1,7 +1,7 @@
 ﻿import asyncio
 from unittest.mock import AsyncMock
 
-from classifier import Classifier
+from classifier import Classifier, extract_comment_market_signals
 from openrouter import AnalysisResult
 from scraper import Post
 
@@ -53,6 +53,10 @@ async def test_dual_mode_uses_primary_b2b_result():
         pain_level=9,
         willingness_to_pay=9,
         niche_category="E-commerce",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["orders fail", "customers complain"],
     )
     clf = Classifier(openrouter=mock_llm, mode="dual")
     result = await clf.classify(make_post(title="Shopify stock sync broken"))
@@ -60,6 +64,33 @@ async def test_dual_mode_uses_primary_b2b_result():
     assert result.is_monetizable is True
     assert result.willingness_to_pay == 9
     assert result.analysis_mode == "b2b"
+    assert result.post_type == "first_person_pain"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans == ["orders fail", "customers complain"]
+
+
+async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
+    dspy_parser = AsyncMock()
+    dspy_parser.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Spreadsheet workflow is brittle",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="RevOps",
+        competitor_tags=["hubspot"],
+    )
+    mock_llm = AsyncMock()
+    clf = Classifier(openrouter=mock_llm, dspy_parser=dspy_parser, mode="dual")
+
+    result = await clf.classify(make_post(title="I can't keep reconciling this manually"))
+
+    assert result is not None
+    assert result.summary == "Spreadsheet workflow is brittle"
+    dspy_parser.analyze_post.assert_awaited_once()
+    mock_llm.analyze_post.assert_not_called()
 
 
 async def test_dual_mode_falls_back_to_legacy_llm():
@@ -77,6 +108,23 @@ async def test_dual_mode_falls_back_to_legacy_llm():
     assert result.analysis_mode == "legacy_llm"
 
 
+async def test_legacy_llm_backfills_unknown_authority_and_first_handness_from_post():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = None
+    mock_llm.analyze_legacy_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="QuickBooks keeps failing",
+        severity="high",
+    )
+    clf = Classifier(openrouter=mock_llm, mode="dual")
+    result = await clf.classify(make_post(title="As founder, QuickBooks keeps failing and I'm stuck"))
+    assert result is not None
+    assert result.analysis_mode == "legacy_llm"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans
+
+
 async def test_b2b_mode_returns_none_when_model_fails():
     mock_llm = AsyncMock()
     mock_llm.analyze_post.return_value = None
@@ -87,10 +135,16 @@ async def test_b2b_mode_returns_none_when_model_fails():
 
 async def test_legacy_mode_uses_keyword_fallback_without_llm():
     clf = Classifier(openrouter=None, mode="legacy")
-    result = await clf.classify(make_post(title="I can't figure this out, stuck on it for days"))
+    result = await clf.classify(
+        make_post(title="As the founder, I can't figure this out and I'm stuck on it for days")
+    )
     assert result is not None
     assert result.category == "complaint"
     assert result.analysis_mode == "legacy"
+    assert result.post_type == "first_person_pain"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans
 
 
 async def test_b2c_noise_is_rejected_as_non_monetizable():
@@ -147,6 +201,28 @@ async def test_classify_batch_respects_max_concurrency():
     assert peak_in_flight <= 2
 
 
+def test_prescreen_posts_filters_low_signal_and_caps_candidates():
+    clf = Classifier(
+        openrouter=None,
+        mode="legacy",
+        screen_min_rule_score=2,
+        screen_max_llm_candidates_per_run=2,
+    )
+    posts = [
+        make_post(title="Cool launch announcement", body="Just sharing progress", post_id="drop"),
+        make_post(title="Need better approval workflow", body="Manual process every week", post_id="keep1"),
+        make_post(title="Spreadsheet workaround is painful", body="We export CSVs daily", post_id="keep2"),
+        make_post(title="Wish there was a Jira sync", body="Manual handoff between teams", post_id="keep3"),
+    ]
+
+    shortlisted, stats = clf.prescreen_posts(posts)
+
+    assert {post.post_id for post in shortlisted} == {"keep1", "keep2"}
+    assert stats["screen_rule_dropped_count"] == 1
+    assert stats["screen_kept_count"] == 3
+    assert stats["screen_capped_count"] == 1
+
+
 async def test_competitor_tags_are_propagated_and_normalized():
     mock_llm = AsyncMock()
     mock_llm.analyze_post.return_value = AnalysisResult(
@@ -163,3 +239,23 @@ async def test_competitor_tags_are_propagated_and_normalized():
     signal = await clf.classify(make_post(title="Shopify sync broken"))
     assert signal is not None
     assert signal.competitor_tags == ["shopify", "jira"]
+
+
+def test_extract_comment_market_signals_detects_consensus_workarounds_tools_and_shill_risk():
+    post = make_post(
+        title="Jira approvals are still painful",
+        body="We keep exporting CSVs and stitching steps manually",
+    )
+    post.top_comments = [
+        "Same here — we still hit this every week.",
+        "Manual workaround here too: export CSV, clean it in Sheets, and re-upload.",
+        "Try our tool at https://promo.example, book a demo and we will fix Jira for you.",
+    ]
+
+    signals = extract_comment_market_signals(post, competitor_tags=["jira"])
+
+    assert signals["comment_same_here_count"] == 1
+    assert signals["comment_consensus_count"] >= 2
+    assert signals["comment_workaround_count"] == 1
+    assert signals["comment_tool_mentions"] == ["jira"]
+    assert signals["comment_shill_risk"] > 0

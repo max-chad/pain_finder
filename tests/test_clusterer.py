@@ -1,5 +1,7 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
+import pytest
 import pytest_asyncio
 
 from clusterer import MacroTrendClusterer
@@ -23,6 +25,11 @@ async def _seed_candidate(
     summary: str,
     wtp: int,
     triage_status: str = "favorite",
+    opportunity_bucket: str = "current_opportunity",
+    buyer_authority_score: float = 0.55,
+    opportunity_score: float = 0.0,
+    source_created_ts: int | None = None,
+    competitor_tags: list[str] | None = None,
 ):
     await db.insert_pain_point(
         subreddit="python",
@@ -37,8 +44,12 @@ async def _seed_candidate(
         pain_level=8,
         willingness_to_pay=wtp,
         niche_category="DevOps",
-        competitor_tags=["quickbooks", "jira"],
+        competitor_tags=competitor_tags or ["quickbooks", "jira"],
         triage_status=triage_status,
+        opportunity_bucket=opportunity_bucket,
+        buyer_authority_score=buyer_authority_score,
+        opportunity_score=opportunity_score,
+        source_created_ts=source_created_ts,
     )
 
 
@@ -136,6 +147,62 @@ async def test_run_uses_openrouter_label_when_available(db):
     assert len(result.clusters) == 1
     assert result.clusters[0].label == "Shopify integration failures"
     openrouter.label_macro_cluster.assert_awaited_once()
+
+
+async def test_run_persists_canonical_cluster_aggregates(db):
+    now_ts = int(datetime.now(UTC).timestamp())
+    await _seed_candidate(
+        db,
+        post_id="reddit:c1",
+        title="QuickBooks sync failures",
+        summary="Manual ledger repair every week",
+        wtp=9,
+        opportunity_bucket="current_opportunity",
+        buyer_authority_score=0.95,
+        opportunity_score=91.0,
+        source_created_ts=now_ts - 60,
+        competitor_tags=["quickbooks", "xero"],
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:c2",
+        title="QuickBooks reconciliation keeps breaking",
+        summary="Finance ops team exports CSVs daily",
+        wtp=8,
+        opportunity_bucket="evergreen_pain",
+        buyer_authority_score=0.65,
+        opportunity_score=73.0,
+        source_created_ts=now_ts - 3600,
+        competitor_tags=["quickbooks", "netsuite"],
+    )
+
+    clusterer = MacroTrendClusterer(
+        db=db,
+        openrouter=None,
+        min_cluster_size=2,
+        similarity_threshold=0.1,
+        min_wtp=7,
+    )
+    result = await clusterer.run(window_days=30)
+
+    assert len(result.clusters) == 1
+    cluster = result.clusters[0]
+    assert cluster.canonical_key != "reddit:c1"
+    assert "quickbooks" in cluster.canonical_key
+    assert "trend" not in cluster.canonical_key
+    assert "detected" not in cluster.canonical_key
+    assert cluster.fresh_post_count == 1
+    assert cluster.evergreen_post_count == 1
+    assert cluster.median_buyer_authority == pytest.approx(0.8)
+    assert cluster.avg_opportunity_score == pytest.approx(82.0)
+    assert cluster.latest_source_created_ts == now_ts - 60
+    assert cluster.incumbents[:2] == ["quickbooks", "netsuite"] or cluster.incumbents[:2] == ["quickbooks", "xero"]
+
+    latest_clusters = await db.get_latest_canonical_clusters(limit=5)
+    assert len(latest_clusters) == 1
+    assert latest_clusters[0]["canonical_key"] == cluster.canonical_key
+    assert latest_clusters[0]["fresh_post_count"] == 1
+    assert latest_clusters[0]["evergreen_post_count"] == 1
 
 
 def test_compose_candidate_text_handles_invalid_competitor_json():

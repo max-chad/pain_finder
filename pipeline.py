@@ -9,7 +9,16 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from budget import BudgetCapReachedError, BudgetGuard
-from classifier import Classifier, PainSignal
+from classifier import (
+    Classifier,
+    PainSignal,
+    buyer_authority_score,
+    estimate_impact_score,
+    estimate_solved_penalty,
+    estimate_workflow_frequency_score,
+    extract_comment_market_signals,
+    first_handness_score,
+)
 from db import Database
 from openrouter import DeepDiveResult
 from scraper import Post, RedditScraper
@@ -57,6 +66,8 @@ class AnalysisPipeline:
         budget_guard: BudgetGuard | None = None,
         deduplicator: Deduplicator | None = None,
         llm_max_classifications_per_run: int = 0,
+        screen_max_llm_candidates_per_run: int = 0,
+        current_opportunity_max_age_days: int = 180,
     ):
         self.scraper = scraper
         self.classifier = classifier
@@ -67,6 +78,8 @@ class AnalysisPipeline:
         self.budget_guard = budget_guard
         self.deduplicator = deduplicator
         self.llm_max_classifications_per_run = max(0, int(llm_max_classifications_per_run))
+        self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
+        self.current_opportunity_max_age_days = max(1, int(current_opportunity_max_age_days))
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
         posts = await self.scraper.fetch_posts(subreddit, limit=limit)
@@ -108,10 +121,22 @@ class AnalysisPipeline:
         existing_ids = await self.db.get_pain_points_by_ids([post.post_id for post in posts])
         fresh_posts = [post for post in posts if post.post_id not in existing_ids]
         skipped_existing_count = len(posts) - len(fresh_posts)
-        llm_capped_count = 0
-        if self.llm_max_classifications_per_run > 0 and len(fresh_posts) > self.llm_max_classifications_per_run:
-            llm_capped_count = len(fresh_posts) - self.llm_max_classifications_per_run
-            fresh_posts = fresh_posts[: self.llm_max_classifications_per_run]
+        fresh_post_count = len(fresh_posts)
+
+        configured_limits = [limit for limit in [self.screen_max_llm_candidates_per_run, self.llm_max_classifications_per_run] if limit > 0]
+        screening_limit = min(configured_limits) if configured_limits else 0
+        screen_rule_dropped_count = 0
+        screen_kept_count = len(fresh_posts)
+        screen_capped_count = 0
+        if hasattr(self.classifier, "prescreen_posts"):
+            fresh_posts, screen_stats = self.classifier.prescreen_posts(
+                fresh_posts,
+                max_candidates=screening_limit,
+            )
+            screen_rule_dropped_count = int(screen_stats.get("screen_rule_dropped_count", 0))
+            screen_kept_count = int(screen_stats.get("screen_kept_count", len(fresh_posts)))
+            screen_capped_count = int(screen_stats.get("screen_capped_count", 0))
+        llm_capped_count = screen_capped_count
 
         classified_signals = await self.classifier.classify_batch(fresh_posts)
         persisted_signals: list[PainSignal] = []
@@ -122,9 +147,19 @@ class AnalysisPipeline:
 
         monetizable_count = 0
         deep_dive_count = 0
+        primary_success_count = 0
+        legacy_fallback_count = 0
+        deep_dive_skipped_reasons: dict[str, int] = {}
 
         for signal in classified_signals:
             embedding: list[float] | None = None
+            opportunity_bucket = self._classify_opportunity_bucket(signal.post)
+            signal.opportunity_bucket = opportunity_bucket
+            self._enrich_signal(signal)
+            if signal.analysis_mode in {"b2b", "dspy_b2b"}:
+                primary_success_count += 1
+            elif signal.analysis_mode == "legacy_llm":
+                legacy_fallback_count += 1
 
             if self.deduplicator is not None:
                 text = f"{signal.post.title} {signal.post.body}"
@@ -153,6 +188,30 @@ class AnalysisPipeline:
                 niche_category=signal.niche_category,
                 competitor_tags=signal.competitor_tags,
                 source=source,
+                source_created_at=signal.post.source_created_at,
+                source_created_ts=signal.post.source_created_ts,
+                author_name=signal.post.author_name,
+                opportunity_bucket=opportunity_bucket,
+                post_type=signal.post_type,
+                first_handness=signal.first_handness,
+                buyer_authority=signal.buyer_authority,
+                evidence_spans=signal.evidence_spans,
+                comment_sample=signal.comment_sample,
+                buyer_authority_score=signal.buyer_authority_score,
+                workflow_frequency_score=signal.workflow_frequency_score,
+                impact_score=signal.impact_score,
+                consensus_score=signal.consensus_score,
+                incumbent_failure_score=signal.incumbent_failure_score,
+                recency_score=signal.recency_score,
+                stale_penalty=signal.stale_penalty,
+                solved_penalty=signal.solved_penalty,
+                opportunity_score=signal.opportunity_score,
+                score_components=signal.score_components,
+                comment_consensus_count=signal.comment_consensus_count,
+                comment_same_here_count=signal.comment_same_here_count,
+                comment_workaround_count=signal.comment_workaround_count,
+                comment_tool_mentions=signal.comment_tool_mentions,
+                comment_shill_risk=signal.comment_shill_risk,
                 analysis_mode=signal.analysis_mode,
                 analysis_payload=signal.analysis_payload,
                 emb_vector=embedding,
@@ -163,10 +222,9 @@ class AnalysisPipeline:
             if signal.is_monetizable:
                 monetizable_count += 1
 
-            if signal.is_monetizable and signal.willingness_to_pay >= self.deep_dive_wtp_threshold:
-                existing = await self.db.get_pain_point(signal.post.post_id)
-                if existing and existing.get("deep_dive_status") == "completed":
-                    continue
+            existing = await self.db.get_pain_point(signal.post.post_id)
+            deep_dive_skip_reason = self._deep_dive_skip_reason(signal, existing=existing)
+            if deep_dive_skip_reason is None:
                 deep_dive = await self.run_deep_dive(
                     post_id=signal.post.post_id,
                     subreddit=signal.post.subreddit,
@@ -176,6 +234,10 @@ class AnalysisPipeline:
                 )
                 if deep_dive.status == "completed":
                     deep_dive_count += 1
+                else:
+                    deep_dive_skipped_reasons[deep_dive.status] = deep_dive_skipped_reasons.get(deep_dive.status, 0) + 1
+            else:
+                deep_dive_skipped_reasons[deep_dive_skip_reason] = deep_dive_skipped_reasons.get(deep_dive_skip_reason, 0) + 1
 
         report_data = self._build_report_payload(signals=persisted_signals, source=source)
         json_path = await self._write_report(run_label=run_label, payload=report_data)
@@ -195,21 +257,27 @@ class AnalysisPipeline:
             deep_dive_count=deep_dive_count,
             skipped_existing_count=skipped_existing_count,
             dedup_merged_count=dedup_merged_count,
+            screen_rule_dropped_count=screen_rule_dropped_count,
+            screen_kept_count=screen_kept_count,
+            screen_capped_count=screen_capped_count,
             duration_ms=duration_ms,
             report_id=report_id,
         )
 
         logger.info(
             "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
-            "post_count=%d fresh_post_count=%d skipped_existing_count=%d llm_capped_count=%d pain_count=%d "
-            "monetizable_count=%d deep_dive_count=%d inserted_count=%d dedup_merged_count=%d "
-            "discarded_non_pain_count=%d duration_ms=%d",
+            "post_count=%d fresh_post_count=%d skipped_existing_count=%d screen_rule_dropped_count=%d "
+            "screen_kept_count=%d llm_capped_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d "
+            "inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d primary_success_count=%d "
+            "legacy_fallback_count=%d deep_dive_skipped_reasons=%s duration_ms=%d",
             source,
             run_scope,
             analysis_run_id,
             len(posts),
-            len(fresh_posts),
+            fresh_post_count,
             skipped_existing_count,
+            screen_rule_dropped_count,
+            screen_kept_count,
             llm_capped_count,
             inserted_count,
             monetizable_count,
@@ -217,6 +285,9 @@ class AnalysisPipeline:
             inserted_count,
             dedup_merged_count,
             discarded_non_pain_count,
+            primary_success_count,
+            legacy_fallback_count,
+            json.dumps(deep_dive_skipped_reasons, sort_keys=True),
             duration_ms,
         )
 
@@ -333,10 +404,14 @@ class AnalysisPipeline:
                 "subreddit": subreddit,
                 "total": 0,
                 "top_items": [],
+                "top_clusters": [],
                 "niche_counts": {},
                 "source_counts": {},
                 "recurring_blockers": [],
             }
+
+        row_post_ids = [str(row.get("post_id")) for row in rows if row.get("post_id")]
+        top_clusters = await self.db.get_latest_canonical_clusters(limit=5, post_ids=row_post_ids)
 
         scored_rows = []
         niche_counts: dict[str, int] = {}
@@ -344,11 +419,16 @@ class AnalysisPipeline:
         blockers: dict[str, int] = {}
 
         for row in rows:
-            pain_level = int(row.get("pain_level") or 0)
-            wtp = int(row.get("willingness_to_pay") or 0)
-            score = round((pain_level + wtp) / 2)
+            score = self._row_opportunity_score(row)
             row_copy = dict(row)
+            row_copy["opportunity_score"] = score
             row_copy["weighted_score"] = score
+            score_components = row_copy.get("score_components_json")
+            if isinstance(score_components, str) and score_components.strip():
+                try:
+                    row_copy["score_components"] = json.loads(score_components)
+                except json.JSONDecodeError:
+                    row_copy["score_components"] = {}
             scored_rows.append(row_copy)
 
             niche = (row.get("niche_category") or "Uncategorized").strip() or "Uncategorized"
@@ -362,7 +442,9 @@ class AnalysisPipeline:
 
         scored_rows.sort(
             key=lambda row: (
-                row.get("weighted_score", 0),
+                self._row_opportunity_score(row),
+                len(row.get("evidence_spans") or []),
+                int(row.get("source_created_ts") or 0),
                 int(row.get("willingness_to_pay") or 0),
                 int(row.get("pain_level") or 0),
             ),
@@ -378,6 +460,7 @@ class AnalysisPipeline:
             "subreddit": subreddit,
             "total": len(rows),
             "top_items": scored_rows[:5],
+            "top_clusters": top_clusters,
             "niche_counts": niche_counts,
             "source_counts": source_counts,
             "recurring_blockers": recurring_blockers,
@@ -406,6 +489,7 @@ class AnalysisPipeline:
                 "title": signal.post.title,
                 "url": signal.post.url,
                 "source": source,
+                "discovery_query": signal.post.discovery_query,
                 "category": signal.category,
                 "summary": signal.summary,
                 "severity": signal.severity,
@@ -415,9 +499,158 @@ class AnalysisPipeline:
                 "niche_category": signal.niche_category,
                 "competitor_tags": signal.competitor_tags,
                 "analysis_mode": signal.analysis_mode,
+                "source_created_at": signal.post.source_created_at,
+                "source_created_ts": signal.post.source_created_ts,
+                "author_name": signal.post.author_name,
+                "opportunity_bucket": signal.opportunity_bucket,
+                "post_type": signal.post_type,
+                "first_handness": signal.first_handness,
+                "buyer_authority": signal.buyer_authority,
+                "evidence_spans": signal.evidence_spans,
+                "comment_sample": signal.comment_sample,
+                "buyer_authority_score": signal.buyer_authority_score,
+                "workflow_frequency_score": signal.workflow_frequency_score,
+                "impact_score": signal.impact_score,
+                "consensus_score": signal.consensus_score,
+                "incumbent_failure_score": signal.incumbent_failure_score,
+                "recency_score": signal.recency_score,
+                "stale_penalty": signal.stale_penalty,
+                "solved_penalty": signal.solved_penalty,
+                "opportunity_score": signal.opportunity_score,
+                "score_components": signal.score_components or {},
+                "comment_consensus_count": signal.comment_consensus_count,
+                "comment_same_here_count": signal.comment_same_here_count,
+                "comment_workaround_count": signal.comment_workaround_count,
+                "comment_tool_mentions": signal.comment_tool_mentions,
+                "comment_shill_risk": signal.comment_shill_risk,
             }
             for signal in signals
         ]
+
+    def _enrich_signal(self, signal: PainSignal) -> None:
+        comment_signals = extract_comment_market_signals(signal.post, competitor_tags=signal.competitor_tags)
+        recency_score, stale_penalty = self._recency_profile(signal.post, signal.opportunity_bucket)
+        evidence_score = min(1.0, len(signal.evidence_spans) / 3) if signal.evidence_spans else 0.0
+        authority_score = buyer_authority_score(signal.buyer_authority)
+        first_hand_score = first_handness_score(signal.first_handness)
+        workflow_frequency_score = estimate_workflow_frequency_score(signal.post, signal)
+        impact_score = estimate_impact_score(signal.post, signal)
+        solved_penalty = estimate_solved_penalty(signal.post, comment_signals=comment_signals)
+        consensus_score = min(1.0, 0.18 + comment_signals["comment_consensus_count"] * 0.22 + evidence_score * 0.18)
+        incumbent_failure_score = min(
+            1.0,
+            0.18
+            + len(signal.competitor_tags) * 0.16
+            + len(comment_signals["comment_tool_mentions"]) * 0.05
+            + comment_signals["comment_workaround_count"] * 0.11
+            + (0.14 if signal.post_type in {"vendor_rant", "tool_comparison"} else 0.0),
+        )
+        type_penalty = 0.0
+        if signal.post_type in {"founder_pitch", "news_analysis"} and signal.first_handness != "first_hand":
+            type_penalty += 0.22
+        elif signal.post_type == "advice_thread":
+            type_penalty += 0.08
+        raw_score = (
+            signal.pain_level / 10 * 22
+            + signal.willingness_to_pay / 10 * 18
+            + authority_score * 14
+            + first_hand_score * 8
+            + workflow_frequency_score * 10
+            + impact_score * 12
+            + consensus_score * 10
+            + incumbent_failure_score * 8
+            + recency_score * 10
+            + evidence_score * 6
+            - stale_penalty * 10
+            - solved_penalty * 12
+            - float(comment_signals["comment_shill_risk"]) * 6
+            - type_penalty * 10
+        )
+        opportunity_score = round(max(0.0, raw_score), 2)
+
+        signal.comment_consensus_count = int(comment_signals["comment_consensus_count"])
+        signal.comment_same_here_count = int(comment_signals["comment_same_here_count"])
+        signal.comment_workaround_count = int(comment_signals["comment_workaround_count"])
+        signal.comment_tool_mentions = list(comment_signals["comment_tool_mentions"])
+        signal.comment_shill_risk = float(comment_signals["comment_shill_risk"])
+        signal.comment_sample = list(comment_signals["comment_sample"])
+        signal.buyer_authority_score = round(authority_score, 3)
+        signal.workflow_frequency_score = round(workflow_frequency_score, 3)
+        signal.impact_score = round(impact_score, 3)
+        signal.consensus_score = round(consensus_score, 3)
+        signal.incumbent_failure_score = round(incumbent_failure_score, 3)
+        signal.recency_score = round(recency_score, 3)
+        signal.stale_penalty = round(stale_penalty, 3)
+        signal.solved_penalty = round(solved_penalty + type_penalty, 3)
+        signal.opportunity_score = opportunity_score
+        signal.score_components = {
+            "buyer_authority_score": signal.buyer_authority_score,
+            "first_handness_score": round(first_hand_score, 3),
+            "workflow_frequency_score": signal.workflow_frequency_score,
+            "impact_score": signal.impact_score,
+            "consensus_score": signal.consensus_score,
+            "incumbent_failure_score": signal.incumbent_failure_score,
+            "recency_score": signal.recency_score,
+            "stale_penalty": signal.stale_penalty,
+            "solved_penalty": signal.solved_penalty,
+            "evidence_score": round(evidence_score, 3),
+            "type_penalty": round(type_penalty, 3),
+            "comment_consensus_count": signal.comment_consensus_count,
+            "comment_same_here_count": signal.comment_same_here_count,
+            "comment_workaround_count": signal.comment_workaround_count,
+            "comment_tool_mentions": signal.comment_tool_mentions,
+            "comment_shill_risk": signal.comment_shill_risk,
+        }
+        if signal.analysis_payload is None:
+            signal.analysis_payload = {}
+        if isinstance(signal.analysis_payload, dict):
+            signal.analysis_payload.setdefault("comment_sample", signal.comment_sample)
+            signal.analysis_payload.setdefault("score_components", signal.score_components)
+
+    def _recency_profile(self, post: Post, bucket: str) -> tuple[float, float]:
+        if not post.source_created_ts:
+            return 0.35, 0.08
+        age_seconds = max(0, int(datetime.now(UTC).timestamp()) - int(post.source_created_ts))
+        age_days = age_seconds / 86400.0
+        if bucket == "current_opportunity":
+            recency_score = max(0.45, 1.0 - age_days / max(1, self.current_opportunity_max_age_days) * 0.55)
+            return round(min(1.0, recency_score), 3), 0.0
+        overflow_days = max(0.0, age_days - self.current_opportunity_max_age_days)
+        recency_score = max(0.18, 0.45 - min(365.0, overflow_days) / 365.0 * 0.22)
+        stale_penalty = min(0.55, 0.1 + overflow_days / 365.0 * 0.25)
+        return round(recency_score, 3), round(stale_penalty, 3)
+
+    def _deep_dive_skip_reason(self, signal: PainSignal, *, existing: dict[str, Any] | None) -> str | None:
+        if not signal.is_monetizable:
+            return "not_monetizable"
+        if signal.willingness_to_pay < self.deep_dive_wtp_threshold:
+            return "below_wtp_threshold"
+        if getattr(self.classifier, "openrouter", None) is None:
+            return "openrouter_unconfigured"
+        if existing and existing.get("deep_dive_status") == "completed":
+            return "already_completed"
+        return None
+
+    @staticmethod
+    def _row_opportunity_score(row: dict[str, Any]) -> float:
+        raw = row.get("opportunity_score")
+        try:
+            if raw is not None:
+                return round(float(raw), 2)
+        except (TypeError, ValueError):
+            pass
+        pain_level = int(row.get("pain_level") or 0)
+        wtp = int(row.get("willingness_to_pay") or 0)
+        return round((pain_level + wtp) / 2, 2)
+
+    def _classify_opportunity_bucket(self, post: Post) -> str:
+        if not post.source_created_ts:
+            return "unknown_age"
+        age_seconds = max(0, int(datetime.now(UTC).timestamp()) - int(post.source_created_ts))
+        age_days = age_seconds / 86400.0
+        if age_days <= self.current_opportunity_max_age_days:
+            return "current_opportunity"
+        return "evergreen_pain"
 
     @staticmethod
     def _build_thread_text(title: str, body: str, comments: list[str]) -> str:

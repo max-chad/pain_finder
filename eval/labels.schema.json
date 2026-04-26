@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/max-chad/pain_finder/eval/labels.schema.json",
+  "title": "pain_finder evaluation labels",
+  "type": "object",
+  "required": [
+    "post_id",
+    "is_pain",
+    "is_monetizable",
+    "post_type",
+    "is_current_opportunity",
+    "first_handness",
+    "buyer_authority",
+    "reference_now_ts"
+  ],
+  "properties": {
+    "post_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "is_pain": {
+      "type": "boolean"
+    },
+    "is_monetizable": {
+      "type": "boolean"
+    },
+    "post_type": {
+      "type": "string",
+      "enum": [
+        "first_person_pain",
+        "solution_request",
+        "founder_pitch",
+        "news_analysis",
+        "tool_comparison",
+        "advice_thread",
+        "vendor_rant"
+      ]
+    },
+    "is_current_opportunity": {
+      "type": "boolean"
+    },
+    "first_handness": {
+      "type": "string",
+      "enum": [
+        "first_hand",
+        "second_hand",
+        "aggregated",
+        "speculative",
+        "unknown"
+      ]
+    },
+    "buyer_authority": {
+      "type": "string",
+      "enum": [
+        "intern",
+        "ic",
+        "engineer",
+        "manager",
+        "head_of_ops",
+        "founder_owner",
+        "agency_operator",
+        "unknown"
+      ]
+    },
+    "reference_now_ts": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

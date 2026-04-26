@@ -18,7 +18,9 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
                                 '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 9, '
                                 '"niche_category": "E-commerce", "competitor_tags": ["shopify"], '
                                 '"summary": "Inventory sync is failing for stores", "category": "complaint", '
-                                '"severity": "high"}'
+                                '"severity": "high", "post_type": "first_person_pain", '
+                                '"first_handness": "first_hand", "buyer_authority": "founder_owner", '
+                                '"evidence_spans": ["stock sync lags", "we lose sales"]}'
                             )
                         }
                     }
@@ -38,6 +40,10 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
     assert result.willingness_to_pay == 9
     assert result.niche_category == "E-commerce"
     assert result.competitor_tags == ["shopify"]
+    assert result.post_type == "first_person_pain"
+    assert result.first_handness == "first_hand"
+    assert result.buyer_authority == "founder_owner"
+    assert result.evidence_spans == ["stock sync lags", "we lose sales"]
 
 
 async def test_analyze_rejects_invalid_primary_schema(respx_mock):
@@ -48,7 +54,13 @@ async def test_analyze_rejects_invalid_primary_schema(respx_mock):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": "yes", "pain_level": 11, "willingness_to_pay": 9, "niche_category": "X", "summary": "bad", "category": "complaint", "severity": "high"}'
+                            "content": (
+                                '{"is_monetizable": "yes", "pain_level": 11, '
+                                '"willingness_to_pay": 9, "niche_category": "X", '
+                                '"summary": "bad", "category": "complaint", "severity": "high", '
+                                '"post_type": "mystery", "first_handness": "first_hand", '
+                                '"buyer_authority": "founder_owner", "evidence_spans": []}'
+                            )
                         }
                     }
                 ]
@@ -155,6 +167,205 @@ async def test_body_truncated_for_large_prompt(respx_mock):
     req_body = json.loads(captured_requests[0].content)
     prompt = req_body["messages"][0]["content"]
     assert "OVERFLOW_MARKER" not in prompt
+
+
+async def test_analyze_post_uses_primary_max_output_tokens(respx_mock):
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "Ops", "competitor_tags": [], "summary": "Manual process", "category": "complaint", "severity": "medium"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    respx_mock.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-spark",
+        provider="codex",
+        max_tokens=4096,
+        primary_max_output_tokens=321,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is not None
+    import json
+
+    req_body = json.loads(captured_requests[0].content)
+    assert req_body["max_completion_tokens"] == 321
+
+
+async def test_openrouter_provider_uses_primary_max_output_tokens_in_request_body(respx_mock):
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "Ops", "competitor_tags": [], "summary": "Manual process", "category": "complaint", "severity": "medium"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-spark",
+        provider="openrouter",
+        max_tokens=4096,
+        primary_max_output_tokens=321,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is not None
+    import json
+
+    req_body = json.loads(captured_requests[0].content)
+    assert req_body["max_tokens"] == 321
+
+
+async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effort(respx_mock):
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, "niche_category": "Ops", "competitor_tags": [], "summary": "Works", "category": "complaint", "severity": "medium"}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    respx_mock.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-spark",
+        provider="codex",
+        reasoning_effort="high",
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is not None
+    assert len(captured_requests) == 1
+    import json
+
+    req_body = json.loads(captured_requests[0].content)
+    assert req_body["reasoning_effort"] == "high"
+    assert captured_requests[0].headers["Authorization"] == "Bearer test-key"
+
+
+def test_codex_header_builder_extracts_account_id_from_jwt():
+    import base64
+    import json
+
+    def _segment(payload: dict[str, object]) -> str:
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+        return encoded.rstrip("=")
+
+    token = ".".join(
+        [
+            _segment({"alg": "none"}),
+            _segment({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-reserve-123"}}),
+            "signature",
+        ]
+    )
+
+    headers = OpenRouterClient._build_codex_headers(token)
+
+    assert headers["originator"] == "codex_cli_rs"
+    assert headers["User-Agent"].startswith("codex_cli_rs/")
+    assert headers["ChatGPT-Account-ID"] == "acct-reserve-123"
+
+
+async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monkeypatch):
+    from types import SimpleNamespace
+
+    captured_kwargs = {}
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            payload = (
+                '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, '
+                '"niche_category": "Ops", "competitor_tags": [], '
+                '"summary": "From stream", "category": "complaint", "severity": "medium"}'
+            )
+            yield SimpleNamespace(type="response.output_text.delta", delta=payload)
+
+        def get_final_response(self):
+            return SimpleNamespace(
+                output=[],
+                output_text="",
+                usage=SimpleNamespace(input_tokens=120, output_tokens=45),
+                status="completed",
+            )
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            captured_kwargs["client_kwargs"] = kwargs
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("openrouter.OpenAI", FakeClient)
+
+    budget = AsyncMock()
+    token = "eyJhbGciOiAibm9uZSJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LXJlc2VydmUtMTIzIn19.signature"
+    client = OpenRouterClient(
+        api_key=token,
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        api_base="https://chatgpt.com/backend-api/codex",
+        reasoning_effort="high",
+        budget_guard=budget,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful", post_id="reddit:abc")
+
+    assert result is not None
+    assert result.summary == "From stream"
+    assert captured_kwargs["instructions"]
+    assert captured_kwargs["reasoning"]["effort"] == "high"
+    client_headers = captured_kwargs["client_kwargs"]["default_headers"]
+    assert client_headers["originator"] == "codex_cli_rs"
+    assert client_headers["User-Agent"].startswith("codex_cli_rs/")
+    assert client_headers["ChatGPT-Account-ID"] == "acct-reserve-123"
+    budget.record_usage.assert_awaited_once()
+    usage_kwargs = budget.record_usage.await_args.kwargs
+    assert usage_kwargs["prompt_tokens"] == 120
+    assert usage_kwargs["completion_tokens"] == 45
 
 
 async def test_analyze_retries_transient_http_errors(respx_mock):
@@ -408,6 +619,44 @@ async def test_usage_tracking_calls_budget_guard(respx_mock):
     assert call_kwargs["prompt_tokens"] == 1200
     assert call_kwargs["completion_tokens"] == 300
     assert call_kwargs["cost_usd"] == 0.0036
+    assert call_kwargs["schema_version"] == "primary_v2"
+    assert call_kwargs["candidate_stage"] == "primary"
+    assert call_kwargs["provider"] == "openrouter"
+    assert call_kwargs["request_path"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert len(call_kwargs["prompt_hash"]) == 64
+
+
+async def test_legacy_usage_tracking_records_fallback_reason(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"category": "wish", "summary": "Need export feature", "severity": "low"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 90, "completion_tokens": 20},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_legacy_post(
+        title="Wish",
+        body="Need CSV",
+        post_id="reddit:legacy",
+        fallback_reason="primary_invalid",
+    )
+
+    assert result is not None
+    usage_kwargs = budget.record_usage.await_args.kwargs
+    assert usage_kwargs["fallback_reason"] == "primary_invalid"
+    assert usage_kwargs["schema_version"] == "legacy_v2"
+    assert usage_kwargs["candidate_stage"] == "primary_fallback"
 
 
 def test_safe_json_load_handles_code_fence():

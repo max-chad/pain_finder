@@ -1,0 +1,34 @@
+from types import SimpleNamespace
+
+from dspy_parser import DSPyRedditPainParser
+
+
+def test_model_name_for_codex_provider_uses_openai_prefix():
+    parser = DSPyRedditPainParser(api_key="test-key", provider="codex", model="gpt-5.3-spark")
+
+    assert parser._model_name_for_provider() == "openai/gpt-5.3-spark"
+
+
+def test_coerce_prediction_normalizes_strings_into_analysis_result():
+    parser = DSPyRedditPainParser(api_key="test-key", provider="codex", model="gpt-5.3-spark")
+    prediction = SimpleNamespace(
+        category="complaint",
+        severity="high",
+        summary="Teams are still reconciling invoices manually",
+        is_monetizable="true",
+        pain_level="9",
+        willingness_to_pay="8",
+        niche_category="Finance Ops",
+        competitor_tags_csv=" QuickBooks , hubspot, quickbooks ",
+    )
+
+    result = parser._coerce_prediction(prediction)
+
+    assert result is not None
+    assert result.category == "complaint"
+    assert result.severity == "high"
+    assert result.is_monetizable is True
+    assert result.pain_level == 9
+    assert result.willingness_to_pay == 8
+    assert result.niche_category == "Finance Ops"
+    assert result.competitor_tags == ["quickbooks", "hubspot"]

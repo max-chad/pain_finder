@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 PAIN_POINT_STATUSES = {"new", "favorite", "discarded", "merged"}
 DEEP_DIVE_STATUSES = {"not_requested", "queued", "running", "completed", "failed"}
+OPPORTUNITY_BUCKETS = {"current_opportunity", "evergreen_pain", "unknown_age"}
 
 CREATE_PAIN_POINTS = """
 CREATE TABLE IF NOT EXISTS pain_points (
@@ -27,6 +28,30 @@ CREATE TABLE IF NOT EXISTS pain_points (
     niche_category TEXT DEFAULT '',
     competitor_tags TEXT DEFAULT '[]',
     source TEXT DEFAULT 'reddit',
+    source_created_at TEXT,
+    source_created_ts INTEGER,
+    author_name TEXT,
+    opportunity_bucket TEXT DEFAULT 'unknown_age',
+    post_type TEXT DEFAULT 'advice_thread',
+    first_handness TEXT DEFAULT 'unknown',
+    buyer_authority TEXT DEFAULT 'unknown',
+    evidence_spans_json TEXT DEFAULT '[]',
+    comment_sample_json TEXT DEFAULT '[]',
+    buyer_authority_score REAL DEFAULT 0.55,
+    workflow_frequency_score REAL DEFAULT 0,
+    impact_score REAL DEFAULT 0,
+    consensus_score REAL DEFAULT 0,
+    incumbent_failure_score REAL DEFAULT 0,
+    recency_score REAL DEFAULT 0,
+    stale_penalty REAL DEFAULT 0,
+    solved_penalty REAL DEFAULT 0,
+    opportunity_score REAL DEFAULT 0,
+    score_components_json TEXT DEFAULT '{}',
+    comment_consensus_count INTEGER DEFAULT 0,
+    comment_same_here_count INTEGER DEFAULT 0,
+    comment_workaround_count INTEGER DEFAULT 0,
+    comment_tool_mentions_json TEXT DEFAULT '[]',
+    comment_shill_risk REAL DEFAULT 0,
     triage_status TEXT DEFAULT 'new',
     analysis_mode TEXT DEFAULT 'legacy',
     deep_dive_status TEXT DEFAULT 'not_requested',
@@ -77,6 +102,9 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     deep_dive_count INTEGER NOT NULL,
     skipped_existing_count INTEGER DEFAULT 0,
     dedup_merged_count INTEGER DEFAULT 0,
+    screen_rule_dropped_count INTEGER DEFAULT 0,
+    screen_kept_count INTEGER DEFAULT 0,
+    screen_capped_count INTEGER DEFAULT 0,
     duration_ms INTEGER,
     report_id INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
@@ -103,12 +131,19 @@ CREATE_MACRO_TREND_CLUSTERS = """
 CREATE TABLE IF NOT EXISTS macro_trend_clusters (
     id INTEGER PRIMARY KEY,
     run_id INTEGER NOT NULL,
+    canonical_key TEXT,
     cluster_key TEXT,
     label TEXT,
     summary TEXT,
     estimated_monetization_signal TEXT,
     item_count INTEGER NOT NULL,
     aggregate_wtp REAL NOT NULL,
+    fresh_post_count INTEGER DEFAULT 0,
+    evergreen_post_count INTEGER DEFAULT 0,
+    median_buyer_authority REAL DEFAULT 0,
+    incumbents_json TEXT DEFAULT '[]',
+    avg_opportunity_score REAL DEFAULT 0,
+    latest_source_created_ts INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -131,6 +166,12 @@ CREATE TABLE IF NOT EXISTS llm_usage_events (
     completion_tokens INTEGER DEFAULT 0,
     cost_usd REAL DEFAULT 0,
     post_id TEXT,
+    prompt_hash TEXT,
+    fallback_reason TEXT,
+    schema_version TEXT,
+    provider TEXT,
+    request_path TEXT,
+    candidate_stage TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -174,13 +215,19 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pain_points_wtp ON pain_points(willingness_to_pay DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_triage_status ON pain_points(triage_status)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_source ON pain_points(source)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_bucket ON pain_points(opportunity_bucket)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_source_created_ts ON pain_points(source_created_ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_score ON pain_points(opportunity_score DESC)",
     "CREATE INDEX IF NOT EXISTS idx_reports_subreddit_run_at ON reports(subreddit, run_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_deep_dives_post_id ON deep_dives(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_runs_created_at ON analysis_runs(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_point_competitors_tag ON pain_point_competitors(competitor_tag)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_run ON macro_trend_clusters(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_canonical ON macro_trend_clusters(canonical_key)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_run ON macro_trend_members(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_macro_trend_members_post ON macro_trend_members(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created ON llm_usage_events(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_stage ON llm_usage_events(candidate_stage, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_gtm_assets_post ON gtm_assets(post_id, created_at DESC)",
 ]
@@ -192,6 +239,30 @@ PAIN_POINT_COLUMNS = {
     "niche_category": "TEXT DEFAULT ''",
     "competitor_tags": "TEXT DEFAULT '[]'",
     "source": "TEXT DEFAULT 'reddit'",
+    "source_created_at": "TEXT",
+    "source_created_ts": "INTEGER",
+    "author_name": "TEXT",
+    "opportunity_bucket": "TEXT DEFAULT 'unknown_age'",
+    "post_type": "TEXT DEFAULT 'advice_thread'",
+    "first_handness": "TEXT DEFAULT 'unknown'",
+    "buyer_authority": "TEXT DEFAULT 'unknown'",
+    "evidence_spans_json": "TEXT DEFAULT '[]'",
+    "comment_sample_json": "TEXT DEFAULT '[]'",
+    "buyer_authority_score": "REAL DEFAULT 0.55",
+    "workflow_frequency_score": "REAL DEFAULT 0",
+    "impact_score": "REAL DEFAULT 0",
+    "consensus_score": "REAL DEFAULT 0",
+    "incumbent_failure_score": "REAL DEFAULT 0",
+    "recency_score": "REAL DEFAULT 0",
+    "stale_penalty": "REAL DEFAULT 0",
+    "solved_penalty": "REAL DEFAULT 0",
+    "opportunity_score": "REAL DEFAULT 0",
+    "score_components_json": "TEXT DEFAULT '{}'",
+    "comment_consensus_count": "INTEGER DEFAULT 0",
+    "comment_same_here_count": "INTEGER DEFAULT 0",
+    "comment_workaround_count": "INTEGER DEFAULT 0",
+    "comment_tool_mentions_json": "TEXT DEFAULT '[]'",
+    "comment_shill_risk": "REAL DEFAULT 0",
     "triage_status": "TEXT DEFAULT 'new'",
     "analysis_mode": "TEXT DEFAULT 'legacy'",
     "deep_dive_status": "TEXT DEFAULT 'not_requested'",
@@ -205,6 +276,28 @@ PAIN_POINT_COLUMNS = {
 ANALYSIS_RUN_COLUMNS = {
     "skipped_existing_count": "INTEGER DEFAULT 0",
     "dedup_merged_count": "INTEGER DEFAULT 0",
+    "screen_rule_dropped_count": "INTEGER DEFAULT 0",
+    "screen_kept_count": "INTEGER DEFAULT 0",
+    "screen_capped_count": "INTEGER DEFAULT 0",
+}
+
+LLM_USAGE_EVENT_COLUMNS = {
+    "prompt_hash": "TEXT",
+    "fallback_reason": "TEXT",
+    "schema_version": "TEXT",
+    "provider": "TEXT",
+    "request_path": "TEXT",
+    "candidate_stage": "TEXT",
+}
+
+MACRO_TREND_CLUSTER_COLUMNS = {
+    "canonical_key": "TEXT",
+    "fresh_post_count": "INTEGER DEFAULT 0",
+    "evergreen_post_count": "INTEGER DEFAULT 0",
+    "median_buyer_authority": "REAL DEFAULT 0",
+    "incumbents_json": "TEXT DEFAULT '[]'",
+    "avg_opportunity_score": "REAL DEFAULT 0",
+    "latest_source_created_ts": "INTEGER",
 }
 
 
@@ -233,10 +326,9 @@ class Database:
         await self._conn.execute(CREATE_GTM_ASSETS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
+        await self._run_migrations()
         for query in CREATE_INDEXES:
             await self._conn.execute(query)
-
-        await self._run_migrations()
         await self._ensure_runtime_flags_row()
         await self._conn.commit()
 
@@ -247,7 +339,12 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON;")
 
     async def _run_migrations(self) -> None:
-        pain_point_migrations = ["2026_02_24_expand_pain_points", "2026_02_25_phase_5_8_expansion", "2026_02_27_cross_source_dedup"]
+        pain_point_migrations = [
+            "2026_02_24_expand_pain_points",
+            "2026_02_25_phase_5_8_expansion",
+            "2026_02_27_cross_source_dedup",
+            "2026_04_22_source_context_and_opportunity_bucket",
+        ]
         for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
                 continue
@@ -257,9 +354,27 @@ class Database:
 
         analysis_run_migration = "2026_04_15_analysis_run_efficiency_metrics"
         if not await self._is_migration_applied(analysis_run_migration):
-            for column_name, ddl in ANALYSIS_RUN_COLUMNS.items():
-                await self._ensure_column("analysis_runs", column_name, ddl)
+            for column_name in ["skipped_existing_count", "dedup_merged_count"]:
+                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_migration)
+
+        analysis_run_screening_migration = "2026_04_22_analysis_run_screening_metrics"
+        if not await self._is_migration_applied(analysis_run_screening_migration):
+            for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
+                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
+            await self._mark_migration_applied(analysis_run_screening_migration)
+
+        llm_usage_migration = "2026_04_22_llm_usage_lineage"
+        if not await self._is_migration_applied(llm_usage_migration):
+            for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
+                await self._ensure_column("llm_usage_events", column_name, ddl)
+            await self._mark_migration_applied(llm_usage_migration)
+
+        canonical_cluster_migration = "2026_04_22_canonical_pain_clusters"
+        if not await self._is_migration_applied(canonical_cluster_migration):
+            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+                await self._ensure_column("macro_trend_clusters", column_name, ddl)
+            await self._mark_migration_applied(canonical_cluster_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -329,6 +444,30 @@ class Database:
         niche_category: str = "",
         competitor_tags: list[str] | None = None,
         source: str = "reddit",
+        source_created_at: str | None = None,
+        source_created_ts: int | None = None,
+        author_name: str | None = None,
+        opportunity_bucket: str = "unknown_age",
+        post_type: str = "advice_thread",
+        first_handness: str = "unknown",
+        buyer_authority: str = "unknown",
+        evidence_spans: list[str] | None = None,
+        comment_sample: list[str] | None = None,
+        buyer_authority_score: float = 0.55,
+        workflow_frequency_score: float = 0.0,
+        impact_score: float = 0.0,
+        consensus_score: float = 0.0,
+        incumbent_failure_score: float = 0.0,
+        recency_score: float = 0.0,
+        stale_penalty: float = 0.0,
+        solved_penalty: float = 0.0,
+        opportunity_score: float = 0.0,
+        score_components: dict[str, Any] | None = None,
+        comment_consensus_count: int = 0,
+        comment_same_here_count: int = 0,
+        comment_workaround_count: int = 0,
+        comment_tool_mentions: list[str] | None = None,
+        comment_shill_risk: float = 0.0,
         triage_status: str = "new",
         analysis_mode: str = "legacy",
         deep_dive_status: str = "not_requested",
@@ -342,6 +481,20 @@ class Database:
             deep_dive_status = "not_requested"
 
         normalized_tags = self._normalize_competitor_tags(competitor_tags)
+        if opportunity_bucket not in OPPORTUNITY_BUCKETS:
+            opportunity_bucket = "unknown_age"
+        normalized_evidence_spans = [
+            str(item).strip()[:160]
+            for item in (evidence_spans or [])
+            if isinstance(item, str) and str(item).strip()
+        ][:3]
+        normalized_comment_sample = [
+            str(item).strip()[:240]
+            for item in (comment_sample or [])
+            if isinstance(item, str) and str(item).strip()
+        ][:5]
+        normalized_comment_tool_mentions = self._normalize_competitor_tags(comment_tool_mentions)
+        score_components_json = json.dumps(score_components or {}, ensure_ascii=False)
 
         try:
             await self._conn.execute(
@@ -349,10 +502,15 @@ class Database:
                 INSERT INTO pain_points (
                     subreddit, post_id, url, title, body, category, summary, severity,
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
-                    competitor_tags, source, triage_status, analysis_mode,
-                    deep_dive_status, deep_dive_summary, analysis_payload_json,
+                    competitor_tags, source, source_created_at, source_created_ts, author_name,
+                    opportunity_bucket, post_type, first_handness, buyer_authority, evidence_spans_json,
+                    comment_sample_json, buyer_authority_score, workflow_frequency_score, impact_score,
+                    consensus_score, incumbent_failure_score, recency_score, stale_penalty, solved_penalty,
+                    opportunity_score, score_components_json, comment_consensus_count, comment_same_here_count,
+                    comment_workaround_count, comment_tool_mentions_json, comment_shill_risk,
+                    triage_status, analysis_mode, deep_dive_status, deep_dive_summary, analysis_payload_json,
                     emb_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -367,6 +525,30 @@ class Database:
                     niche_category = excluded.niche_category,
                     competitor_tags = excluded.competitor_tags,
                     source = excluded.source,
+                    source_created_at = COALESCE(excluded.source_created_at, pain_points.source_created_at),
+                    source_created_ts = COALESCE(excluded.source_created_ts, pain_points.source_created_ts),
+                    author_name = COALESCE(excluded.author_name, pain_points.author_name),
+                    opportunity_bucket = excluded.opportunity_bucket,
+                    post_type = excluded.post_type,
+                    first_handness = excluded.first_handness,
+                    buyer_authority = excluded.buyer_authority,
+                    evidence_spans_json = excluded.evidence_spans_json,
+                    comment_sample_json = excluded.comment_sample_json,
+                    buyer_authority_score = excluded.buyer_authority_score,
+                    workflow_frequency_score = excluded.workflow_frequency_score,
+                    impact_score = excluded.impact_score,
+                    consensus_score = excluded.consensus_score,
+                    incumbent_failure_score = excluded.incumbent_failure_score,
+                    recency_score = excluded.recency_score,
+                    stale_penalty = excluded.stale_penalty,
+                    solved_penalty = excluded.solved_penalty,
+                    opportunity_score = excluded.opportunity_score,
+                    score_components_json = excluded.score_components_json,
+                    comment_consensus_count = excluded.comment_consensus_count,
+                    comment_same_here_count = excluded.comment_same_here_count,
+                    comment_workaround_count = excluded.comment_workaround_count,
+                    comment_tool_mentions_json = excluded.comment_tool_mentions_json,
+                    comment_shill_risk = excluded.comment_shill_risk,
                     analysis_mode = excluded.analysis_mode,
                     analysis_payload_json = excluded.analysis_payload_json,
                     deep_dive_summary = COALESCE(excluded.deep_dive_summary, pain_points.deep_dive_summary),
@@ -390,6 +572,30 @@ class Database:
                     niche_category,
                     json.dumps(normalized_tags, ensure_ascii=False),
                     source,
+                    source_created_at,
+                    source_created_ts,
+                    author_name,
+                    opportunity_bucket,
+                    post_type,
+                    first_handness,
+                    buyer_authority,
+                    json.dumps(normalized_evidence_spans, ensure_ascii=False),
+                    json.dumps(normalized_comment_sample, ensure_ascii=False),
+                    float(buyer_authority_score),
+                    float(workflow_frequency_score),
+                    float(impact_score),
+                    float(consensus_score),
+                    float(incumbent_failure_score),
+                    float(recency_score),
+                    float(stale_penalty),
+                    float(solved_penalty),
+                    float(opportunity_score),
+                    score_components_json,
+                    int(comment_consensus_count),
+                    int(comment_same_here_count),
+                    int(comment_workaround_count),
+                    json.dumps(normalized_comment_tool_mentions, ensure_ascii=False),
+                    float(comment_shill_risk),
                     triage_status,
                     analysis_mode,
                     deep_dive_status,
@@ -605,12 +811,21 @@ class Database:
         subreddit: str | None = None,
         min_wtp: int = 8,
         include_favorites: bool = True,
+        opportunity_bucket: str | None = None,
+        max_source_age_days: int | None = None,
     ) -> list[dict[str, Any]]:
         conditions = ["triage_status NOT IN ('discarded', 'merged')"]
         params: list[Any] = []
         if subreddit:
             conditions.append("subreddit = ?")
             params.append(subreddit)
+        if opportunity_bucket:
+            conditions.append("opportunity_bucket = ?")
+            params.append(opportunity_bucket)
+        if max_source_age_days is not None:
+            cutoff_ts = int((datetime.now(timezone.utc).timestamp()) - max(0, max_source_age_days) * 86400)
+            conditions.append("source_created_ts IS NOT NULL AND source_created_ts >= ?")
+            params.append(cutoff_ts)
         if include_favorites:
             conditions.append("(willingness_to_pay >= ? OR triage_status = 'favorite')")
             params.append(min_wtp)
@@ -634,11 +849,20 @@ class Database:
         deep_dive_count: int,
         skipped_existing_count: int = 0,
         dedup_merged_count: int = 0,
+        screen_rule_dropped_count: int = 0,
+        screen_kept_count: int = 0,
+        screen_capped_count: int = 0,
         duration_ms: int | None,
         report_id: int | None,
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO analysis_runs (subreddit, post_count, pain_count, monetizable_count, deep_dive_count, skipped_existing_count, dedup_merged_count, duration_ms, report_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "INSERT INTO analysis_runs ("
+                "subreddit, post_count, pain_count, monetizable_count, deep_dive_count, "
+                "skipped_existing_count, dedup_merged_count, screen_rule_dropped_count, "
+                "screen_kept_count, screen_capped_count, duration_ms, report_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
             (
                 subreddit,
                 post_count,
@@ -647,6 +871,9 @@ class Database:
                 deep_dive_count,
                 skipped_existing_count,
                 dedup_merged_count,
+                screen_rule_dropped_count,
+                screen_kept_count,
+                screen_capped_count,
                 duration_ms,
                 report_id,
             ),
@@ -666,17 +893,45 @@ class Database:
         self,
         *,
         run_id: int,
+        canonical_key: str | None = None,
         cluster_key: str,
         label: str,
         summary: str,
         estimated_monetization_signal: str,
         item_count: int,
         aggregate_wtp: float,
+        fresh_post_count: int = 0,
+        evergreen_post_count: int = 0,
+        median_buyer_authority: float = 0.0,
+        incumbents: list[str] | None = None,
+        avg_opportunity_score: float = 0.0,
+        latest_source_created_ts: int | None = None,
         members: list[tuple[str, float]],
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO macro_trend_clusters (run_id, cluster_key, label, summary, estimated_monetization_signal, item_count, aggregate_wtp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (run_id, cluster_key, label, summary, estimated_monetization_signal, item_count, aggregate_wtp),
+            """
+            INSERT INTO macro_trend_clusters (
+                run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
+                item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
+                median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                canonical_key,
+                cluster_key,
+                label,
+                summary,
+                estimated_monetization_signal,
+                item_count,
+                aggregate_wtp,
+                fresh_post_count,
+                evergreen_post_count,
+                median_buyer_authority,
+                json.dumps(incumbents or [], ensure_ascii=False),
+                avg_opportunity_score,
+                latest_source_created_ts,
+            ),
         ) as cursor:
             cluster_id = int(cursor.lastrowid)
         for post_id, similarity in members:
@@ -700,7 +955,7 @@ class Database:
             LEFT JOIN macro_trend_members m ON m.cluster_id = c.id
             WHERE c.run_id = ?
             GROUP BY c.id
-            ORDER BY c.item_count DESC, c.aggregate_wtp DESC
+            ORDER BY c.avg_opportunity_score DESC, c.latest_source_created_ts DESC, c.item_count DESC, c.aggregate_wtp DESC
             """,
             (run_id,),
         ) as cursor:
@@ -710,6 +965,14 @@ class Database:
             row_dict = dict(row)
             post_ids = row_dict.get("post_ids")
             row_dict["post_ids"] = post_ids.split(",") if isinstance(post_ids, str) and post_ids else []
+            incumbents_raw = row_dict.get("incumbents_json")
+            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
+                try:
+                    row_dict["incumbents"] = json.loads(incumbents_raw)
+                except json.JSONDecodeError:
+                    row_dict["incumbents"] = []
+            else:
+                row_dict["incumbents"] = []
             out.append(row_dict)
         return out
 
@@ -727,7 +990,66 @@ class Database:
             (post_id,),
         ) as cursor:
             row = await cursor.fetchone()
-            return dict(row) if row else None
+            if row is None:
+                return None
+            row_dict = dict(row)
+            incumbents_raw = row_dict.get("incumbents_json")
+            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
+                try:
+                    row_dict["incumbents"] = json.loads(incumbents_raw)
+                except json.JSONDecodeError:
+                    row_dict["incumbents"] = []
+            else:
+                row_dict["incumbents"] = []
+            return row_dict
+
+    async def get_latest_canonical_clusters(
+        self,
+        *,
+        limit: int = 10,
+        post_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        post_filter_sql = ""
+        if post_ids:
+            placeholders = ",".join("?" * len(post_ids))
+            post_filter_sql = f"WHERE EXISTS (SELECT 1 FROM macro_trend_members mf WHERE mf.cluster_id = c.id AND mf.post_id IN ({placeholders}))"  # nosec B608
+            params.extend(post_ids)
+        async with self._conn.execute(
+            f"""
+            SELECT c.*, r.created_at AS run_created_at, GROUP_CONCAT(m.post_id) AS post_ids
+            FROM macro_trend_clusters c
+            JOIN macro_trend_runs r ON r.id = c.run_id
+            LEFT JOIN macro_trend_members m ON m.cluster_id = c.id
+            {post_filter_sql}
+            GROUP BY c.id
+            ORDER BY r.created_at DESC, r.id DESC, c.avg_opportunity_score DESC, c.latest_source_created_ts DESC, c.item_count DESC, c.aggregate_wtp DESC
+            """,
+            tuple(params),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out = []
+        seen_keys: set[str] = set()
+        for row in rows:
+            row_dict = dict(row)
+            canonical_key = str(row_dict.get("canonical_key") or "").strip()
+            if not canonical_key or canonical_key in seen_keys:
+                continue
+            seen_keys.add(canonical_key)
+            post_ids = row_dict.get("post_ids")
+            row_dict["post_ids"] = post_ids.split(",") if isinstance(post_ids, str) and post_ids else []
+            incumbents_raw = row_dict.get("incumbents_json")
+            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
+                try:
+                    row_dict["incumbents"] = json.loads(incumbents_raw)
+                except json.JSONDecodeError:
+                    row_dict["incumbents"] = []
+            else:
+                row_dict["incumbents"] = []
+            out.append(row_dict)
+            if len(out) >= limit:
+                break
+        return out
 
     async def get_macro_candidates(self, *, window_days: int, min_wtp: int) -> list[dict[str, Any]]:
         async with self._conn.execute(
@@ -743,13 +1065,31 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def get_recent_pain_points(self, *, hours: int = 24, subreddit: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    async def get_recent_pain_points(
+        self,
+        *,
+        hours: int = 24,
+        subreddit: str | None = None,
+        limit: int = 200,
+        opportunity_bucket: str | None = None,
+        max_source_age_days: int | None = None,
+    ) -> list[dict[str, Any]]:
         params: list[Any] = [f"-{hours} hours"]
         query = "SELECT * FROM pain_points WHERE datetime(created_at) >= datetime('now', ?) AND triage_status NOT IN ('discarded', 'merged')"
         if subreddit:
             query += " AND subreddit = ?"
             params.append(subreddit)
-        query += " ORDER BY willingness_to_pay DESC, pain_level DESC, created_at DESC LIMIT ?"
+        if opportunity_bucket:
+            query += " AND opportunity_bucket = ?"
+            params.append(opportunity_bucket)
+        if max_source_age_days is not None:
+            cutoff_ts = int((datetime.now(timezone.utc).timestamp()) - max(0, max_source_age_days) * 86400)
+            query += " AND source_created_ts IS NOT NULL AND source_created_ts >= ?"
+            params.append(cutoff_ts)
+        query += (
+            " ORDER BY opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, "
+            "source_created_ts DESC, created_at DESC LIMIT ?"
+        )
         params.append(limit)
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
@@ -775,10 +1115,34 @@ class Database:
         completion_tokens: int,
         cost_usd: float,
         post_id: str | None = None,
+        prompt_hash: str | None = None,
+        fallback_reason: str | None = None,
+        schema_version: str | None = None,
+        provider: str | None = None,
+        request_path: str | None = None,
+        candidate_stage: str | None = None,
     ) -> int:
         async with self._conn.execute(
-            "INSERT INTO llm_usage_events (model, operation, prompt_tokens, completion_tokens, cost_usd, post_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (model, operation, prompt_tokens, completion_tokens, cost_usd, post_id),
+            """
+            INSERT INTO llm_usage_events (
+                model, operation, prompt_tokens, completion_tokens, cost_usd, post_id,
+                prompt_hash, fallback_reason, schema_version, provider, request_path, candidate_stage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                model,
+                operation,
+                prompt_tokens,
+                completion_tokens,
+                cost_usd,
+                post_id,
+                prompt_hash,
+                fallback_reason,
+                schema_version,
+                provider,
+                request_path,
+                candidate_stage,
+            ),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
