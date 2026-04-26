@@ -1,9 +1,46 @@
-﻿from unittest.mock import AsyncMock
+﻿import json
+from unittest.mock import AsyncMock
 
 import httpx
 import respx
 
 from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient
+
+
+def _primary_payload(**overrides):
+    payload = {
+        "is_monetizable": True,
+        "pain_level": 8,
+        "willingness_to_pay": 8,
+        "niche_category": "DevTools",
+        "competitor_tags": [],
+        "summary": "Manual process",
+        "category": "complaint",
+        "severity": "high",
+        "post_type": "first_person_pain",
+        "first_handness": "first_hand",
+        "buyer_authority": "founder_owner",
+        "pain_type": "workflow",
+        "expression_type": "first_person_complaint",
+        "user_context": "Ops founder running manual workflows",
+        "intensity": 8,
+        "frequency": 7,
+        "urgency": 8,
+        "current_workaround": "Manual spreadsheet reconciliation",
+        "incumbent_failure": "Existing sync tools lose records",
+        "evidence_spans": ["Manual process is painful"],
+        "evidence_quality": "exact_quote",
+        "opportunity_type": "current_opportunity",
+        "confidence": 0.8,
+        "uncertainty_reason": "",
+        "needs_human_review": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _primary_content(**overrides):
+    return json.dumps(_primary_payload(**overrides))
 
 
 async def test_analyze_returns_primary_b2b_result(respx_mock):
@@ -14,15 +51,23 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 9, '
-                                '"niche_category": "E-commerce", "competitor_tags": ["shopify"], '
-                                '"summary": "Inventory sync is failing for stores", "category": "complaint", '
-                                '"severity": "high", "post_type": "first_person_pain", '
-                                '"first_handness": "first_hand", "buyer_authority": "founder_owner", '
-                                '"evidence_spans": ["stock sync lags", "we lose sales"], '
-                                '"confidence": 0.73, "uncertainty_reason": "", '
-                                '"needs_human_review": false}'
+                            "content": _primary_content(
+                                willingness_to_pay=9,
+                                niche_category="E-commerce",
+                                competitor_tags=["shopify"],
+                                summary="Inventory sync is failing for stores",
+                                evidence_spans=["stock sync lags", "we lose sales"],
+                                pain_type="integration",
+                                expression_type="first_person_complaint",
+                                user_context="Shopify merchant losing sales",
+                                intensity=9,
+                                frequency=8,
+                                urgency=9,
+                                current_workaround="Manual stock checks",
+                                incumbent_failure="Shopify stock sync lags",
+                                evidence_quality="multi_quote",
+                                opportunity_type="current_opportunity",
+                                confidence=0.73,
                             )
                         }
                     }
@@ -46,6 +91,16 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
     assert result.first_handness == "first_hand"
     assert result.buyer_authority == "founder_owner"
     assert result.evidence_spans == ["stock sync lags", "we lose sales"]
+    assert result.pain_type == "integration"
+    assert result.expression_type == "first_person_complaint"
+    assert result.user_context == "Shopify merchant losing sales"
+    assert result.intensity == 9
+    assert result.frequency == 8
+    assert result.urgency == 9
+    assert result.current_workaround == "Manual stock checks"
+    assert result.incumbent_failure == "Shopify stock sync lags"
+    assert result.evidence_quality == "multi_quote"
+    assert result.opportunity_type == "current_opportunity"
     assert result.confidence == 0.73
     assert result.uncertainty_reason == ""
     assert result.needs_human_review is False
@@ -78,56 +133,68 @@ async def test_analyze_rejects_invalid_primary_schema(respx_mock):
     assert result is None
 
 
-def test_parse_primary_coerces_review_flag_without_inflating_nonfinite_confidence():
+def test_parse_primary_coerces_review_flag():
     client = OpenRouterClient(api_key="test-key", model="test-model")
 
     result = client._parse_primary_result(
-        {
-            "is_monetizable": True,
-            "pain_level": 8,
-            "willingness_to_pay": 9,
-            "niche_category": "E-commerce",
-            "competitor_tags": [],
-            "summary": "Inventory sync keeps failing",
-            "category": "complaint",
-            "severity": "high",
-            "post_type": "first_person_pain",
-            "first_handness": "first_hand",
-            "buyer_authority": "founder_owner",
-            "evidence_spans": ["stock sync lags"],
-            "confidence": float("nan"),
-            "uncertainty_reason": "needs review",
-            "needs_human_review": "true",
-        }
+        _primary_payload(
+            willingness_to_pay=9,
+            niche_category="E-commerce",
+            summary="Inventory sync keeps failing",
+            evidence_spans=["stock sync lags"],
+            confidence=0.42,
+            uncertainty_reason="needs review",
+            needs_human_review="true",
+        )
     )
 
     assert result is not None
-    assert result.confidence == 0.0
+    assert result.confidence == 0.42
     assert result.needs_human_review is True
+
+
+def test_parse_primary_rejects_nonfinite_confidence():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    result = client._parse_primary_result(_primary_payload(confidence=float("nan")))
+
+    assert result is None
 
 
 def test_parse_primary_rejects_invalid_review_flag():
     client = OpenRouterClient(api_key="test-key", model="test-model")
 
-    result = client._parse_primary_result(
-        {
-            "is_monetizable": True,
-            "pain_level": 8,
-            "willingness_to_pay": 9,
-            "niche_category": "E-commerce",
-            "competitor_tags": [],
-            "summary": "Inventory sync keeps failing",
-            "category": "complaint",
-            "severity": "high",
-            "post_type": "first_person_pain",
-            "first_handness": "first_hand",
-            "buyer_authority": "founder_owner",
-            "evidence_spans": ["stock sync lags"],
-            "needs_human_review": "maybe",
-        }
-    )
+    result = client._parse_primary_result(_primary_payload(evidence_spans=["stock sync lags"], needs_human_review="maybe"))
 
     assert result is None
+
+
+def test_parse_primary_rejects_missing_extended_schema_fields():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    payload = _primary_payload()
+    payload.pop("pain_type")
+
+    result = client._parse_primary_result(payload)
+
+    assert result is None
+
+
+def test_parse_primary_rejects_invalid_extended_schema_fields():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    payload = _primary_payload(intensity=11, evidence_quality="model_guess")
+
+    result = client._parse_primary_result(payload)
+
+    assert result is None
+
+
+def test_parse_primary_rejects_missing_required_evidence_review_fields():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    for required_field in ["evidence_spans", "confidence", "uncertainty_reason", "needs_human_review"]:
+        payload = _primary_payload()
+        payload.pop(required_field)
+        assert client._parse_primary_result(payload) is None, required_field
 
 
 async def test_legacy_analysis_returns_result(respx_mock):
@@ -208,7 +275,7 @@ async def test_body_truncated_for_large_prompt(respx_mock):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": false, "pain_level": 0, "willingness_to_pay": 0, "niche_category": "", "competitor_tags": [], "summary": "s", "category": "complaint", "severity": "low"}'
+                            "content": _primary_content(is_monetizable=False, pain_level=0, willingness_to_pay=0, niche_category="", summary="s", severity="low", evidence_quality="no_quote", opportunity_type="not_opportunity")
                         }
                     }
                 ]
@@ -237,7 +304,7 @@ async def test_analyze_post_uses_primary_max_output_tokens(respx_mock):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "Ops", "competitor_tags": [], "summary": "Manual process", "category": "complaint", "severity": "medium"}'
+                            "content": _primary_content(pain_level=6, willingness_to_pay=7, niche_category="Ops", summary="Manual process", severity="medium")
                         }
                     }
                 ]
@@ -273,7 +340,7 @@ async def test_openrouter_provider_uses_primary_max_output_tokens_in_request_bod
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "Ops", "competitor_tags": [], "summary": "Manual process", "category": "complaint", "severity": "medium"}'
+                            "content": _primary_content(pain_level=6, willingness_to_pay=7, niche_category="Ops", summary="Manual process", severity="medium")
                         }
                     }
                 ]
@@ -309,7 +376,7 @@ async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effo
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, "niche_category": "Ops", "competitor_tags": [], "summary": "Works", "category": "complaint", "severity": "medium"}'
+                            "content": _primary_content(pain_level=7, willingness_to_pay=8, niche_category="Ops", summary="Works", severity="medium")
                         }
                     }
                 ]
@@ -371,10 +438,12 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
             return False
 
         def __iter__(self):
-            payload = (
-                '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, '
-                '"niche_category": "Ops", "competitor_tags": [], '
-                '"summary": "From stream", "category": "complaint", "severity": "medium"}'
+            payload = _primary_content(
+                pain_level=7,
+                willingness_to_pay=8,
+                niche_category="Ops",
+                summary="From stream",
+                severity="medium",
             )
             yield SimpleNamespace(type="response.output_text.delta", delta=payload)
 
@@ -437,7 +506,7 @@ async def test_analyze_retries_transient_http_errors(respx_mock):
                     "choices": [
                         {
                             "message": {
-                                "content": '{"is_monetizable": true, "pain_level": 6, "willingness_to_pay": 7, "niche_category": "DevOps", "summary": "Retry worked", "category": "complaint", "severity": "medium"}'
+                                "content": _primary_content(pain_level=6, willingness_to_pay=7, niche_category="DevOps", summary="Retry worked", severity="medium")
                             }
                         }
                     ]
@@ -509,16 +578,13 @@ async def test_cluster_label_and_gtm_methods(respx_mock):
 
 async def test_openrouter_uses_cache_hit_without_http_call():
     cache_db = AsyncMock()
-    cache_db.get_cached_llm_payload.return_value = {
-        "is_monetizable": True,
-        "pain_level": 7,
-        "willingness_to_pay": 8,
-        "niche_category": "DevOps",
-        "competitor_tags": ["jira"],
-        "summary": "Cached payload",
-        "category": "complaint",
-        "severity": "high",
-    }
+    cache_db.get_cached_llm_payload.return_value = _primary_payload(
+        pain_level=7,
+        willingness_to_pay=8,
+        niche_category="DevOps",
+        competitor_tags=["jira"],
+        summary="Cached payload",
+    )
 
     budget = AsyncMock()
     client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget, cache_db=cache_db)
@@ -540,7 +606,7 @@ async def test_openrouter_stores_successful_response_in_cache():
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                            "content": _primary_content(summary="Need retry flow", niche_category="DevTools")
                         }
                     }
                 ]
@@ -584,7 +650,7 @@ async def test_openrouter_does_not_cache_invalid_primary_payload():
                     "choices": [
                         {
                             "message": {
-                                "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "valid", "category": "complaint", "severity": "high"}'
+                                "content": _primary_content(summary="valid", niche_category="DevTools")
                             }
                         }
                     ]
@@ -615,7 +681,7 @@ async def test_openrouter_bypasses_invalid_cached_payload():
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "from api", "category": "complaint", "severity": "high"}'
+                            "content": _primary_content(summary="from api", niche_category="DevTools")
                         }
                     }
                 ]
@@ -649,7 +715,7 @@ async def test_usage_tracking_calls_budget_guard(respx_mock):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                            "content": _primary_content(summary="Need retry flow", niche_category="DevTools")
                         }
                     }
                 ],
@@ -676,7 +742,7 @@ async def test_usage_tracking_calls_budget_guard(respx_mock):
     assert call_kwargs["prompt_tokens"] == 1200
     assert call_kwargs["completion_tokens"] == 300
     assert call_kwargs["cost_usd"] == 0.0036
-    assert call_kwargs["schema_version"] == "primary_v2"
+    assert call_kwargs["schema_version"] == "primary_v3"
     assert call_kwargs["candidate_stage"] == "primary"
     assert call_kwargs["provider"] == "openrouter"
     assert call_kwargs["request_path"] == "https://openrouter.ai/api/v1/chat/completions"

@@ -11,7 +11,11 @@ from openrouter import (
     AnalysisResult,
     VALID_BUYER_AUTHORITIES,
     VALID_CATEGORIES,
+    VALID_EVIDENCE_QUALITY,
+    VALID_EXPRESSION_TYPES,
     VALID_FIRST_HANDNESS,
+    VALID_OPPORTUNITY_TYPES,
+    VALID_PAIN_TYPES,
     VALID_POST_TYPES,
     VALID_SEVERITIES,
 )
@@ -98,7 +102,25 @@ class DSPyRedditPainParser:
             buyer_authority = dspy.OutputField(
                 desc="one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown"
             )
+            pain_type = dspy.OutputField(
+                desc="one of operational, integration, reporting, billing, support, compliance, security, data_quality, workflow, unknown"
+            )
+            expression_type = dspy.OutputField(
+                desc="one of first_person_complaint, solution_request, wish, workaround, tool_comparison, vendor_rant, second_hand_report, unknown"
+            )
+            user_context = dspy.OutputField(desc="concise user/company/workflow context from the post")
+            intensity = dspy.OutputField(desc="integer 0..10")
+            frequency = dspy.OutputField(desc="integer 0..10")
+            urgency = dspy.OutputField(desc="integer 0..10")
+            current_workaround = dspy.OutputField(desc="current manual/tool workaround, empty string only if not stated")
+            incumbent_failure = dspy.OutputField(desc="why existing tools/processes fail, empty string only if not stated")
             evidence_spans = dspy.OutputField(desc="1-3 short exact quotes copied from title, body, or comments")
+            evidence_quality = dspy.OutputField(
+                desc="one of no_quote, weak_quote, exact_quote, multi_quote, linked_multi_source"
+            )
+            opportunity_type = dspy.OutputField(
+                desc="one of current_opportunity, evergreen_pain, research_lead, needs_validation, not_opportunity, unknown"
+            )
             confidence = dspy.OutputField(desc="number 0..1 for classification confidence after reading evidence")
             uncertainty_reason = dspy.OutputField(desc="short reason when confidence/evidence is ambiguous, else empty")
             needs_human_review = dspy.OutputField(desc="true if evidence is missing/ambiguous or confidence is low")
@@ -148,12 +170,22 @@ class DSPyRedditPainParser:
         pain_level = self._int_field(prediction, "pain_level")
         willingness_to_pay = self._int_field(prediction, "willingness_to_pay")
         competitor_tags = self._competitor_tags(prediction)
-        post_type = self._choice_field(prediction, "post_type", VALID_POST_TYPES, fallback="advice_thread")
-        first_handness = self._choice_field(prediction, "first_handness", VALID_FIRST_HANDNESS, fallback="unknown")
-        buyer_authority = self._choice_field(prediction, "buyer_authority", VALID_BUYER_AUTHORITIES, fallback="unknown")
+        post_type = self._choice_field(prediction, "post_type", VALID_POST_TYPES, fallback=None)
+        first_handness = self._choice_field(prediction, "first_handness", VALID_FIRST_HANDNESS, fallback=None)
+        buyer_authority = self._choice_field(prediction, "buyer_authority", VALID_BUYER_AUTHORITIES, fallback=None)
+        pain_type = self._choice_field(prediction, "pain_type", VALID_PAIN_TYPES, fallback=None)
+        expression_type = self._choice_field(prediction, "expression_type", VALID_EXPRESSION_TYPES, fallback=None)
+        user_context = self._required_string_field(prediction, "user_context")
+        intensity = self._int_field(prediction, "intensity")
+        frequency = self._int_field(prediction, "frequency")
+        urgency = self._int_field(prediction, "urgency")
+        current_workaround = self._required_string_field(prediction, "current_workaround", allow_empty=True)
+        incumbent_failure = self._required_string_field(prediction, "incumbent_failure", allow_empty=True)
         evidence_spans = self._evidence_spans(prediction)
+        evidence_quality = self._choice_field(prediction, "evidence_quality", VALID_EVIDENCE_QUALITY, fallback=None)
+        opportunity_type = self._choice_field(prediction, "opportunity_type", VALID_OPPORTUNITY_TYPES, fallback=None)
         confidence = self._confidence_field(prediction, "confidence")
-        uncertainty_reason = self._string_field(prediction, "uncertainty_reason")[:240]
+        uncertainty_reason = self._required_string_field(prediction, "uncertainty_reason", allow_empty=True)
         needs_human_review = self._bool_field(prediction, "needs_human_review")
 
         if category not in VALID_CATEGORIES:
@@ -170,10 +202,20 @@ class DSPyRedditPainParser:
             return None
         if post_type is None or first_handness is None or buyer_authority is None:
             return None
+        if pain_type is None or expression_type is None or evidence_quality is None or opportunity_type is None:
+            return None
+        if user_context is None or current_workaround is None or incumbent_failure is None or uncertainty_reason is None:
+            return None
+        if intensity is None or frequency is None or urgency is None:
+            return None
+        if not (0 <= intensity <= 10) or not (0 <= frequency <= 10) or not (0 <= urgency <= 10):
+            return None
+        if evidence_spans is None:
+            return None
         if confidence is None:
-            confidence = 0.0
+            return None
         if needs_human_review is None:
-            needs_human_review = not evidence_spans or confidence < 0.5
+            return None
 
         raw_payload = {
             "category": category,
@@ -187,7 +229,17 @@ class DSPyRedditPainParser:
             "post_type": post_type,
             "first_handness": first_handness,
             "buyer_authority": buyer_authority,
+            "pain_type": pain_type,
+            "expression_type": expression_type,
+            "user_context": user_context,
+            "intensity": intensity,
+            "frequency": frequency,
+            "urgency": urgency,
+            "current_workaround": current_workaround,
+            "incumbent_failure": incumbent_failure,
             "evidence_spans": evidence_spans,
+            "evidence_quality": evidence_quality,
+            "opportunity_type": opportunity_type,
             "confidence": confidence,
             "uncertainty_reason": uncertainty_reason,
             "needs_human_review": needs_human_review,
@@ -204,7 +256,17 @@ class DSPyRedditPainParser:
             post_type=post_type,
             first_handness=first_handness,
             buyer_authority=buyer_authority,
+            pain_type=pain_type,
+            expression_type=expression_type,
+            user_context=user_context,
+            intensity=intensity,
+            frequency=frequency,
+            urgency=urgency,
+            current_workaround=current_workaround,
+            incumbent_failure=incumbent_failure,
             evidence_spans=evidence_spans,
+            evidence_quality=evidence_quality,
+            opportunity_type=opportunity_type,
             confidence=confidence,
             uncertainty_reason=uncertainty_reason,
             needs_human_review=needs_human_review,
@@ -222,6 +284,17 @@ class DSPyRedditPainParser:
         if value is None:
             return ""
         return str(value).strip()
+
+    def _required_string_field(
+        self, prediction: Any, field_name: str, *, max_length: int = 240, allow_empty: bool = False
+    ) -> str | None:
+        value = self._get_value(prediction, field_name)
+        if value is None:
+            return None
+        text = str(value).strip()[:max_length]
+        if not text and not allow_empty:
+            return None
+        return text
 
     def _bool_field(self, prediction: Any, field_name: str) -> bool | None:
         value = self._get_value(prediction, field_name)
@@ -245,7 +318,7 @@ class DSPyRedditPainParser:
         except (TypeError, ValueError):
             return None
 
-    def _choice_field(self, prediction: Any, field_name: str, allowed: set[str], *, fallback: str) -> str | None:
+    def _choice_field(self, prediction: Any, field_name: str, allowed: set[str], *, fallback: str | None) -> str | None:
         value = self._get_value(prediction, field_name)
         if value is None or str(value).strip() == "":
             return fallback
@@ -264,10 +337,10 @@ class DSPyRedditPainParser:
             return None
         return round(max(0.0, min(1.0, numeric)), 3)
 
-    def _evidence_spans(self, prediction: Any) -> list[str]:
+    def _evidence_spans(self, prediction: Any) -> list[str] | None:
         value = self._get_value(prediction, "evidence_spans")
         if value is None:
-            return []
+            return None
         if isinstance(value, str):
             raw_text = value.strip()
             if not raw_text:
@@ -283,7 +356,7 @@ class DSPyRedditPainParser:
         elif isinstance(value, list | tuple):
             raw_items = list(value)
         else:
-            return []
+            return None
 
         output: list[str] = []
         seen: set[str] = set()

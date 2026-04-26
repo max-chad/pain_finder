@@ -56,7 +56,17 @@ async def test_dual_mode_uses_primary_b2b_result():
         post_type="first_person_pain",
         first_handness="first_hand",
         buyer_authority="founder_owner",
+        pain_type="integration",
+        expression_type="first_person_complaint",
+        user_context="Shopify merchant operations",
+        intensity=9,
+        frequency=8,
+        urgency=9,
+        current_workaround="Manual order audit",
+        incumbent_failure="Shopify integration drops orders",
         evidence_spans=["orders fail", "customers complain"],
+        evidence_quality="multi_quote",
+        opportunity_type="current_opportunity",
     )
     clf = Classifier(openrouter=mock_llm, mode="dual")
     result = await clf.classify(make_post(title="Shopify stock sync broken"))
@@ -68,6 +78,15 @@ async def test_dual_mode_uses_primary_b2b_result():
     assert result.first_handness == "first_hand"
     assert result.buyer_authority == "founder_owner"
     assert result.evidence_spans == ["orders fail", "customers complain"]
+    assert result.pain_type == "integration"
+    assert result.expression_type == "first_person_complaint"
+    assert result.user_context == "Shopify merchant operations"
+    assert result.intensity == 9
+    assert result.frequency == 8
+    assert result.urgency == 9
+    assert result.current_workaround == "Manual order audit"
+    assert result.incumbent_failure == "Shopify integration drops orders"
+    assert result.opportunity_type == "current_opportunity"
 
 
 async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
@@ -81,6 +100,21 @@ async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
         willingness_to_pay=8,
         niche_category="RevOps",
         competitor_tags=["hubspot"],
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="head_of_ops",
+        pain_type="workflow",
+        expression_type="first_person_complaint",
+        user_context="RevOps team reconciling spreadsheets",
+        intensity=8,
+        frequency=8,
+        urgency=7,
+        current_workaround="Manual spreadsheet reconciliation",
+        incumbent_failure="HubSpot workflow sync is brittle",
+        evidence_spans=["can't keep reconciling this manually"],
+        evidence_quality="exact_quote",
+        opportunity_type="current_opportunity",
+        confidence=0.82,
     )
     mock_llm = AsyncMock()
     clf = Classifier(openrouter=mock_llm, dspy_parser=dspy_parser, mode="dual")
@@ -89,6 +123,11 @@ async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
 
     assert result is not None
     assert result.summary == "Spreadsheet workflow is brittle"
+    assert result.analysis_mode == "dspy_b2b"
+    assert result.pain_type == "workflow"
+    assert result.expression_type == "first_person_complaint"
+    assert result.user_context == "RevOps team reconciling spreadsheets"
+    assert result.opportunity_type == "current_opportunity"
     dspy_parser.analyze_post.assert_awaited_once()
     mock_llm.analyze_post.assert_not_called()
 
@@ -106,6 +145,28 @@ async def test_dual_mode_falls_back_to_legacy_llm():
     assert result is not None
     assert result.category == "wish"
     assert result.analysis_mode == "legacy_llm"
+    mock_llm.analyze_legacy_post.assert_awaited_once()
+    assert mock_llm.analyze_legacy_post.await_args.kwargs["fallback_reason"] == "primary_unavailable"
+
+
+async def test_dual_mode_falls_back_with_dspy_schema_failure_reason():
+    dspy_parser = AsyncMock()
+    dspy_parser.analyze_post.return_value = None
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = None
+    mock_llm.analyze_legacy_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Need reliable sync",
+        severity="high",
+    )
+    clf = Classifier(openrouter=mock_llm, dspy_parser=dspy_parser, mode="dual")
+
+    result = await clf.classify(make_post(title="I can't keep QuickBooks sync working"))
+
+    assert result is not None
+    assert result.analysis_mode == "legacy_llm"
+    mock_llm.analyze_legacy_post.assert_awaited_once()
+    assert mock_llm.analyze_legacy_post.await_args.kwargs["fallback_reason"] == "dspy_empty_primary_unavailable"
 
 
 async def test_legacy_llm_backfills_unknown_authority_and_first_handness_from_post():

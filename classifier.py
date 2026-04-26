@@ -298,7 +298,16 @@ class PainSignal:
     post_type: str = "advice_thread"
     first_handness: str = "unknown"
     buyer_authority: str = "unknown"
+    pain_type: str = "unknown"
+    expression_type: str = "unknown"
+    user_context: str = ""
+    intensity: int = 0
+    frequency: int = 0
+    urgency: int = 0
+    current_workaround: str = ""
+    incumbent_failure: str = ""
     evidence_spans: list[str] = field(default_factory=list)
+    opportunity_type: str = "unknown"
     verified_evidence: list[VerifiedEvidence] = field(default_factory=list)
     evidence_quality: str = "no_quote"
     evidence_match_rate: float = 0.0
@@ -622,7 +631,16 @@ class Classifier:
             post_type=inferred_post_type,
             first_handness=first_handness,
             buyer_authority=buyer_authority,
+            pain_type=result.pain_type,
+            expression_type=result.expression_type,
+            user_context=result.user_context,
+            intensity=max(0, min(10, int(result.intensity))),
+            frequency=max(0, min(10, int(result.frequency))),
+            urgency=max(0, min(10, int(result.urgency))),
+            current_workaround=result.current_workaround,
+            incumbent_failure=result.incumbent_failure,
             evidence_spans=evidence_spans,
+            opportunity_type=result.opportunity_type,
             verified_evidence=verified_evidence,
             evidence_quality=evidence_quality,
             evidence_match_rate=evidence_match_rate,

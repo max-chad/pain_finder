@@ -39,9 +39,40 @@ VALID_BUYER_AUTHORITIES = {
     "agency_operator",
     "unknown",
 }
+VALID_PAIN_TYPES = {
+    "operational",
+    "integration",
+    "reporting",
+    "billing",
+    "support",
+    "compliance",
+    "security",
+    "data_quality",
+    "workflow",
+    "unknown",
+}
+VALID_EXPRESSION_TYPES = {
+    "first_person_complaint",
+    "solution_request",
+    "wish",
+    "workaround",
+    "tool_comparison",
+    "vendor_rant",
+    "second_hand_report",
+    "unknown",
+}
+VALID_EVIDENCE_QUALITY = {"no_quote", "weak_quote", "exact_quote", "multi_quote", "linked_multi_source"}
+VALID_OPPORTUNITY_TYPES = {
+    "current_opportunity",
+    "evergreen_pain",
+    "research_lead",
+    "needs_validation",
+    "not_opportunity",
+    "unknown",
+}
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = (0.5, 1.0)
-PRIMARY_SCHEMA_VERSION = "primary_v2"
+PRIMARY_SCHEMA_VERSION = "primary_v3"
 LEGACY_SCHEMA_VERSION = "legacy_v2"
 DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
 CLUSTER_SCHEMA_VERSION = "cluster_v1"
@@ -57,9 +88,10 @@ Task:
 4. Extract competitor software names mentioned negatively.
 5. Classify the post type before monetization scoring.
 6. Identify first-handness and buyer authority.
-7. Return 1-3 short evidence spans copied from the post text.
-8. Estimate confidence and flag whether human review is needed.
-9. Keep compatibility fields (category, severity).
+7. Extract pain taxonomy, expression type, user context, workaround, incumbent failure, and opportunity type.
+8. Return 1-3 short evidence spans copied from the post text and label evidence quality.
+9. Estimate confidence and flag whether human review is needed.
+10. Keep compatibility fields (category, severity).
 
 Reject non-business consumer venting as non-monetizable with low scores.
 
@@ -76,7 +108,17 @@ Return ONLY valid JSON with this exact schema:
   "post_type": "first_person_pain",
   "first_handness": "first_hand",
   "buyer_authority": "founder_owner",
+  "pain_type": "workflow",
+  "expression_type": "first_person_complaint",
+  "user_context": "Founder running a Shopify store",
+  "intensity": 8,
+  "frequency": 7,
+  "urgency": 8,
+  "current_workaround": "Export CSV and reconcile manually",
+  "incumbent_failure": "Shopify inventory sync lags and causes lost sales",
   "evidence_spans": ["copied evidence"],
+  "evidence_quality": "exact_quote",
+  "opportunity_type": "current_opportunity",
   "confidence": 0.8,
   "uncertainty_reason": "",
   "needs_human_review": false
@@ -90,6 +132,14 @@ Rules:
 - first_handness: one of first_hand, second_hand, aggregated, speculative, unknown
 - buyer_authority: one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown
 - evidence_spans: array with 1..3 short quotes copied from the post, max 160 chars each
+- pain_type: one of operational, integration, reporting, billing, support, compliance, security, data_quality, workflow, unknown
+- expression_type: one of first_person_complaint, solution_request, wish, workaround, tool_comparison, vendor_rant, second_hand_report, unknown
+- user_context: concise user/company/workflow context from the post
+- intensity, frequency, urgency: integer 0..10
+- current_workaround: current manual/tool workaround, empty string only if not stated
+- incumbent_failure: why existing tools/processes fail, empty string only if not stated
+- evidence_quality: one of no_quote, weak_quote, exact_quote, multi_quote, linked_multi_source
+- opportunity_type: one of current_opportunity, evergreen_pain, research_lead, needs_validation, not_opportunity, unknown
 - confidence: number 0..1 for classification confidence after reading the evidence
 - uncertainty_reason: short reason when confidence is low or evidence is ambiguous, else empty string
 - needs_human_review: true when evidence is missing/ambiguous or classification confidence is low
@@ -194,7 +244,17 @@ class AnalysisResult:
     post_type: str = "advice_thread"
     first_handness: str = "unknown"
     buyer_authority: str = "unknown"
+    pain_type: str = "unknown"
+    expression_type: str = "unknown"
+    user_context: str = ""
+    intensity: int = 0
+    frequency: int = 0
+    urgency: int = 0
+    current_workaround: str = ""
+    incumbent_failure: str = ""
     evidence_spans: list[str] = field(default_factory=list)
+    evidence_quality: str = "no_quote"
+    opportunity_type: str = "unknown"
     confidence: float = 0.0
     uncertainty_reason: str = ""
     needs_human_review: bool = False
@@ -578,6 +638,7 @@ class OpenRouterClient:
             request_path=self._request_path(),
             reasoning_effort=self.reasoning_effort,
             max_output_tokens=max_output_tokens,
+            schema_version=schema_version,
         )
         prompt_hash = self._prompt_hash(prompt)
         cached_payload = await self._get_cached_payload(cache_key)
@@ -719,6 +780,7 @@ class OpenRouterClient:
         request_path: str,
         reasoning_effort: str,
         max_output_tokens: int | None,
+        schema_version: str,
     ) -> str:
         digest = cls._prompt_hash(prompt)
         config_fingerprint = hashlib.sha256(
@@ -728,6 +790,7 @@ class OpenRouterClient:
                     "request_path": request_path,
                     "reasoning_effort": reasoning_effort,
                     "max_output_tokens": max_output_tokens,
+                    "schema_version": schema_version,
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -869,6 +932,37 @@ class OpenRouterClient:
                 return False
         return None
 
+    @staticmethod
+    def _required_text(payload: dict[str, Any], key: str, *, max_length: int = 240, allow_empty: bool = False) -> str | None:
+        if key not in payload or not isinstance(payload[key], str):
+            return None
+        value = payload[key].strip()[:max_length]
+        if not allow_empty and not value:
+            return None
+        return value
+
+    @staticmethod
+    def _required_score(payload: dict[str, Any], key: str) -> int | None:
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or not (0 <= value <= 10):
+            return None
+        return value
+
+    @staticmethod
+    def _required_confidence(payload: dict[str, Any], key: str) -> float | None:
+        if key not in payload:
+            return None
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return round(max(0.0, min(1.0, numeric)), 3)
+
     def _parse_primary_result(self, payload: dict[str, Any]) -> AnalysisResult | None:
         category = payload.get("category")
         severity = payload.get("severity")
@@ -878,13 +972,23 @@ class OpenRouterClient:
         willingness_to_pay = payload.get("willingness_to_pay")
         niche_category = payload.get("niche_category")
         competitor_tags = payload.get("competitor_tags", [])
-        post_type = payload.get("post_type", self._default_post_type_for_category(str(category)))
-        first_handness = payload.get("first_handness", "unknown")
-        buyer_authority = payload.get("buyer_authority", "unknown")
-        evidence_spans = payload.get("evidence_spans", [])
-        confidence = self._coerce_confidence(payload.get("confidence", 0.0))
-        uncertainty_reason = payload.get("uncertainty_reason", "")
-        needs_human_review = payload.get("needs_human_review", False)
+        post_type = payload.get("post_type")
+        first_handness = payload.get("first_handness")
+        buyer_authority = payload.get("buyer_authority")
+        pain_type = payload.get("pain_type")
+        expression_type = payload.get("expression_type")
+        user_context = self._required_text(payload, "user_context")
+        intensity = self._required_score(payload, "intensity")
+        frequency = self._required_score(payload, "frequency")
+        urgency = self._required_score(payload, "urgency")
+        current_workaround = self._required_text(payload, "current_workaround", allow_empty=True)
+        incumbent_failure = self._required_text(payload, "incumbent_failure", allow_empty=True)
+        evidence_spans = payload.get("evidence_spans")
+        evidence_quality = payload.get("evidence_quality")
+        opportunity_type = payload.get("opportunity_type")
+        confidence = self._required_confidence(payload, "confidence")
+        uncertainty_reason = payload.get("uncertainty_reason")
+        needs_human_review = payload.get("needs_human_review")
 
         if category not in VALID_CATEGORIES:
             return None
@@ -908,6 +1012,22 @@ class OpenRouterClient:
             return None
         if buyer_authority not in VALID_BUYER_AUTHORITIES:
             return None
+        if pain_type not in VALID_PAIN_TYPES:
+            return None
+        if expression_type not in VALID_EXPRESSION_TYPES:
+            return None
+        if user_context is None or intensity is None or frequency is None or urgency is None:
+            return None
+        if current_workaround is None or incumbent_failure is None:
+            return None
+        if evidence_quality not in VALID_EVIDENCE_QUALITY:
+            return None
+        if opportunity_type not in VALID_OPPORTUNITY_TYPES:
+            return None
+        if confidence is None:
+            return None
+        if not isinstance(uncertainty_reason, str):
+            return None
         if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
             return None
         cleaned_evidence = [item.strip()[:160] for item in evidence_spans if item.strip()][:3]
@@ -928,7 +1048,17 @@ class OpenRouterClient:
             post_type=post_type,
             first_handness=first_handness,
             buyer_authority=buyer_authority,
+            pain_type=pain_type,
+            expression_type=expression_type,
+            user_context=user_context,
+            intensity=intensity,
+            frequency=frequency,
+            urgency=urgency,
+            current_workaround=current_workaround,
+            incumbent_failure=incumbent_failure,
             evidence_spans=cleaned_evidence,
+            evidence_quality=evidence_quality,
+            opportunity_type=opportunity_type,
             confidence=confidence,
             uncertainty_reason=uncertainty_reason,
             needs_human_review=needs_human_review,
