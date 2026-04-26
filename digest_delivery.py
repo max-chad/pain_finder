@@ -180,6 +180,16 @@ class DailyDigestDocumentService:
             )
             metrics.style = "Intense Quote"
             document.add_paragraph(summary)
+            posts_frequency = float(cluster.get("pain_mentions_per_1000_posts") or 0.0)
+            comments_frequency = float(cluster.get("pain_mentions_per_1000_comments") or 0.0)
+            authors_count = int(cluster.get("unique_authors_count") or 0)
+            threads_count = int(cluster.get("unique_threads_count") or 0)
+            if posts_frequency or comments_frequency or authors_count or threads_count:
+                document.add_paragraph(
+                    "Pain frequency "
+                    f"{posts_frequency:.1f}/1k posts | {comments_frequency:.1f}/1k comments | "
+                    f"Authors {authors_count} | Threads {threads_count}"
+                )
             document.add_paragraph(f"Dominant incumbents: {incumbents_text}")
 
     def _render_grouped_section(

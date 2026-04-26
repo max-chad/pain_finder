@@ -4,10 +4,25 @@ import time
 import pytest
 import httpx
 
-from scraper import Post, RedditScraper
+from scraper import Post, RedditComment, RedditScraper
 
 
 async def test_post_dataclass_fields():
+    comment = RedditComment(
+        comment_id="reddit:t1_c1",
+        post_id="t3_abc",
+        parent_id="t3_abc",
+        body="same issue",
+        body_hash="body-hash",
+        author_hash="author-hash",
+        score=3,
+        created_utc=1776688810,
+        depth=0,
+        is_op=False,
+        is_deleted=False,
+        permalink="/r/python/comments/t3_abc/example/c1/",
+        fetched_at="2026-04-20T10:00:10+00:00",
+    )
     post = Post(
         post_id="t3_abc",
         subreddit="python",
@@ -17,14 +32,18 @@ async def test_post_dataclass_fields():
         score=42,
         permalink="/r/python/comments/t3_abc/example/",
         top_comments=["same issue"],
+        comments=[comment],
         source_created_at="2026-04-20T10:00:00Z",
         source_created_ts=1776688800,
         author_name="alice",
+        author_hash="author-hash",
     )
     assert post.post_id == "t3_abc"
     assert post.top_comments == ["same issue"]
+    assert post.comments == [comment]
     assert post.source_created_ts == 1776688800
     assert post.author_name == "alice"
+    assert post.author_hash == "author-hash"
 
 
 async def test_scraper_no_credentials_sets_use_praw_false():
@@ -80,8 +99,36 @@ async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
                 {
                     "data": {
                         "children": [
-                            {"kind": "t1", "data": {"body": "first top comment"}},
-                            {"kind": "t1", "data": {"body": "second top comment"}},
+                            {
+                                "kind": "t1",
+                                "data": {
+                                    "id": "c1",
+                                    "parent_id": "t3_abc1",
+                                    "link_id": "t3_abc1",
+                                    "body": "first top comment",
+                                    "author": "commenter1",
+                                    "score": 7,
+                                    "created_utc": 1713600100,
+                                    "depth": 0,
+                                    "is_submitter": False,
+                                    "permalink": "/r/python/comments/abc1/test_post/c1/",
+                                },
+                            },
+                            {
+                                "kind": "t1",
+                                "data": {
+                                    "id": "c2",
+                                    "parent_id": "t3_abc1",
+                                    "link_id": "t3_abc1",
+                                    "body": "second top comment",
+                                    "author": "commenter2",
+                                    "score": 5,
+                                    "created_utc": 1713600200,
+                                    "depth": 0,
+                                    "is_submitter": False,
+                                    "permalink": "/r/python/comments/abc1/test_post/c2/",
+                                },
+                            },
                         ]
                     }
                 },
@@ -95,10 +142,17 @@ async def test_fetch_public_json_returns_posts_with_top_comments(respx_mock):
     assert len(posts) == 1
     assert posts[0].post_id == "reddit:abc1"
     assert posts[0].top_comments == ["first top comment", "second top comment"]
+    assert [comment.body for comment in posts[0].comments] == ["first top comment", "second top comment"]
+    assert posts[0].comments[0].comment_id == "reddit:t1_c1"
+    assert posts[0].comments[0].post_id == "reddit:abc1"
+    assert posts[0].comments[0].author_hash
+    assert posts[0].comments[0].author_hash != "commenter1"
+    assert posts[0].comments[0].body_hash
     assert "Top comments:" in posts[0].body
     assert posts[0].source_created_ts == 1713600000
     assert posts[0].source_created_at == "2024-04-20T08:00:00+00:00"
     assert posts[0].author_name == "alice"
+    assert posts[0].author_hash
 
 
 def test_parse_rss_entries_preserves_source_timestamp_and_author():
@@ -655,6 +709,119 @@ async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
     assert comments == ["parent", "child"]
 
 
+async def test_fetch_full_thread_comments_returns_structured_nested_public_json(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {},
+                {
+                    "data": {
+                        "children": [
+                            {
+                                "kind": "t1",
+                                "data": {
+                                    "id": "parent",
+                                    "parent_id": "t3_abc1",
+                                    "link_id": "t3_abc1",
+                                    "body": "parent body",
+                                    "author": "original_poster",
+                                    "score": 12,
+                                    "created_utc": 1713600100,
+                                    "depth": 0,
+                                    "is_submitter": True,
+                                    "permalink": "/r/python/comments/abc1/test_post/parent/",
+                                    "replies": {
+                                        "data": {
+                                            "children": [
+                                                {
+                                                    "kind": "t1",
+                                                    "data": {
+                                                        "id": "child",
+                                                        "parent_id": "t1_parent",
+                                                        "link_id": "t3_abc1",
+                                                        "body": "[deleted]",
+                                                        "author": "[deleted]",
+                                                        "score": 0,
+                                                        "created_utc": 1713600200,
+                                                        "depth": 1,
+                                                        "is_submitter": False,
+                                                        "permalink": "/r/python/comments/abc1/test_post/child/",
+                                                    },
+                                                }
+                                            ]
+                                        }
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                },
+            ],
+        )
+    )
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    comments = await scraper.fetch_full_thread_comments("python", "reddit:abc1", max_comments=10)
+
+    assert [comment.comment_id for comment in comments] == ["reddit:t1_parent", "reddit:t1_child"]
+    assert [comment.body for comment in comments] == ["parent body", "[deleted]"]
+    assert comments[0].post_id == "reddit:abc1"
+    assert comments[0].parent_id == "reddit:abc1"
+    assert comments[0].is_op is True
+    assert comments[0].depth == 0
+    assert comments[1].parent_id == "reddit:t1_parent"
+    assert comments[1].depth == 1
+    assert comments[1].is_deleted is True
+    assert comments[1].is_removed is False
+    assert comments[1].body_available is False
+    assert comments[1].deleted_detected_at is not None
+    assert comments[1].author_hash
+    assert comments[1].author_hash != "[deleted]"
+
+
+async def test_fetch_full_thread_comments_uses_oauth_structured_listing():
+    from unittest.mock import AsyncMock, patch
+
+    payload = [
+        {},
+        {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t1",
+                        "data": {
+                            "id": "oauth1",
+                            "parent_id": "t3_oauthpost",
+                            "link_id": "t3_oauthpost",
+                            "body": "oauth comment",
+                            "author": "oauth_user",
+                            "score": 4,
+                            "created_utc": 1713600300,
+                            "depth": 0,
+                            "is_submitter": False,
+                        },
+                    }
+                ]
+            }
+        },
+    ]
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test/1.0")
+    with (
+        patch.object(scraper, "_fetch_full_thread_praw_comments", new=AsyncMock(side_effect=Exception("praw down"))),
+        patch.object(scraper, "_request_oauth_json", new=AsyncMock(return_value=payload)) as oauth_mock,
+    ):
+        comments = await scraper.fetch_full_thread_comments("python", "reddit:oauthpost", max_comments=5)
+
+    assert [comment.comment_id for comment in comments] == ["reddit:t1_oauth1"]
+    assert comments[0].post_id == "reddit:oauthpost"
+    assert comments[0].body == "oauth comment"
+    assert comments[0].author_hash
+    assert comments[0].author_hash != "oauth_user"
+    oauth_mock.assert_awaited_once()
+
+
 async def test_post_id_helpers_and_append_comments():
     scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
     assert scraper._external_post_id("abc") == "reddit:abc"
@@ -664,4 +831,31 @@ async def test_post_id_helpers_and_append_comments():
     merged = scraper._append_comments("body", ["c1", "c2"])
     assert "Top comments:" in merged
     assert "- c1" in merged
+
+def test_comment_from_json_distinguishes_deleted_removed_and_body_availability():
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    deleted = scraper._comment_from_json(
+        data={"id": "deleted", "parent_id": "t3_post1", "body": "[deleted]", "author": "[deleted]"},
+        post_id="reddit:post1",
+        depth=0,
+        fetched_at="2026-04-26T12:00:00+00:00",
+    )
+    removed = scraper._comment_from_json(
+        data={"id": "removed", "parent_id": "t3_post1", "body": "[removed]", "author": "moderator"},
+        post_id="reddit:post1",
+        depth=0,
+        fetched_at="2026-04-26T12:00:00+00:00",
+    )
+
+    assert deleted is not None
+    assert removed is not None
+    assert deleted.is_deleted is True
+    assert deleted.is_removed is False
+    assert deleted.body_available is False
+    assert deleted.deleted_detected_at == "2026-04-26T12:00:00+00:00"
+    assert removed.is_deleted is False
+    assert removed.is_removed is True
+    assert removed.body_available is False
+    assert removed.deleted_detected_at == "2026-04-26T12:00:00+00:00"
+    assert scraper._comment_bodies([deleted, removed]) == []
 

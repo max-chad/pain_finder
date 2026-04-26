@@ -1,4 +1,5 @@
 ﻿import asyncio
+import hashlib
 import html
 import logging
 import math
@@ -20,6 +21,27 @@ DEFAULT_FEEDS = ("top",)
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
+DELETED_MARKERS = {"[deleted]", "[removed]"}
+
+
+@dataclass
+class RedditComment:
+    comment_id: str
+    post_id: str
+    parent_id: str
+    body: str
+    body_hash: str
+    author_hash: str
+    score: int
+    created_utc: int | None
+    depth: int
+    is_op: bool
+    is_deleted: bool
+    permalink: str
+    fetched_at: str
+    is_removed: bool = False
+    body_available: bool = True
+    deleted_detected_at: str | None = None
 
 
 @dataclass
@@ -32,11 +54,17 @@ class Post:
     score: int
     permalink: str = ""
     top_comments: list[str] = field(default_factory=list)
+    comments: list[RedditComment] = field(default_factory=list)
     source: str = "reddit"
     discovery_query: str = ""
     source_created_at: str | None = None
     source_created_ts: int | None = None
     author_name: str | None = None
+    author_hash: str = ""
+    is_deleted: bool = False
+    is_removed: bool = False
+    body_available: bool = True
+    deleted_detected_at: str | None = None
 
 
 class RedditScraper:
@@ -64,22 +92,37 @@ class RedditScraper:
         self.search_queries = self._normalize_search_queries(search_queries)
         self._oauth_access_token: str = ""
         self._oauth_token_expires_at = 0.0
+        self.last_source_method_used: str = ""
+        self.last_failed_requests: int = 0
 
     async def fetch_posts(self, subreddit: str, limit: int = 100, timeframe: str = "day") -> list[Post]:
+        self.last_source_method_used = ""
+        self.last_failed_requests = 0
         if self._use_praw:
             try:
-                return await self._fetch_praw(subreddit, limit, timeframe)
+                posts = await self._fetch_praw(subreddit, limit, timeframe)
+                self.last_source_method_used = "praw"
+                return posts
             except Exception as e:
+                self.last_failed_requests += 1
                 logger.warning("PRAW failed (%s), falling back to OAuth JSON", e)
             try:
-                return await self._fetch_oauth_json(subreddit, limit, timeframe)
+                posts = await self._fetch_oauth_json(subreddit, limit, timeframe)
+                self.last_source_method_used = "oauth_json"
+                return posts
             except Exception as e:
+                self.last_failed_requests += 1
                 logger.warning("OAuth JSON failed (%s), falling back to public JSON", e)
         try:
-            return await self._fetch_public_json(subreddit, limit, timeframe)
+            posts = await self._fetch_public_json(subreddit, limit, timeframe)
+            self.last_source_method_used = "public_json"
+            return posts
         except Exception as e:
+            self.last_failed_requests += 1
             logger.warning("Public JSON failed (%s), falling back to RSS", e)
-            return await self._fetch_rss(subreddit, limit, timeframe)
+            posts = await self._fetch_rss(subreddit, limit, timeframe)
+            self.last_source_method_used = "rss"
+            return posts
 
     async def fetch_full_thread(
         self,
@@ -99,6 +142,24 @@ class RedditScraper:
                 logger.warning("OAuth full thread failed (%s), using public JSON fallback", e)
         return await self._fetch_full_thread_json(post_id, max_comments)
 
+    async def fetch_full_thread_comments(
+        self,
+        subreddit: str,
+        post_id: str,
+        max_comments: int = 250,
+    ) -> list[RedditComment]:
+        max_comments = max(1, max_comments)
+        if self._use_praw:
+            try:
+                return await self._fetch_full_thread_praw_comments(subreddit, post_id, max_comments)
+            except Exception as e:
+                logger.warning("PRAW structured full thread failed (%s), trying OAuth JSON", e)
+            try:
+                return await self._fetch_full_thread_oauth_comments(post_id, max_comments)
+            except Exception as e:
+                logger.warning("OAuth structured full thread failed (%s), using public JSON fallback", e)
+        return await self._fetch_full_thread_json_comments(post_id, max_comments)
+
     @staticmethod
     def _external_post_id(raw_id: str) -> str:
         if raw_id.startswith("reddit:"):
@@ -110,6 +171,69 @@ class RedditScraper:
         if ":" in post_id:
             return post_id.split(":", 1)[1]
         return post_id
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(UTC).isoformat()
+
+    @staticmethod
+    def _hash_text(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _is_deleted_marker(value: Any) -> bool:
+        return str(value or "").strip().lower() in DELETED_MARKERS
+
+    @staticmethod
+    def _comment_availability_flags(*, body: str, author: Any, fetched_at: str | None = None) -> tuple[bool, bool, bool, str | None]:
+        normalized_body = str(body or "").strip().lower()
+        normalized_author = str(author or "").strip().lower()
+        is_removed = normalized_body == "[removed]"
+        is_deleted = normalized_body == "[deleted]" or normalized_author == "[deleted]"
+        body_available = not (is_deleted or is_removed)
+        deleted_detected_at = fetched_at if not body_available else None
+        return is_deleted, is_removed, body_available, deleted_detected_at
+
+    @classmethod
+    def _post_deletion_flags(cls, *, body: str, author_name: str | None, fetched_at: str | None = None) -> tuple[bool, bool, bool, str | None]:
+        normalized_body = str(body or "").strip().lower()
+        normalized_author = str(author_name or "").strip().lower()
+        is_removed = normalized_body == "[removed]"
+        is_deleted = normalized_body == "[deleted]" or normalized_author == "[deleted]"
+        body_available = not (is_deleted or is_removed)
+        deleted_detected_at = fetched_at if not body_available else None
+        return is_deleted, is_removed, body_available, deleted_detected_at
+
+    @classmethod
+    def _external_comment_id(cls, raw_id: Any) -> str:
+        value = str(raw_id or "").strip()
+        if not value:
+            return ""
+        if value.startswith("reddit:t1_"):
+            return value
+        if value.startswith("t1_"):
+            return f"reddit:{value}"
+        if value.startswith("reddit:"):
+            return value
+        return f"reddit:t1_{value}"
+
+    @classmethod
+    def _external_parent_id(cls, raw_id: Any, fallback_post_id: str) -> str:
+        value = str(raw_id or "").strip()
+        if not value:
+            return fallback_post_id
+        if value.startswith("reddit:t1_"):
+            return value
+        if value.startswith("reddit:"):
+            return value
+        if value.startswith("t1_"):
+            return f"reddit:{value}"
+        if value.startswith("t3_"):
+            return cls._external_post_id(value[3:])
+        return value
 
     @staticmethod
     def _normalize_feeds(feed_mix: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -174,18 +298,30 @@ class RedditScraper:
         else:
             full_url = post_data.get("url", "")
         source_created_at, source_created_ts = RedditScraper._normalize_source_timestamp(post_data.get("created_utc"))
+        body = post_data.get("selftext", "") or ""
+        author_name = post_data.get("author") or None
+        is_deleted, is_removed, body_available, deleted_detected_at = RedditScraper._post_deletion_flags(
+            body=body,
+            author_name=author_name,
+            fetched_at=RedditScraper._utc_now_iso(),
+        )
         return Post(
             post_id=prefixed_post_id,
             subreddit=subreddit,
             title=post_data.get("title", ""),
-            body=post_data.get("selftext", ""),
+            body=body,
             url=full_url,
             score=int(post_data.get("score", 0) or 0),
             permalink=permalink,
             discovery_query=discovery_query,
             source_created_at=source_created_at,
             source_created_ts=source_created_ts,
-            author_name=(post_data.get("author") or None),
+            author_name=author_name,
+            author_hash=RedditScraper._hash_text(author_name),
+            is_deleted=is_deleted,
+            is_removed=is_removed,
+            body_available=body_available,
+            deleted_detected_at=deleted_detected_at,
         )
 
     @staticmethod
@@ -242,6 +378,19 @@ class RedditScraper:
             existing.source_created_at = post.source_created_at
         if not existing.author_name and post.author_name:
             existing.author_name = post.author_name
+        if not existing.author_hash and post.author_hash:
+            existing.author_hash = post.author_hash
+        if post.comments and not existing.comments:
+            existing.comments = post.comments
+        if post.top_comments and not existing.top_comments:
+            existing.top_comments = post.top_comments
+        if post.is_deleted:
+            existing.is_deleted = True
+        if post.is_removed:
+            existing.is_removed = True
+        existing.body_available = existing.body_available and post.body_available
+        if not existing.deleted_detected_at and post.deleted_detected_at:
+            existing.deleted_detected_at = post.deleted_detected_at
 
     @staticmethod
     def _rss_feed_url(subreddit: str, feed: str) -> str:
@@ -301,6 +450,11 @@ class RedditScraper:
             if not raw_post_id:
                 continue
             body = summary or content
+            is_deleted, is_removed, body_available, deleted_detected_at = cls._post_deletion_flags(
+                body=body,
+                author_name=author_name,
+                fetched_at=cls._utc_now_iso(),
+            )
             posts.append(
                 Post(
                     post_id=cls._external_post_id(raw_post_id),
@@ -314,6 +468,11 @@ class RedditScraper:
                     source_created_at=source_created_at,
                     source_created_ts=source_created_ts,
                     author_name=author_name,
+                    author_hash=cls._hash_text(author_name),
+                    is_deleted=is_deleted,
+                    is_removed=is_removed,
+                    body_available=body_available,
+                    deleted_detected_at=deleted_detected_at,
                 )
             )
         return posts
@@ -335,6 +494,184 @@ class RedditScraper:
                 params["t"] = timeframe
             requests.append((feed, params))
         return requests
+
+    @classmethod
+    def _comment_from_json(
+        cls,
+        *,
+        data: dict[str, Any],
+        post_id: str,
+        depth: int,
+        fetched_at: str,
+    ) -> RedditComment | None:
+        body = str(data.get("body") or "")
+        author = data.get("author")
+        raw_comment_id = data.get("id")
+        if raw_comment_id in {None, ""}:
+            synthetic_seed = "|".join(
+                [
+                    post_id,
+                    str(data.get("parent_id") or ""),
+                    str(data.get("permalink") or ""),
+                    str(data.get("created_utc") or ""),
+                    str(depth),
+                    body,
+                ]
+            )
+            raw_comment_id = f"synthetic_{cls._hash_text(synthetic_seed)[:20]}"
+        comment_id = cls._external_comment_id(raw_comment_id)
+        if not comment_id:
+            return None
+        try:
+            score = int(data.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0
+        created_utc: int | None
+        try:
+            created_utc = int(float(data.get("created_utc"))) if data.get("created_utc") not in {None, ""} else None
+        except (TypeError, ValueError):
+            created_utc = None
+        try:
+            resolved_depth = int(data.get("depth", depth) or 0)
+        except (TypeError, ValueError):
+            resolved_depth = depth
+        is_deleted, is_removed, body_available, deleted_detected_at = cls._comment_availability_flags(
+            body=body,
+            author=author,
+            fetched_at=fetched_at,
+        )
+        return RedditComment(
+            comment_id=comment_id,
+            post_id=post_id,
+            parent_id=cls._external_parent_id(data.get("parent_id"), post_id),
+            body=body,
+            body_hash=cls._hash_text(body),
+            author_hash=cls._hash_text(author),
+            score=score,
+            created_utc=created_utc,
+            depth=resolved_depth,
+            is_op=bool(data.get("is_submitter")),
+            is_deleted=is_deleted,
+            permalink=str(data.get("permalink") or ""),
+            fetched_at=fetched_at,
+            is_removed=is_removed,
+            body_available=body_available,
+            deleted_detected_at=deleted_detected_at,
+        )
+
+    @classmethod
+    def _parse_comment_nodes(
+        cls,
+        nodes: list[dict[str, Any]],
+        *,
+        post_id: str,
+        max_comments: int,
+        fetched_at: str | None = None,
+        depth: int = 0,
+    ) -> list[RedditComment]:
+        fetched_at = fetched_at or cls._utc_now_iso()
+        comments: list[RedditComment] = []
+
+        def walk(children: list[dict[str, Any]], current_depth: int) -> None:
+            for node in children:
+                if len(comments) >= max_comments:
+                    return
+                if not isinstance(node, dict) or node.get("kind") != "t1":
+                    continue
+                data = node.get("data", {})
+                if not isinstance(data, dict):
+                    continue
+                comment = cls._comment_from_json(
+                    data=data,
+                    post_id=post_id,
+                    depth=current_depth,
+                    fetched_at=fetched_at,
+                )
+                if comment is not None:
+                    comments.append(comment)
+                replies = data.get("replies")
+                if isinstance(replies, dict):
+                    reply_children = replies.get("data", {}).get("children", [])
+                    if isinstance(reply_children, list):
+                        walk(reply_children, current_depth + 1)
+
+        walk(nodes, depth)
+        return comments[:max_comments]
+
+    @classmethod
+    def _comments_from_thread_payload(cls, payload: Any, *, post_id: str, max_comments: int) -> list[RedditComment]:
+        if not isinstance(payload, list) or len(payload) < 2:
+            return []
+        comments_listing = payload[1].get("data", {}).get("children", [])
+        if not isinstance(comments_listing, list):
+            return []
+        return cls._parse_comment_nodes(
+            comments_listing,
+            post_id=cls._external_post_id(cls._raw_post_id(post_id)),
+            max_comments=max_comments,
+        )
+
+    @staticmethod
+    def _comment_bodies(comments: list[RedditComment], *, limit: int | None = None) -> list[str]:
+        bodies = [
+            comment.body.strip()
+            for comment in comments
+            if bool(getattr(comment, "body_available", True))
+            and isinstance(comment.body, str)
+            and comment.body.strip()
+            and not RedditScraper._is_deleted_marker(comment.body)
+        ]
+        return bodies if limit is None else bodies[:limit]
+
+    @classmethod
+    def _comment_from_praw(
+        cls,
+        comment: Any,
+        *,
+        post_id: str,
+        fetched_at: str,
+    ) -> RedditComment | None:
+        comment_id = cls._external_comment_id(getattr(comment, "id", ""))
+        if not comment_id:
+            return None
+        body = str(getattr(comment, "body", "") or "")
+        author = str(getattr(comment, "author", "") or "")
+        parent_id = getattr(comment, "parent_id", "") or ""
+        try:
+            created_utc = int(float(getattr(comment, "created_utc", 0))) or None
+        except (TypeError, ValueError):
+            created_utc = None
+        try:
+            score = int(getattr(comment, "score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0
+        try:
+            depth = int(getattr(comment, "depth", 0) or 0)
+        except (TypeError, ValueError):
+            depth = 0
+        is_deleted, is_removed, body_available, deleted_detected_at = cls._comment_availability_flags(
+            body=body,
+            author=author,
+            fetched_at=fetched_at,
+        )
+        return RedditComment(
+            comment_id=comment_id,
+            post_id=post_id,
+            parent_id=cls._external_parent_id(parent_id, post_id),
+            body=body,
+            body_hash=cls._hash_text(body),
+            author_hash=cls._hash_text(author),
+            score=score,
+            created_utc=created_utc,
+            depth=depth,
+            is_op=bool(getattr(comment, "is_submitter", False)),
+            is_deleted=is_deleted,
+            permalink=str(getattr(comment, "permalink", "") or ""),
+            fetched_at=fetched_at,
+            is_removed=is_removed,
+            body_available=body_available,
+            deleted_detected_at=deleted_detected_at,
+        )
 
     async def _fetch_praw(self, subreddit: str, limit: int, timeframe: str) -> list[Post]:
         import praw
@@ -358,20 +695,32 @@ class RedditScraper:
                     iterator = sub.rising(limit=feed_limit)
 
                 for submission in iterator:
-                    top_comments: list[str] = []
+                    structured_comments: list[RedditComment] = []
                     if self.top_comments_limit > 0:
                         try:
                             submission.comment_sort = "top"
                             submission.comments.replace_more(limit=0)
+                            fetched_at = self._utc_now_iso()
                             for comment in submission.comments[: self.top_comments_limit]:
-                                body = getattr(comment, "body", "")
-                                if isinstance(body, str) and body.strip():
-                                    top_comments.append(body.strip())
+                                structured = self._comment_from_praw(
+                                    comment,
+                                    post_id=self._external_post_id(submission.id),
+                                    fetched_at=fetched_at,
+                                )
+                                if structured is not None:
+                                    structured_comments.append(structured)
                         except Exception as e:
                             logger.debug("Unable to fetch top comments for %s: %s", submission.id, e)
 
+                    top_comments = self._comment_bodies(structured_comments, limit=self.top_comments_limit)
                     body = self._append_comments(submission.selftext or "", top_comments)
                     source_created_at, source_created_ts = self._normalize_source_timestamp(getattr(submission, "created_utc", None))
+                    author_name = str(getattr(submission, "author", "") or "") or None
+                    is_deleted, is_removed, body_available, deleted_detected_at = self._post_deletion_flags(
+                        body=submission.selftext or "",
+                        author_name=author_name,
+                        fetched_at=self._utc_now_iso(),
+                    )
                     post = Post(
                         post_id=self._external_post_id(submission.id),
                         subreddit=subreddit,
@@ -381,9 +730,15 @@ class RedditScraper:
                         score=submission.score,
                         permalink=submission.permalink,
                         top_comments=top_comments,
+                        comments=structured_comments,
                         source_created_at=source_created_at,
                         source_created_ts=source_created_ts,
-                        author_name=str(getattr(submission, "author", "") or "") or None,
+                        author_name=author_name,
+                        author_hash=self._hash_text(author_name),
+                        is_deleted=is_deleted,
+                        is_removed=is_removed,
+                        body_available=body_available,
+                        deleted_detected_at=deleted_detected_at,
                     )
                     self._merge_post(posts_by_id, post)
 
@@ -397,6 +752,12 @@ class RedditScraper:
                 )
                 for submission in iterator:
                     source_created_at, source_created_ts = self._normalize_source_timestamp(getattr(submission, "created_utc", None))
+                    author_name = str(getattr(submission, "author", "") or "") or None
+                    is_deleted, is_removed, body_available, deleted_detected_at = self._post_deletion_flags(
+                        body=submission.selftext or "",
+                        author_name=author_name,
+                        fetched_at=self._utc_now_iso(),
+                    )
                     post = Post(
                         post_id=self._external_post_id(submission.id),
                         subreddit=subreddit,
@@ -408,7 +769,12 @@ class RedditScraper:
                         discovery_query=query,
                         source_created_at=source_created_at,
                         source_created_ts=source_created_ts,
-                        author_name=str(getattr(submission, "author", "") or "") or None,
+                        author_name=author_name,
+                        author_hash=self._hash_text(author_name),
+                        is_deleted=is_deleted,
+                        is_removed=is_removed,
+                        body_available=body_available,
+                        deleted_detected_at=deleted_detected_at,
                     )
                     self._merge_post(posts_by_id, post)
 
@@ -470,12 +836,14 @@ class RedditScraper:
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:
-                    comments = await self._fetch_top_comments_json(
+                    structured_comments = await self._fetch_top_comments_json_structured(
                         client=client,
                         post_id=post.post_id,
                         limit=self.top_comments_limit,
                     )
+                comments = self._comment_bodies(structured_comments, limit=self.top_comments_limit)
                 post.top_comments = comments
+                post.comments = structured_comments
                 post.body = self._append_comments(post.body, comments)
                 return post
 
@@ -534,12 +902,14 @@ class RedditScraper:
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:
-                    comments = await self._fetch_top_comments_json(
+                    structured_comments = await self._fetch_top_comments_json_structured(
                         client=client,
                         post_id=post.post_id,
                         limit=self.top_comments_limit,
                     )
+                comments = self._comment_bodies(structured_comments, limit=self.top_comments_limit)
                 post.top_comments = comments
+                post.comments = structured_comments
                 post.body = self._append_comments(post.body, comments)
                 return post
 
@@ -592,12 +962,14 @@ class RedditScraper:
 
             async def hydrate_comments(post: Post) -> Post:
                 async with semaphore:
-                    comments = await self._fetch_top_comments_oauth(
+                    structured_comments = await self._fetch_top_comments_oauth_structured(
                         client=client,
                         post_id=post.post_id,
                         limit=self.top_comments_limit,
                     )
+                comments = self._comment_bodies(structured_comments, limit=self.top_comments_limit)
                 post.top_comments = comments
+                post.comments = structured_comments
                 post.body = self._append_comments(post.body, comments)
                 return post
 
@@ -666,6 +1038,20 @@ class RedditScraper:
         post_id: str,
         limit: int,
     ) -> list[str]:
+        comments = await self._fetch_top_comments_oauth_structured(
+            client=client,
+            post_id=post_id,
+            limit=limit,
+        )
+        return self._comment_bodies(comments, limit=limit)
+
+    async def _fetch_top_comments_oauth_structured(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        post_id: str,
+        limit: int,
+    ) -> list[RedditComment]:
         raw_post_id = self._raw_post_id(post_id)
         params = {"limit": limit, "sort": "top", "raw_json": 1, "depth": 1}
         try:
@@ -678,20 +1064,7 @@ class RedditScraper:
             logger.debug("Unable to fetch top comments via OAuth for %s: %s", post_id, e)
             return []
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comments_listing = payload[1].get("data", {}).get("children", [])
-        comments: list[str] = []
-        for child in comments_listing:
-            if child.get("kind") != "t1":
-                continue
-            body = child.get("data", {}).get("body", "")
-            if isinstance(body, str) and body.strip():
-                comments.append(body.strip())
-            if len(comments) >= limit:
-                break
-        return comments
+        return self._comments_from_thread_payload(payload, post_id=post_id, max_comments=limit)
 
     async def _fetch_top_comments_json(
         self,
@@ -700,6 +1073,20 @@ class RedditScraper:
         post_id: str,
         limit: int,
     ) -> list[str]:
+        comments = await self._fetch_top_comments_json_structured(
+            client=client,
+            post_id=post_id,
+            limit=limit,
+        )
+        return self._comment_bodies(comments, limit=limit)
+
+    async def _fetch_top_comments_json_structured(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        post_id: str,
+        limit: int,
+    ) -> list[RedditComment]:
         raw_post_id = self._raw_post_id(post_id)
         url = f"https://www.reddit.com/comments/{raw_post_id}.json"
         params = {"limit": limit, "sort": "top", "raw_json": 1, "depth": 1}
@@ -715,22 +1102,13 @@ class RedditScraper:
             logger.debug("Unable to fetch top comments via JSON for %s: %s", post_id, e)
             return []
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comments_listing = payload[1].get("data", {}).get("children", [])
-        comments: list[str] = []
-        for child in comments_listing:
-            if child.get("kind") != "t1":
-                continue
-            body = child.get("data", {}).get("body", "")
-            if isinstance(body, str) and body.strip():
-                comments.append(body.strip())
-            if len(comments) >= limit:
-                break
-        return comments
+        return self._comments_from_thread_payload(payload, post_id=post_id, max_comments=limit)
 
     async def _fetch_full_thread_oauth(self, post_id: str, max_comments: int) -> list[str]:
+        comments = await self._fetch_full_thread_oauth_comments(post_id, max_comments)
+        return self._comment_bodies(comments, limit=max_comments)
+
+    async def _fetch_full_thread_oauth_comments(self, post_id: str, max_comments: int) -> list[RedditComment]:
         raw_post_id = self._raw_post_id(post_id)
         params = {"limit": max_comments, "sort": "top", "raw_json": 1, "depth": 10}
 
@@ -741,32 +1119,13 @@ class RedditScraper:
                 params=params,
             )
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comment_nodes = payload[1].get("data", {}).get("children", [])
-        comments: list[str] = []
-
-        def walk(nodes: list[dict[str, Any]]) -> None:
-            for node in nodes:
-                if len(comments) >= max_comments:
-                    return
-                if node.get("kind") != "t1":
-                    continue
-                data = node.get("data", {})
-                body = data.get("body", "")
-                if isinstance(body, str) and body.strip():
-                    comments.append(body.strip())
-                replies = data.get("replies")
-                if isinstance(replies, dict):
-                    children = replies.get("data", {}).get("children", [])
-                    if isinstance(children, list):
-                        walk(children)
-
-        walk(comment_nodes)
-        return comments[:max_comments]
+        return self._comments_from_thread_payload(payload, post_id=post_id, max_comments=max_comments)
 
     async def _fetch_full_thread_json(self, post_id: str, max_comments: int) -> list[str]:
+        comments = await self._fetch_full_thread_json_comments(post_id, max_comments)
+        return self._comment_bodies(comments, limit=max_comments)
+
+    async def _fetch_full_thread_json_comments(self, post_id: str, max_comments: int) -> list[RedditComment]:
         raw_post_id = self._raw_post_id(post_id)
         url = f"https://www.reddit.com/comments/{raw_post_id}.json"
         params = {"limit": max_comments, "sort": "top", "raw_json": 1, "depth": 10}
@@ -780,35 +1139,16 @@ class RedditScraper:
                 headers=headers,
             )
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comment_nodes = payload[1].get("data", {}).get("children", [])
-        comments: list[str] = []
-
-        def walk(nodes: list[dict[str, Any]]) -> None:
-            for node in nodes:
-                if len(comments) >= max_comments:
-                    return
-                if node.get("kind") != "t1":
-                    continue
-                data = node.get("data", {})
-                body = data.get("body", "")
-                if isinstance(body, str) and body.strip():
-                    comments.append(body.strip())
-                replies = data.get("replies")
-                if isinstance(replies, dict):
-                    children = replies.get("data", {}).get("children", [])
-                    if isinstance(children, list):
-                        walk(children)
-
-        walk(comment_nodes)
-        return comments[:max_comments]
+        return self._comments_from_thread_payload(payload, post_id=post_id, max_comments=max_comments)
 
     async def _fetch_full_thread_praw(self, subreddit: str, post_id: str, max_comments: int) -> list[str]:
+        comments = await self._fetch_full_thread_praw_comments(subreddit, post_id, max_comments)
+        return self._comment_bodies(comments, limit=max_comments)
+
+    async def _fetch_full_thread_praw_comments(self, subreddit: str, post_id: str, max_comments: int) -> list[RedditComment]:
         import praw
 
-        def _sync_fetch() -> list[str]:
+        def _sync_fetch() -> list[RedditComment]:
             reddit = praw.Reddit(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
@@ -818,11 +1158,16 @@ class RedditScraper:
             submission.comment_sort = "top"
             submission.comments.replace_more(limit=0)
 
-            comments: list[str] = []
+            fetched_at = self._utc_now_iso()
+            comments: list[RedditComment] = []
             for comment in submission.comments.list():
-                body = getattr(comment, "body", "")
-                if isinstance(body, str) and body.strip():
-                    comments.append(body.strip())
+                structured = self._comment_from_praw(
+                    comment,
+                    post_id=self._external_post_id(self._raw_post_id(post_id)),
+                    fetched_at=fetched_at,
+                )
+                if structured is not None:
+                    comments.append(structured)
                 if len(comments) >= max_comments:
                     break
             return comments
@@ -901,4 +1246,3 @@ class RedditScraper:
         if body.strip():
             return f"{body}\n\nTop comments:\n{comment_lines}"
         return f"Top comments:\n{comment_lines}"
-

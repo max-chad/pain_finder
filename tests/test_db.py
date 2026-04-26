@@ -4,6 +4,7 @@ import sqlite3
 from unittest.mock import patch
 
 from db import Database
+from scraper import RedditComment
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -41,6 +42,81 @@ async def test_insert_and_fetch_pain_point(db):
     assert results[0]["willingness_to_pay"] == 9
     assert results[0]["source_created_ts"] == 1776688800
     assert results[0]["opportunity_bucket"] == "current_opportunity"
+
+
+async def test_insert_pain_point_persists_deletion_flags_and_author_hash(db):
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="deleted-post",
+        url="https://reddit.com/r/python/comments/deleted-post",
+        title="Removed body",
+        body="[removed]",
+        category="complaint",
+        summary="Post body is unavailable",
+        severity="medium",
+        is_removed=True,
+        body_available=False,
+        deleted_detected_at="2026-04-26T12:00:00+00:00",
+        author_hash="abc123hash",
+    )
+
+    row = await db.get_pain_point("deleted-post")
+
+    assert row is not None
+    assert row["is_deleted"] == 0
+    assert row["is_removed"] == 1
+    assert row["body_available"] == 0
+    assert row["deleted_detected_at"] == "2026-04-26T12:00:00+00:00"
+    assert row["author_hash"] == "abc123hash"
+
+
+async def test_comments_upsert_is_idempotent_and_updates_existing_rows(db):
+    first = RedditComment(
+        comment_id="reddit:t1_c1",
+        post_id="reddit:p1",
+        parent_id="reddit:p1",
+        body="First version",
+        body_hash="hash-one",
+        author_hash="author-one",
+        score=1,
+        created_utc=1713600100,
+        depth=0,
+        is_op=False,
+        is_deleted=False,
+        permalink="/r/python/comments/p1/post/c1/",
+        fetched_at="2026-04-26T12:00:00+00:00",
+    )
+    second = RedditComment(
+        comment_id="reddit:t1_c1",
+        post_id="reddit:p1",
+        parent_id="reddit:p1",
+        body="[deleted]",
+        body_hash="hash-two",
+        author_hash="author-one",
+        score=5,
+        created_utc=1713600100,
+        depth=0,
+        is_op=False,
+        is_deleted=True,
+        permalink="/r/python/comments/p1/post/c1/",
+        fetched_at="2026-04-26T12:05:00+00:00",
+        body_available=False,
+        deleted_detected_at="2026-04-26T12:05:00+00:00",
+    )
+
+    await db.upsert_comments([first])
+    await db.upsert_comments([second])
+    rows = await db.get_comments_for_post("reddit:p1")
+
+    assert len(rows) == 1
+    assert rows[0]["comment_id"] == "reddit:t1_c1"
+    assert rows[0]["body"] == "[deleted]"
+    assert rows[0]["score"] == 5
+    assert rows[0]["is_deleted"] == 1
+    assert rows[0]["is_removed"] == 0
+    assert rows[0]["body_available"] == 0
+    assert rows[0]["deleted_detected_at"] == "2026-04-26T12:05:00+00:00"
+    assert rows[0]["fetched_at"] == "2026-04-26T12:05:00+00:00"
 
 
 async def test_insert_pain_point_persists_verified_evidence_quality(db):
@@ -218,6 +294,140 @@ async def test_migrations_are_idempotent(db):
         row = await cursor.fetchone()
 
     assert row[0] == 1
+
+
+async def test_wave3_tables_and_columns_exist_after_init(db):
+    async with db._conn.execute("PRAGMA table_info(pain_points)") as cursor:
+        pain_columns = {row["name"] for row in await cursor.fetchall()}
+    async with db._conn.execute("PRAGMA table_info(comments)") as cursor:
+        comment_columns = {row["name"] for row in await cursor.fetchall()}
+    async with db._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
+        tables = {row["name"] for row in await cursor.fetchall()}
+    assert {"comments", "source_ingestion_cursors", "source_coverage_runs"}.issubset(tables)
+    assert {
+        "is_deleted",
+        "is_removed",
+        "body_available",
+        "deleted_detected_at",
+        "author_hash",
+    }.issubset(pain_columns)
+    assert {"is_deleted", "is_removed", "body_available", "deleted_detected_at", "author_hash"}.issubset(comment_columns)
+
+
+async def test_cursor_upsert_and_get_roundtrip(db):
+    await db.upsert_source_ingestion_cursor(
+        source="reddit",
+        subreddit="python",
+        feed="top",
+        query="manual workaround",
+        timeframe="week",
+        after="t3_after",
+        before="t3_before",
+        time_window="2026-W17",
+        last_seen_created_utc=1713600100,
+        last_success_at="2026-04-26T12:00:00+00:00",
+        fetch_errors=["timeout"],
+    )
+    await db.upsert_source_ingestion_cursor(
+        source="reddit",
+        subreddit="python",
+        feed="top",
+        query="manual workaround",
+        timeframe="week",
+        after="t3_after2",
+        before=None,
+        time_window="2026-W17",
+        last_seen_created_utc=1713600200,
+        last_success_at="2026-04-26T12:05:00+00:00",
+        fetch_errors=[],
+    )
+
+    cursor_row = await db.get_source_ingestion_cursor(
+        source="reddit",
+        subreddit="python",
+        feed="top",
+        query="manual workaround",
+        timeframe="week",
+    )
+
+    assert cursor_row is not None
+    assert cursor_row["after"] == "t3_after2"
+    assert cursor_row["before"] is None
+    assert cursor_row["last_seen_created_utc"] == 1713600200
+    assert json.loads(cursor_row["fetch_errors_json"]) == []
+
+
+async def test_coverage_run_record_and_list_roundtrip(db):
+    run_id = await db.record_source_coverage_run(
+        source="reddit",
+        scope="python",
+        fetched_posts=25,
+        fetched_comments=75,
+        skipped_deleted=3,
+        skipped_duplicates=4,
+        failed_requests=1,
+        source_method_used="public_json",
+        duration_ms=1234,
+    )
+
+    rows = await db.list_source_coverage_runs(source="reddit", scope="python", limit=5)
+
+    assert run_id > 0
+    assert len(rows) == 1
+    assert rows[0]["id"] == run_id
+    assert rows[0]["fetched_posts"] == 25
+    assert rows[0]["fetched_comments"] == 75
+    assert rows[0]["skipped_deleted"] == 3
+    assert rows[0]["skipped_duplicates"] == 4
+    assert rows[0]["failed_requests"] == 1
+    assert rows[0]["source_method_used"] == "public_json"
+
+
+async def test_normalized_frequency_helper_uses_coverage_and_unique_hashes(db):
+    await db.record_source_coverage_run(
+        source="reddit",
+        scope="python",
+        fetched_posts=200,
+        fetched_comments=800,
+        source_method_used="public_json",
+        duration_ms=50,
+    )
+    for post_id, author_hash in [
+        ("freq-1", "author-a"),
+        ("freq-2", "author-a"),
+        ("freq-3", "author-b"),
+    ]:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url="",
+            title=f"Pain {post_id}",
+            body="manual workflow",
+            category="complaint",
+            summary="manual workflow pain",
+            severity="high",
+            source="reddit",
+            author_hash=author_hash,
+        )
+
+    metrics = await db.calculate_normalized_frequency(
+        source="reddit",
+        scope="python",
+        post_ids=["freq-1", "freq-2", "freq-3"],
+    )
+
+    await db.update_pain_points_frequency_metrics(post_ids=["freq-1", "freq-2", "freq-3"], metrics=metrics)
+    updated = await db.get_pain_point("freq-1")
+
+    assert metrics["pain_mentions_per_1000_posts"] == pytest.approx(15.0)
+    assert metrics["pain_mentions_per_1000_comments"] == pytest.approx(3.75)
+    assert metrics["unique_authors_count"] == 2
+    assert metrics["unique_threads_count"] == 3
+    assert metrics["source_activity_baseline"]["fetched_posts"] == 200
+    assert metrics["source_activity_baseline"]["fetched_comments"] == 800
+    assert updated is not None
+    assert updated["pain_mentions_per_1000_posts"] == pytest.approx(15.0)
+    assert json.loads(updated["source_activity_baseline_json"])["fetched_comments"] == 800
 
 
 async def test_init_migrates_legacy_pain_points_before_creating_new_indexes(tmp_path):

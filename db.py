@@ -33,6 +33,11 @@ CREATE TABLE IF NOT EXISTS pain_points (
     source_created_at TEXT,
     source_created_ts INTEGER,
     author_name TEXT,
+    is_deleted INTEGER DEFAULT 0,
+    is_removed INTEGER DEFAULT 0,
+    body_available INTEGER DEFAULT 1,
+    deleted_detected_at TEXT,
+    author_hash TEXT,
     opportunity_bucket TEXT DEFAULT 'unknown_age',
     post_type TEXT DEFAULT 'advice_thread',
     first_handness TEXT DEFAULT 'unknown',
@@ -65,6 +70,12 @@ CREATE TABLE IF NOT EXISTS pain_points (
     deep_dive_status TEXT DEFAULT 'not_requested',
     deep_dive_summary TEXT,
     analysis_payload_json TEXT,
+    pain_mentions_per_1000_posts REAL DEFAULT 0,
+    pain_mentions_per_1000_comments REAL DEFAULT 0,
+    unique_authors_count INTEGER DEFAULT 0,
+    unique_threads_count INTEGER DEFAULT 0,
+    weekly_delta INTEGER DEFAULT 0,
+    source_activity_baseline_json TEXT DEFAULT '{}',
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -118,6 +129,60 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_COMMENTS = """
+CREATE TABLE IF NOT EXISTS comments (
+    comment_id TEXT PRIMARY KEY,
+    post_id TEXT NOT NULL,
+    parent_id TEXT,
+    body TEXT,
+    body_hash TEXT,
+    author_hash TEXT,
+    score INTEGER DEFAULT 0,
+    created_utc INTEGER,
+    depth INTEGER DEFAULT 0,
+    is_op INTEGER DEFAULT 0,
+    is_deleted INTEGER DEFAULT 0,
+    is_removed INTEGER DEFAULT 0,
+    body_available INTEGER DEFAULT 1,
+    deleted_detected_at TEXT,
+    permalink TEXT,
+    fetched_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+)"""
+
+CREATE_SOURCE_INGESTION_CURSORS = """
+CREATE TABLE IF NOT EXISTS source_ingestion_cursors (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    subreddit TEXT,
+    feed TEXT,
+    query TEXT,
+    timeframe TEXT,
+    after TEXT,
+    before TEXT,
+    time_window TEXT,
+    last_seen_created_utc INTEGER,
+    last_success_at TEXT,
+    fetch_errors_json TEXT DEFAULT '[]',
+    UNIQUE(source, subreddit, feed, query, timeframe)
+)"""
+
+CREATE_SOURCE_COVERAGE_RUNS = """
+CREATE TABLE IF NOT EXISTS source_coverage_runs (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    fetched_posts INTEGER DEFAULT 0,
+    fetched_comments INTEGER DEFAULT 0,
+    skipped_deleted INTEGER DEFAULT 0,
+    skipped_duplicates INTEGER DEFAULT 0,
+    failed_requests INTEGER DEFAULT 0,
+    source_method_used TEXT,
+    duration_ms INTEGER,
+    created_at TEXT DEFAULT (datetime('now'))
+)"""
+
 CREATE_PAIN_POINT_COMPETITORS = """
 CREATE TABLE IF NOT EXISTS pain_point_competitors (
     post_id TEXT NOT NULL,
@@ -151,6 +216,12 @@ CREATE TABLE IF NOT EXISTS macro_trend_clusters (
     median_buyer_authority REAL DEFAULT 0,
     incumbents_json TEXT DEFAULT '[]',
     avg_opportunity_score REAL DEFAULT 0,
+    pain_mentions_per_1000_posts REAL DEFAULT 0,
+    pain_mentions_per_1000_comments REAL DEFAULT 0,
+    unique_authors_count INTEGER DEFAULT 0,
+    unique_threads_count INTEGER DEFAULT 0,
+    weekly_delta INTEGER DEFAULT 0,
+    source_activity_baseline_json TEXT DEFAULT '{}',
     latest_source_created_ts INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
 )"""
@@ -223,12 +294,19 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pain_points_wtp ON pain_points(willingness_to_pay DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_triage_status ON pain_points(triage_status)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_source ON pain_points(source)",
+    "CREATE INDEX IF NOT EXISTS idx_pain_points_author_hash ON pain_points(author_hash)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_bucket ON pain_points(opportunity_bucket)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_source_created_ts ON pain_points(source_created_ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_points_opportunity_score ON pain_points(opportunity_score DESC)",
     "CREATE INDEX IF NOT EXISTS idx_reports_subreddit_run_at ON reports(subreddit, run_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_deep_dives_post_id ON deep_dives(post_id)",
     "CREATE INDEX IF NOT EXISTS idx_analysis_runs_created_at ON analysis_runs(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_utc DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_comments_author_hash ON comments(author_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_comments_body_hash ON comments(body_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_source_cursors_key ON source_ingestion_cursors(source, subreddit, feed, query, timeframe)",
+    "CREATE INDEX IF NOT EXISTS idx_source_coverage_scope ON source_coverage_runs(source, scope, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pain_point_competitors_tag ON pain_point_competitors(competitor_tag)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_run ON macro_trend_clusters(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_macro_trend_clusters_canonical ON macro_trend_clusters(canonical_key)",
@@ -250,6 +328,11 @@ PAIN_POINT_COLUMNS = {
     "source_created_at": "TEXT",
     "source_created_ts": "INTEGER",
     "author_name": "TEXT",
+    "is_deleted": "INTEGER DEFAULT 0",
+    "is_removed": "INTEGER DEFAULT 0",
+    "body_available": "INTEGER DEFAULT 1",
+    "deleted_detected_at": "TEXT",
+    "author_hash": "TEXT",
     "opportunity_bucket": "TEXT DEFAULT 'unknown_age'",
     "post_type": "TEXT DEFAULT 'advice_thread'",
     "first_handness": "TEXT DEFAULT 'unknown'",
@@ -282,6 +365,12 @@ PAIN_POINT_COLUMNS = {
     "deep_dive_status": "TEXT DEFAULT 'not_requested'",
     "deep_dive_summary": "TEXT",
     "analysis_payload_json": "TEXT",
+    "pain_mentions_per_1000_posts": "REAL DEFAULT 0",
+    "pain_mentions_per_1000_comments": "REAL DEFAULT 0",
+    "unique_authors_count": "INTEGER DEFAULT 0",
+    "unique_threads_count": "INTEGER DEFAULT 0",
+    "weekly_delta": "INTEGER DEFAULT 0",
+    "source_activity_baseline_json": "TEXT DEFAULT '{}'",
     "emb_vector": "TEXT",
     "cross_source_count": "INTEGER DEFAULT 1",
     "cross_source_ids": "TEXT DEFAULT '[]'",
@@ -311,7 +400,19 @@ MACRO_TREND_CLUSTER_COLUMNS = {
     "median_buyer_authority": "REAL DEFAULT 0",
     "incumbents_json": "TEXT DEFAULT '[]'",
     "avg_opportunity_score": "REAL DEFAULT 0",
+    "pain_mentions_per_1000_posts": "REAL DEFAULT 0",
+    "pain_mentions_per_1000_comments": "REAL DEFAULT 0",
+    "unique_authors_count": "INTEGER DEFAULT 0",
+    "unique_threads_count": "INTEGER DEFAULT 0",
+    "weekly_delta": "INTEGER DEFAULT 0",
+    "source_activity_baseline_json": "TEXT DEFAULT '{}'",
     "latest_source_created_ts": "INTEGER",
+}
+
+COMMENT_COLUMNS = {
+    "is_removed": "INTEGER DEFAULT 0",
+    "body_available": "INTEGER DEFAULT 1",
+    "deleted_detected_at": "TEXT",
 }
 
 
@@ -330,6 +431,9 @@ class Database:
         await self._conn.execute(CREATE_REPORTS)
         await self._conn.execute(CREATE_DEEP_DIVES)
         await self._conn.execute(CREATE_ANALYSIS_RUNS)
+        await self._conn.execute(CREATE_COMMENTS)
+        await self._conn.execute(CREATE_SOURCE_INGESTION_CURSORS)
+        await self._conn.execute(CREATE_SOURCE_COVERAGE_RUNS)
         await self._conn.execute(CREATE_PAIN_POINT_COMPETITORS)
         await self._conn.execute(CREATE_MACRO_TREND_RUNS)
         await self._conn.execute(CREATE_MACRO_TREND_CLUSTERS)
@@ -359,6 +463,7 @@ class Database:
             "2026_02_27_cross_source_dedup",
             "2026_04_22_source_context_and_opportunity_bucket",
             "2026_04_26_verified_evidence_fields",
+            "2026_04_26_wave3_comments_coverage_frequency",
         ]
         for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
@@ -390,6 +495,18 @@ class Database:
             for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
                 await self._ensure_column("macro_trend_clusters", column_name, ddl)
             await self._mark_migration_applied(canonical_cluster_migration)
+
+        macro_frequency_migration = "2026_04_26_macro_cluster_frequency_metrics"
+        if not await self._is_migration_applied(macro_frequency_migration):
+            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+                await self._ensure_column("macro_trend_clusters", column_name, ddl)
+            await self._mark_migration_applied(macro_frequency_migration)
+
+        comment_availability_migration = "2026_04_26_comment_availability_flags"
+        if not await self._is_migration_applied(comment_availability_migration):
+            for column_name, ddl in COMMENT_COLUMNS.items():
+                await self._ensure_column("comments", column_name, ddl)
+            await self._mark_migration_applied(comment_availability_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -530,6 +647,11 @@ class Database:
         source_created_at: str | None = None,
         source_created_ts: int | None = None,
         author_name: str | None = None,
+        is_deleted: bool = False,
+        is_removed: bool = False,
+        body_available: bool = True,
+        deleted_detected_at: str | None = None,
+        author_hash: str | None = None,
         opportunity_bucket: str = "unknown_age",
         post_type: str = "advice_thread",
         first_handness: str = "unknown",
@@ -562,6 +684,12 @@ class Database:
         deep_dive_status: str = "not_requested",
         deep_dive_summary: str | None = None,
         analysis_payload: dict[str, Any] | None = None,
+        pain_mentions_per_1000_posts: float = 0.0,
+        pain_mentions_per_1000_comments: float = 0.0,
+        unique_authors_count: int = 0,
+        unique_threads_count: int = 0,
+        weekly_delta: int = 0,
+        source_activity_baseline: dict[str, Any] | None = None,
         emb_vector: list[float] | None = None,
     ) -> None:
         if triage_status not in PAIN_POINT_STATUSES:
@@ -592,6 +720,11 @@ class Database:
         ][:5]
         normalized_comment_tool_mentions = self._normalize_competitor_tags(comment_tool_mentions)
         score_components_json = json.dumps(score_components or {}, ensure_ascii=False)
+        normalized_is_deleted = self._coerce_bool_int(is_deleted)
+        normalized_is_removed = self._coerce_bool_int(is_removed)
+        normalized_body_available = self._coerce_bool_int(body_available)
+        normalized_author_hash = str(author_hash or "").strip()
+        source_activity_baseline_json = json.dumps(source_activity_baseline or {}, ensure_ascii=False)
 
         try:
             await self._conn.execute(
@@ -600,6 +733,7 @@ class Database:
                     subreddit, post_id, url, title, body, category, summary, severity,
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
                     competitor_tags, source, source_created_at, source_created_ts, author_name,
+                    is_deleted, is_removed, body_available, deleted_detected_at, author_hash,
                     opportunity_bucket, post_type, first_handness, buyer_authority, evidence_spans_json,
                     verified_evidence_json, evidence_quality, evidence_match_rate, confidence,
                     uncertainty_reason, needs_human_review,
@@ -608,8 +742,10 @@ class Database:
                     opportunity_score, score_components_json, comment_consensus_count, comment_same_here_count,
                     comment_workaround_count, comment_tool_mentions_json, comment_shill_risk,
                     triage_status, analysis_mode, deep_dive_status, deep_dive_summary, analysis_payload_json,
+                    pain_mentions_per_1000_posts, pain_mentions_per_1000_comments, unique_authors_count,
+                    unique_threads_count, weekly_delta, source_activity_baseline_json,
                     emb_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -627,6 +763,11 @@ class Database:
                     source_created_at = COALESCE(excluded.source_created_at, pain_points.source_created_at),
                     source_created_ts = COALESCE(excluded.source_created_ts, pain_points.source_created_ts),
                     author_name = COALESCE(excluded.author_name, pain_points.author_name),
+                    is_deleted = excluded.is_deleted,
+                    is_removed = excluded.is_removed,
+                    body_available = excluded.body_available,
+                    deleted_detected_at = COALESCE(excluded.deleted_detected_at, pain_points.deleted_detected_at),
+                    author_hash = COALESCE(NULLIF(excluded.author_hash, ''), pain_points.author_hash),
                     opportunity_bucket = excluded.opportunity_bucket,
                     post_type = excluded.post_type,
                     first_handness = excluded.first_handness,
@@ -656,6 +797,12 @@ class Database:
                     comment_shill_risk = excluded.comment_shill_risk,
                     analysis_mode = excluded.analysis_mode,
                     analysis_payload_json = excluded.analysis_payload_json,
+                    pain_mentions_per_1000_posts = excluded.pain_mentions_per_1000_posts,
+                    pain_mentions_per_1000_comments = excluded.pain_mentions_per_1000_comments,
+                    unique_authors_count = excluded.unique_authors_count,
+                    unique_threads_count = excluded.unique_threads_count,
+                    weekly_delta = excluded.weekly_delta,
+                    source_activity_baseline_json = excluded.source_activity_baseline_json,
                     deep_dive_summary = COALESCE(excluded.deep_dive_summary, pain_points.deep_dive_summary),
                     deep_dive_status = CASE
                         WHEN pain_points.deep_dive_status = 'completed' THEN pain_points.deep_dive_status
@@ -680,6 +827,11 @@ class Database:
                     source_created_at,
                     source_created_ts,
                     author_name,
+                    normalized_is_deleted,
+                    normalized_is_removed,
+                    normalized_body_available,
+                    deleted_detected_at,
+                    normalized_author_hash,
                     opportunity_bucket,
                     post_type,
                     first_handness,
@@ -712,6 +864,12 @@ class Database:
                     deep_dive_status,
                     deep_dive_summary,
                     json.dumps(analysis_payload, ensure_ascii=False) if analysis_payload else None,
+                    float(pain_mentions_per_1000_posts),
+                    float(pain_mentions_per_1000_comments),
+                    int(unique_authors_count),
+                    int(unique_threads_count),
+                    int(weekly_delta),
+                    source_activity_baseline_json,
                     json.dumps(emb_vector) if emb_vector is not None else None,
                 ),
             )
@@ -733,6 +891,357 @@ class Database:
         async with self._conn.execute("SELECT * FROM pain_points WHERE post_id = ? LIMIT 1", (post_id,)) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    @staticmethod
+    def _comment_row(comment: Any) -> dict[str, Any]:
+        if is_dataclass(comment):
+            return asdict(comment)
+        if isinstance(comment, dict):
+            return dict(comment)
+        return {
+            "comment_id": getattr(comment, "comment_id", ""),
+            "post_id": getattr(comment, "post_id", ""),
+            "parent_id": getattr(comment, "parent_id", ""),
+            "body": getattr(comment, "body", ""),
+            "body_hash": getattr(comment, "body_hash", ""),
+            "author_hash": getattr(comment, "author_hash", ""),
+            "score": getattr(comment, "score", 0),
+            "created_utc": getattr(comment, "created_utc", None),
+            "depth": getattr(comment, "depth", 0),
+            "is_op": getattr(comment, "is_op", False),
+            "is_deleted": getattr(comment, "is_deleted", False),
+            "is_removed": getattr(comment, "is_removed", False),
+            "body_available": getattr(comment, "body_available", True),
+            "deleted_detected_at": getattr(comment, "deleted_detected_at", None),
+            "permalink": getattr(comment, "permalink", ""),
+            "fetched_at": getattr(comment, "fetched_at", None),
+        }
+
+    async def upsert_comments(self, comments: list[Any]) -> None:
+        if not comments:
+            return
+        rows: list[tuple[Any, ...]] = []
+        for comment in comments:
+            row = self._comment_row(comment)
+            comment_id = str(row.get("comment_id") or "").strip()
+            post_id = str(row.get("post_id") or "").strip()
+            if not comment_id or not post_id:
+                continue
+            rows.append(
+                (
+                    comment_id,
+                    post_id,
+                    str(row.get("parent_id") or "").strip() or None,
+                    str(row.get("body") or ""),
+                    str(row.get("body_hash") or "").strip() or None,
+                    str(row.get("author_hash") or "").strip() or None,
+                    int(row.get("score") or 0),
+                    int(row["created_utc"]) if row.get("created_utc") not in {None, ""} else None,
+                    int(row.get("depth") or 0),
+                    self._coerce_bool_int(row.get("is_op")),
+                    self._coerce_bool_int(row.get("is_deleted")),
+                    self._coerce_bool_int(row.get("is_removed")),
+                    self._coerce_bool_int(row.get("body_available", True)),
+                    str(row.get("deleted_detected_at") or "").strip() or None,
+                    str(row.get("permalink") or "").strip() or None,
+                    str(row.get("fetched_at") or "").strip() or None,
+                )
+            )
+        if not rows:
+            return
+        await self._conn.executemany(
+            """
+            INSERT INTO comments (
+                comment_id, post_id, parent_id, body, body_hash, author_hash, score,
+                created_utc, depth, is_op, is_deleted, is_removed, body_available,
+                deleted_detected_at, permalink, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(comment_id) DO UPDATE SET
+                post_id = excluded.post_id,
+                parent_id = excluded.parent_id,
+                body = excluded.body,
+                body_hash = excluded.body_hash,
+                author_hash = COALESCE(excluded.author_hash, comments.author_hash),
+                score = excluded.score,
+                created_utc = COALESCE(excluded.created_utc, comments.created_utc),
+                depth = excluded.depth,
+                is_op = excluded.is_op,
+                is_deleted = excluded.is_deleted,
+                is_removed = excluded.is_removed,
+                body_available = excluded.body_available,
+                deleted_detected_at = COALESCE(excluded.deleted_detected_at, comments.deleted_detected_at),
+                permalink = COALESCE(excluded.permalink, comments.permalink),
+                fetched_at = COALESCE(excluded.fetched_at, comments.fetched_at),
+                updated_at = datetime('now')
+            """,
+            rows,
+        )
+        await self._conn.commit()
+
+    async def get_comments_for_post(self, post_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        async with self._conn.execute(
+            """
+            SELECT * FROM comments
+            WHERE post_id = ?
+            ORDER BY COALESCE(created_utc, 0), depth, comment_id
+            LIMIT ?
+            """,
+            (post_id, max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def upsert_source_ingestion_cursor(
+        self,
+        *,
+        source: str,
+        subreddit: str | None = None,
+        feed: str | None = None,
+        query: str | None = None,
+        timeframe: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        time_window: str | None = None,
+        last_seen_created_utc: int | None = None,
+        last_success_at: str | None = None,
+        fetch_errors: list[str] | None = None,
+    ) -> int:
+        key = (source, subreddit, feed, query, timeframe)
+        async with self._conn.execute(
+            """
+            SELECT id FROM source_ingestion_cursors
+            WHERE source = ?
+              AND COALESCE(subreddit, '') = COALESCE(?, '')
+              AND COALESCE(feed, '') = COALESCE(?, '')
+              AND COALESCE(query, '') = COALESCE(?, '')
+              AND COALESCE(timeframe, '') = COALESCE(?, '')
+            LIMIT 1
+            """,
+            key,
+        ) as cursor:
+            existing = await cursor.fetchone()
+        fetch_errors_json = json.dumps(fetch_errors or [], ensure_ascii=False)
+        if existing:
+            await self._conn.execute(
+                """
+                UPDATE source_ingestion_cursors
+                SET after = ?, before = ?, time_window = ?, last_seen_created_utc = ?,
+                    last_success_at = ?, fetch_errors_json = ?
+                WHERE source = ?
+                  AND COALESCE(subreddit, '') = COALESCE(?, '')
+                  AND COALESCE(feed, '') = COALESCE(?, '')
+                  AND COALESCE(query, '') = COALESCE(?, '')
+                  AND COALESCE(timeframe, '') = COALESCE(?, '')
+                """,
+                (
+                    after,
+                    before,
+                    time_window,
+                    last_seen_created_utc,
+                    last_success_at,
+                    fetch_errors_json,
+                    *key,
+                ),
+            )
+            await self._conn.commit()
+            return int(existing["id"])
+        async with self._conn.execute(
+            """
+            INSERT INTO source_ingestion_cursors (
+                source, subreddit, feed, query, timeframe, after, before, time_window,
+                last_seen_created_utc, last_success_at, fetch_errors_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source,
+                subreddit,
+                feed,
+                query,
+                timeframe,
+                after,
+                before,
+                time_window,
+                last_seen_created_utc,
+                last_success_at,
+                fetch_errors_json,
+            ),
+        ) as cursor:
+            await self._conn.commit()
+            return int(cursor.lastrowid)
+
+    async def get_source_ingestion_cursor(
+        self,
+        *,
+        source: str,
+        subreddit: str | None = None,
+        feed: str | None = None,
+        query: str | None = None,
+        timeframe: str | None = None,
+    ) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            """
+            SELECT * FROM source_ingestion_cursors
+            WHERE source = ?
+              AND COALESCE(subreddit, '') = COALESCE(?, '')
+              AND COALESCE(feed, '') = COALESCE(?, '')
+              AND COALESCE(query, '') = COALESCE(?, '')
+              AND COALESCE(timeframe, '') = COALESCE(?, '')
+            LIMIT 1
+            """,
+            (source, subreddit, feed, query, timeframe),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def record_source_coverage_run(
+        self,
+        *,
+        source: str,
+        scope: str,
+        fetched_posts: int = 0,
+        fetched_comments: int = 0,
+        skipped_deleted: int = 0,
+        skipped_duplicates: int = 0,
+        failed_requests: int = 0,
+        source_method_used: str | None = None,
+        duration_ms: int | None = None,
+    ) -> int:
+        async with self._conn.execute(
+            """
+            INSERT INTO source_coverage_runs (
+                source, scope, fetched_posts, fetched_comments, skipped_deleted,
+                skipped_duplicates, failed_requests, source_method_used, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source,
+                scope,
+                int(fetched_posts or 0),
+                int(fetched_comments or 0),
+                int(skipped_deleted or 0),
+                int(skipped_duplicates or 0),
+                int(failed_requests or 0),
+                source_method_used,
+                duration_ms,
+            ),
+        ) as cursor:
+            await self._conn.commit()
+            return int(cursor.lastrowid)
+
+    async def list_source_coverage_runs(
+        self,
+        *,
+        source: str | None = None,
+        scope: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if source is not None:
+            conditions.append("source = ?")
+            params.append(source)
+        if scope is not None:
+            conditions.append("scope = ?")
+            params.append(scope)
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        async with self._conn.execute(
+            f"""
+            SELECT * FROM source_coverage_runs
+            {where_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,  # nosec B608
+            (*params, max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def calculate_normalized_frequency(
+        self,
+        *,
+        source: str,
+        scope: str,
+        post_ids: list[str],
+    ) -> dict[str, Any]:
+        unique_post_ids = [post_id for post_id in dict.fromkeys(str(item) for item in post_ids if str(item or "").strip())]
+        coverage_runs = await self.list_source_coverage_runs(source=source, scope=scope, limit=1)
+        baseline = coverage_runs[0] if coverage_runs else {}
+        fetched_posts = int(baseline.get("fetched_posts") or 0)
+        fetched_comments = int(baseline.get("fetched_comments") or 0)
+        unique_authors_count = 0
+        unique_threads_count = len(unique_post_ids)
+        if unique_post_ids:
+            placeholders = ",".join("?" * len(unique_post_ids))
+            async with self._conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT NULLIF(author_hash, '')) AS unique_authors,
+                       COUNT(DISTINCT post_id) AS unique_threads
+                FROM pain_points
+                WHERE post_id IN ({placeholders})
+                """,  # nosec B608
+                tuple(unique_post_ids),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                unique_authors_count = int(row["unique_authors"] or 0)
+                unique_threads_count = int(row["unique_threads"] or unique_threads_count)
+        pain_mentions = len(unique_post_ids)
+        return {
+            "pain_mentions_per_1000_posts": round(pain_mentions / fetched_posts * 1000, 3) if fetched_posts > 0 else 0.0,
+            "pain_mentions_per_1000_comments": round(pain_mentions / fetched_comments * 1000, 3) if fetched_comments > 0 else 0.0,
+            "unique_authors_count": unique_authors_count,
+            "unique_threads_count": unique_threads_count,
+            "weekly_delta": 0,
+            "source_activity_baseline": {
+                "source": baseline.get("source", source),
+                "scope": baseline.get("scope", scope),
+                "fetched_posts": fetched_posts,
+                "fetched_comments": fetched_comments,
+                "skipped_deleted": int(baseline.get("skipped_deleted") or 0),
+                "skipped_duplicates": int(baseline.get("skipped_duplicates") or 0),
+                "failed_requests": int(baseline.get("failed_requests") or 0),
+                "source_method_used": baseline.get("source_method_used"),
+                "duration_ms": baseline.get("duration_ms"),
+                "created_at": baseline.get("created_at"),
+            },
+        }
+
+    async def update_pain_points_frequency_metrics(
+        self,
+        *,
+        post_ids: list[str],
+        metrics: dict[str, Any],
+    ) -> None:
+        unique_post_ids = [post_id for post_id in dict.fromkeys(str(item) for item in post_ids if str(item or "").strip())]
+        if not unique_post_ids:
+            return
+        source_activity_baseline_json = json.dumps(metrics.get("source_activity_baseline") or {}, ensure_ascii=False)
+        rows = [
+            (
+                float(metrics.get("pain_mentions_per_1000_posts") or 0.0),
+                float(metrics.get("pain_mentions_per_1000_comments") or 0.0),
+                int(metrics.get("unique_authors_count") or 0),
+                int(metrics.get("unique_threads_count") or 0),
+                int(metrics.get("weekly_delta") or 0),
+                source_activity_baseline_json,
+                post_id,
+            )
+            for post_id in unique_post_ids
+        ]
+        await self._conn.executemany(
+            """
+            UPDATE pain_points
+            SET pain_mentions_per_1000_posts = ?,
+                pain_mentions_per_1000_comments = ?,
+                unique_authors_count = ?,
+                unique_threads_count = ?,
+                weekly_delta = ?,
+                source_activity_baseline_json = ?
+            WHERE post_id = ?
+            """,
+            rows,
+        )
+        await self._conn.commit()
 
     async def store_embedding(self, post_id: str, emb_vector: list[float]) -> None:
         await self._conn.execute(
@@ -1016,6 +1525,12 @@ class Database:
         median_buyer_authority: float = 0.0,
         incumbents: list[str] | None = None,
         avg_opportunity_score: float = 0.0,
+        pain_mentions_per_1000_posts: float = 0.0,
+        pain_mentions_per_1000_comments: float = 0.0,
+        unique_authors_count: int = 0,
+        unique_threads_count: int = 0,
+        weekly_delta: int = 0,
+        source_activity_baseline: dict[str, Any] | None = None,
         latest_source_created_ts: int | None = None,
         members: list[tuple[str, float]],
     ) -> int:
@@ -1024,8 +1539,11 @@ class Database:
             INSERT INTO macro_trend_clusters (
                 run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
                 item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
-                median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                median_buyer_authority, incumbents_json, avg_opportunity_score,
+                pain_mentions_per_1000_posts, pain_mentions_per_1000_comments,
+                unique_authors_count, unique_threads_count, weekly_delta,
+                source_activity_baseline_json, latest_source_created_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1041,6 +1559,12 @@ class Database:
                 median_buyer_authority,
                 json.dumps(incumbents or [], ensure_ascii=False),
                 avg_opportunity_score,
+                float(pain_mentions_per_1000_posts),
+                float(pain_mentions_per_1000_comments),
+                int(unique_authors_count),
+                int(unique_threads_count),
+                int(weekly_delta),
+                json.dumps(source_activity_baseline or {}, ensure_ascii=False),
                 latest_source_created_ts,
             ),
         ) as cursor:
@@ -1084,6 +1608,15 @@ class Database:
                     row_dict["incumbents"] = []
             else:
                 row_dict["incumbents"] = []
+            baseline_raw = row_dict.get("source_activity_baseline_json")
+            if isinstance(baseline_raw, str) and baseline_raw.strip():
+                try:
+                    baseline = json.loads(baseline_raw)
+                except json.JSONDecodeError:
+                    baseline = {}
+                row_dict["source_activity_baseline"] = baseline if isinstance(baseline, dict) else {}
+            else:
+                row_dict["source_activity_baseline"] = {}
             out.append(row_dict)
         return out
 
@@ -1157,6 +1690,15 @@ class Database:
                     row_dict["incumbents"] = []
             else:
                 row_dict["incumbents"] = []
+            baseline_raw = row_dict.get("source_activity_baseline_json")
+            if isinstance(baseline_raw, str) and baseline_raw.strip():
+                try:
+                    baseline = json.loads(baseline_raw)
+                except json.JSONDecodeError:
+                    baseline = {}
+                row_dict["source_activity_baseline"] = baseline if isinstance(baseline, dict) else {}
+            else:
+                row_dict["source_activity_baseline"] = {}
             out.append(row_dict)
             if len(out) >= limit:
                 break

@@ -76,6 +76,10 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "avg_opportunity_score": 88.2,
             "latest_source_created_ts": 1713772800,
             "post_ids": ["p1", "p3"],
+            "pain_mentions_per_1000_posts": 12.5,
+            "pain_mentions_per_1000_comments": 2.5,
+            "unique_authors_count": 2,
+            "unique_threads_count": 2,
         }
     ]
 
@@ -94,6 +98,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     assert "Pain Finder Daily Digest" in xml
     assert "Canonical pain clusters" in xml
     assert "RevOps handoff breakage" in xml
+    assert "Pain frequency 12.5/1k posts | 2.5/1k comments | Authors 2 | Threads 2" in xml
     assert "Current opportunities" in xml
     assert "Needs Review / Weak signals" in xml
     assert "Evergreen pain index: 0" in xml

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
@@ -55,6 +55,8 @@ class AnalysisRun:
     report_id: int
     analysis_run_id: int
     source: str = "reddit"
+    source_coverage: dict[str, Any] = field(default_factory=dict)
+    normalized_frequency: dict[str, Any] = field(default_factory=dict)
 
 
 class AnalysisPipeline:
@@ -85,6 +87,14 @@ class AnalysisPipeline:
         self.current_opportunity_max_age_days = max(1, int(current_opportunity_max_age_days))
 
     async def analyze_subreddit(self, subreddit: str, limit: int = 100) -> AnalysisRun:
+        prior_cursor = await self.db.get_source_ingestion_cursor(source="reddit", subreddit=subreddit, timeframe="day")
+        if prior_cursor:
+            logger.debug(
+                "source_ingestion_cursor_loaded source=reddit subreddit=%s last_seen_created_utc=%s after=%s",
+                subreddit,
+                prior_cursor.get("last_seen_created_utc"),
+                prior_cursor.get("after"),
+            )
         posts = await self.scraper.fetch_posts(subreddit, limit=limit)
         return await self._analyze_posts(
             posts=posts,
@@ -194,6 +204,11 @@ class AnalysisPipeline:
                 source_created_at=signal.post.source_created_at,
                 source_created_ts=signal.post.source_created_ts,
                 author_name=signal.post.author_name,
+                is_deleted=signal.post.is_deleted,
+                is_removed=signal.post.is_removed,
+                body_available=signal.post.body_available,
+                deleted_detected_at=signal.post.deleted_detected_at,
+                author_hash=signal.post.author_hash,
                 opportunity_bucket=opportunity_bucket,
                 post_type=signal.post_type,
                 first_handness=signal.first_handness,
@@ -225,6 +240,8 @@ class AnalysisPipeline:
                 analysis_payload=signal.analysis_payload,
                 emb_vector=embedding,
             )
+            if signal.post.comments:
+                await self.db.upsert_comments(signal.post.comments)
             persisted_signals.append(signal)
             inserted_count += 1
 
@@ -248,7 +265,58 @@ class AnalysisPipeline:
             else:
                 deep_dive_skipped_reasons[deep_dive_skip_reason] = deep_dive_skipped_reasons.get(deep_dive_skip_reason, 0) + 1
 
-        report_data = self._build_report_payload(signals=persisted_signals, source=source)
+        duration_ms = int((perf_counter() - start) * 1000)
+        source_coverage = self._build_source_coverage(
+            posts=posts,
+            source=source,
+            scope=run_scope,
+            skipped_duplicates=skipped_existing_count + dedup_merged_count,
+            duration_ms=duration_ms,
+        )
+        await self.db.record_source_coverage_run(
+            source=source,
+            scope=run_scope,
+            fetched_posts=source_coverage["fetched_posts"],
+            fetched_comments=source_coverage["fetched_comments"],
+            skipped_deleted=source_coverage["skipped_deleted"],
+            skipped_duplicates=source_coverage["skipped_duplicates"],
+            failed_requests=source_coverage["failed_requests"],
+            source_method_used=source_coverage["source_method_used"],
+            duration_ms=source_coverage["duration_ms"],
+        )
+        persisted_post_ids = [signal.post.post_id for signal in persisted_signals]
+        fetch_errors = []
+        if source_coverage["failed_requests"]:
+            fetch_errors.append(f"failed_requests:{source_coverage['failed_requests']}")
+        await self.db.upsert_source_ingestion_cursor(
+            source=source,
+            subreddit=run_scope,
+            timeframe="day" if source == "reddit" else None,
+            after=str(getattr(self.scraper, "last_after", "") or "") or None,
+            before=str(getattr(self.scraper, "last_before", "") or "") or None,
+            time_window=str(getattr(self.scraper, "last_time_window", "") or "") or None,
+            last_seen_created_utc=self._latest_source_created_ts(posts),
+            last_success_at=datetime.now(UTC).isoformat(),
+            fetch_errors=fetch_errors,
+        )
+        normalized_frequency: dict[str, Any] = {}
+        if persisted_post_ids:
+            normalized_frequency = await self.db.calculate_normalized_frequency(
+                source=source,
+                scope=run_scope,
+                post_ids=persisted_post_ids,
+            )
+            await self.db.update_pain_points_frequency_metrics(
+                post_ids=persisted_post_ids,
+                metrics=normalized_frequency,
+            )
+
+        report_data = self._build_report_payload(
+            signals=persisted_signals,
+            source=source,
+            source_coverage=source_coverage,
+            normalized_frequency=normalized_frequency,
+        )
         json_path = await self._write_report(run_label=run_label, payload=report_data)
 
         report_id = await self.db.save_report(
@@ -257,7 +325,6 @@ class AnalysisPipeline:
             pain_count=inserted_count,
             json_path=json_path,
         )
-        duration_ms = int((perf_counter() - start) * 1000)
         analysis_run_id = await self.db.record_analysis_run(
             subreddit=run_scope,
             post_count=len(posts),
@@ -311,6 +378,8 @@ class AnalysisPipeline:
             report_id=report_id,
             analysis_run_id=analysis_run_id,
             source=source,
+            source_coverage=source_coverage,
+            normalized_frequency=normalized_frequency,
         )
 
     async def run_deep_dive(
@@ -407,6 +476,7 @@ class AnalysisPipeline:
 
     async def generate_digest(self, *, subreddit: str | None = None, hours: int = 24) -> dict[str, Any]:
         rows = await self.db.get_recent_pain_points(hours=hours, subreddit=subreddit)
+        source_coverage_runs = await self.db.list_source_coverage_runs(scope=subreddit, limit=5)
         if not rows:
             return {
                 "hours": hours,
@@ -417,6 +487,7 @@ class AnalysisPipeline:
                 "top_clusters": [],
                 "niche_counts": {},
                 "source_counts": {},
+                "source_coverage_runs": source_coverage_runs,
                 "recurring_blockers": [],
             }
 
@@ -443,6 +514,14 @@ class AnalysisPipeline:
                     row_copy["score_components"] = {}
             elif not isinstance(row_copy.get("score_components"), dict):
                 row_copy["score_components"] = {}
+            row_source = (row_copy.get("source") or "unknown").strip() or "unknown"
+            row_scope = (row_copy.get("subreddit") or subreddit or "global").strip() or "global"
+            row_post_id = str(row_copy.get("post_id") or "").strip()
+            row_copy["normalized_frequency"] = await self.db.calculate_normalized_frequency(
+                source=row_source,
+                scope=row_scope,
+                post_ids=[row_post_id] if row_post_id else [],
+            )
             rejection_reason = self._row_evidence_rejection_reason(row_copy)
             row_copy["promotion_eligible"] = not rejection_reason
             row_copy["evidence_rejection_reason"] = rejection_reason
@@ -484,6 +563,7 @@ class AnalysisPipeline:
             "top_clusters": top_clusters,
             "niche_counts": niche_counts,
             "source_counts": source_counts,
+            "source_coverage_runs": source_coverage_runs,
             "recurring_blockers": recurring_blockers,
         }
 
@@ -587,8 +667,63 @@ class AnalysisPipeline:
             return "missing_first_hand_or_buyer_signal"
         return ""
 
+    def _build_source_coverage(
+        self,
+        *,
+        posts: list[Post],
+        source: str,
+        scope: str,
+        skipped_duplicates: int,
+        duration_ms: int,
+    ) -> dict[str, Any]:
+        source_method_used = ""
+        failed_requests = 0
+        if source == "reddit":
+            source_method_used = str(getattr(self.scraper, "last_source_method_used", "") or "").strip()
+            failed_requests = int(getattr(self.scraper, "last_failed_requests", 0) or 0)
+        if not source_method_used:
+            source_method_used = "external" if source != "reddit" else "unknown"
+        return {
+            "source": source,
+            "scope": scope,
+            "fetched_posts": len(posts),
+            "fetched_comments": sum(len(getattr(post, "comments", []) or []) for post in posts),
+            "skipped_deleted": sum(
+                1
+                for post in posts
+                if bool(getattr(post, "is_deleted", False))
+                or bool(getattr(post, "is_removed", False))
+                or not bool(getattr(post, "body_available", True))
+            ),
+            "skipped_duplicates": int(skipped_duplicates or 0),
+            "failed_requests": failed_requests,
+            "source_method_used": source_method_used,
+            "duration_ms": int(duration_ms),
+        }
+
     @staticmethod
-    def _build_report_payload(*, signals: list[PainSignal], source: str) -> list[dict[str, Any]]:
+    def _latest_source_created_ts(posts: list[Post]) -> int | None:
+        values: list[int] = []
+        for post in posts:
+            raw = getattr(post, "source_created_ts", None)
+            if raw in {None, ""}:
+                continue
+            try:
+                values.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        return max(values) if values else None
+
+    @staticmethod
+    def _build_report_payload(
+        *,
+        signals: list[PainSignal],
+        source: str,
+        source_coverage: dict[str, Any] | None = None,
+        normalized_frequency: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        coverage_payload = dict(source_coverage or {})
+        frequency_payload = dict(normalized_frequency or {})
         return [
             {
                 "post_id": signal.post.post_id,
@@ -608,6 +743,19 @@ class AnalysisPipeline:
                 "source_created_at": signal.post.source_created_at,
                 "source_created_ts": signal.post.source_created_ts,
                 "author_name": signal.post.author_name,
+                "author_hash": signal.post.author_hash,
+                "is_deleted": signal.post.is_deleted,
+                "is_removed": signal.post.is_removed,
+                "body_available": signal.post.body_available,
+                "deleted_detected_at": signal.post.deleted_detected_at,
+                "source_coverage": coverage_payload,
+                "normalized_frequency": frequency_payload,
+                "pain_mentions_per_1000_posts": frequency_payload.get("pain_mentions_per_1000_posts", 0.0),
+                "pain_mentions_per_1000_comments": frequency_payload.get("pain_mentions_per_1000_comments", 0.0),
+                "unique_authors_count": frequency_payload.get("unique_authors_count", 0),
+                "unique_threads_count": frequency_payload.get("unique_threads_count", 0),
+                "weekly_delta": frequency_payload.get("weekly_delta", 0),
+                "source_activity_baseline": frequency_payload.get("source_activity_baseline", {}),
                 "opportunity_bucket": signal.opportunity_bucket,
                 "post_type": signal.post_type,
                 "first_handness": signal.first_handness,

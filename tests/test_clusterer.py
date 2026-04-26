@@ -30,6 +30,7 @@ async def _seed_candidate(
     opportunity_score: float = 0.0,
     source_created_ts: int | None = None,
     competitor_tags: list[str] | None = None,
+    author_hash: str | None = None,
 ):
     await db.insert_pain_point(
         subreddit="python",
@@ -50,6 +51,7 @@ async def _seed_candidate(
         buyer_authority_score=buyer_authority_score,
         opportunity_score=opportunity_score,
         source_created_ts=source_created_ts,
+        author_hash=author_hash,
     )
 
 
@@ -203,6 +205,58 @@ async def test_run_persists_canonical_cluster_aggregates(db):
     assert latest_clusters[0]["canonical_key"] == cluster.canonical_key
     assert latest_clusters[0]["fresh_post_count"] == 1
     assert latest_clusters[0]["evergreen_post_count"] == 1
+
+
+async def test_run_persists_normalized_frequency_metrics(db):
+    await db.record_source_coverage_run(
+        source="reddit",
+        scope="python",
+        fetched_posts=200,
+        fetched_comments=1000,
+        source_method_used="public_json",
+        duration_ms=100,
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:n1",
+        title="QuickBooks sync failures",
+        summary="Manual ledger repair every week",
+        wtp=9,
+        opportunity_score=80.0,
+        author_hash="author-1",
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:n2",
+        title="QuickBooks reconciliation keeps breaking",
+        summary="Manual ledger repair every month",
+        wtp=8,
+        opportunity_score=70.0,
+        author_hash="author-2",
+    )
+
+    clusterer = MacroTrendClusterer(
+        db=db,
+        openrouter=None,
+        min_cluster_size=2,
+        similarity_threshold=0.1,
+        min_wtp=7,
+    )
+    result = await clusterer.run(window_days=30)
+
+    assert len(result.clusters) == 1
+    cluster = result.clusters[0]
+    assert cluster.pain_mentions_per_1000_posts == pytest.approx(10.0)
+    assert cluster.pain_mentions_per_1000_comments == pytest.approx(2.0)
+    assert cluster.unique_authors_count == 2
+    assert cluster.unique_threads_count == 2
+    assert cluster.source_activity_baseline["fetched_posts"] == 200
+
+    latest_clusters = await db.get_latest_canonical_clusters(limit=5)
+    assert latest_clusters[0]["pain_mentions_per_1000_posts"] == pytest.approx(10.0)
+    assert latest_clusters[0]["pain_mentions_per_1000_comments"] == pytest.approx(2.0)
+    assert latest_clusters[0]["unique_authors_count"] == 2
+    assert latest_clusters[0]["unique_threads_count"] == 2
 
 
 def test_compose_candidate_text_handles_invalid_competitor_json():

@@ -10,7 +10,7 @@ from db import Database
 from evidence import VerifiedEvidence
 from openrouter import DeepDiveResult
 from pipeline import AnalysisPipeline
-from scraper import Post
+from scraper import Post, RedditComment
 
 
 @pytest_asyncio.fixture
@@ -144,6 +144,136 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert rows[0]["confidence"] == 0.73
     assert rows[0]["needs_human_review"] == 0
     assert json.loads(rows[0]["verified_evidence_json"])[0]["quote"] == "still broken"
+
+
+async def test_analyze_external_posts_persists_structured_comments_flags_and_coverage(db, tmp_path):
+    comment = RedditComment(
+        comment_id="reddit:t1_pipeline_c1",
+        post_id="reddit:pipeline-post",
+        parent_id="reddit:pipeline-post",
+        body="[deleted]",
+        body_hash="deleted-body-hash",
+        author_hash="comment-author-hash",
+        score=0,
+        created_utc=1713600100,
+        depth=0,
+        is_op=False,
+        is_deleted=True,
+        permalink="/r/python/comments/pipeline-post/title/pipeline_c1/",
+        fetched_at="2026-04-26T12:00:00+00:00",
+        body_available=False,
+        deleted_detected_at="2026-04-26T12:00:00+00:00",
+    )
+    post = Post(
+        post_id="reddit:pipeline-post",
+        subreddit="python",
+        title="Removed workflow pain",
+        body="[removed]",
+        url="https://reddit.com/r/python/comments/pipeline-post/title/",
+        score=10,
+        comments=[comment],
+        top_comments=[],
+        source_created_ts=1713600000,
+        is_removed=True,
+        body_available=False,
+        deleted_detected_at="2026-04-26T12:00:00+00:00",
+        author_hash="post-author-hash",
+    )
+    signal = PainSignal(
+        post=post,
+        category="complaint",
+        summary="Deleted post still produced a durable signal",
+        severity="medium",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=8,
+        niche_category="DevTools",
+        analysis_mode="b2b",
+    )
+    scraper = AsyncMock()
+    scraper.last_source_method_used = "public_json"
+    scraper.last_failed_requests = 0
+    classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[signal]), openrouter=None)
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[post], source="reddit", run_scope="python")
+
+    row = await db.get_pain_point("reddit:pipeline-post")
+    stored_comments = await db.get_comments_for_post("reddit:pipeline-post")
+    coverage_runs = await db.list_source_coverage_runs(source="reddit", scope="python", limit=1)
+    cursor_row = await db.get_source_ingestion_cursor(source="reddit", subreddit="python", timeframe="day")
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+
+    assert row is not None
+    assert row["is_removed"] == 1
+    assert row["body_available"] == 0
+    assert row["deleted_detected_at"] == "2026-04-26T12:00:00+00:00"
+    assert row["author_hash"] == "post-author-hash"
+    assert len(stored_comments) == 1
+    assert stored_comments[0]["comment_id"] == "reddit:t1_pipeline_c1"
+    assert stored_comments[0]["is_deleted"] == 1
+    assert stored_comments[0]["is_removed"] == 0
+    assert stored_comments[0]["body_available"] == 0
+    assert stored_comments[0]["deleted_detected_at"] == "2026-04-26T12:00:00+00:00"
+    assert len(coverage_runs) == 1
+    assert coverage_runs[0]["fetched_posts"] == 1
+    assert coverage_runs[0]["fetched_comments"] == 1
+    assert coverage_runs[0]["skipped_deleted"] == 1
+    assert coverage_runs[0]["skipped_duplicates"] == 0
+    assert coverage_runs[0]["source_method_used"] == "public_json"
+    assert cursor_row is not None
+    assert cursor_row["last_seen_created_utc"] == 1713600000
+    assert json.loads(cursor_row["fetch_errors_json"]) == []
+    assert row["pain_mentions_per_1000_posts"] == pytest.approx(1000.0)
+    assert row["pain_mentions_per_1000_comments"] == pytest.approx(1000.0)
+    assert run.source_coverage["fetched_comments"] == 1
+    assert run.normalized_frequency["unique_threads_count"] == 1
+    assert report_payload[0]["source_coverage"]["fetched_posts"] == 1
+    assert report_payload[0]["source_coverage"]["source_method_used"] == "public_json"
+    assert report_payload[0]["normalized_frequency"]["pain_mentions_per_1000_posts"] == pytest.approx(1000.0)
+    assert report_payload[0]["pain_mentions_per_1000_comments"] == pytest.approx(1000.0)
+
+
+async def test_external_source_coverage_does_not_reuse_reddit_fetch_state(db, tmp_path):
+    post = Post(
+        post_id="hn:1",
+        subreddit="frontpage",
+        title="HN workflow pain",
+        body="manual exports are still painful",
+        url="https://news.ycombinator.com/item?id=1",
+        score=3,
+        source="hackernews",
+        source_created_ts=1713600300,
+    )
+    scraper = AsyncMock()
+    scraper.last_source_method_used = "public_json"
+    scraper.last_failed_requests = 7
+    classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None)
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[post], source="hackernews", run_scope="frontpage")
+
+    coverage_runs = await db.list_source_coverage_runs(source="hackernews", scope="frontpage", limit=1)
+    cursor_row = await db.get_source_ingestion_cursor(source="hackernews", subreddit="frontpage", timeframe=None)
+
+    assert run.source_coverage["source_method_used"] == "external"
+    assert run.source_coverage["failed_requests"] == 0
+    assert coverage_runs[0]["source_method_used"] == "external"
+    assert coverage_runs[0]["failed_requests"] == 0
+    assert cursor_row is not None
+    assert cursor_row["last_seen_created_utc"] == 1713600300
 
 
 async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):
@@ -482,6 +612,69 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
     assert digest["niche_counts"]["DevOps"] == 3
     assert digest["top_clusters"][0]["canonical_key"] == "alert-fatigue"
     assert "Need better alerts" in digest["recurring_blockers"]
+
+
+async def test_generate_digest_exposes_recent_source_coverage_and_frequency_metrics(db, tmp_path):
+    await db.record_source_coverage_run(
+        source="reddit",
+        scope="python",
+        fetched_posts=100,
+        fetched_comments=500,
+        skipped_deleted=2,
+        skipped_duplicates=1,
+        failed_requests=0,
+        source_method_used="public_json",
+        duration_ms=200,
+    )
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="digest-frequency",
+        url="",
+        title="Need better CSV automation",
+        body="Manual CSV work keeps breaking",
+        category="complaint",
+        summary="CSV workflows are still manual",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Ops",
+        source="reddit",
+        author_hash="digest-author",
+        opportunity_score=75.0,
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="Manual CSV work keeps breaking",
+                source_type="body",
+                post_id="digest-frequency",
+                comment_id=None,
+                permalink="",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=None,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        score_components={"promotion_eligible": True},
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    digest = await pipeline.generate_digest(subreddit="python", hours=24)
+
+    assert digest["source_coverage_runs"][0]["source_method_used"] == "public_json"
+    assert digest["top_items"][0]["normalized_frequency"]["pain_mentions_per_1000_posts"] == pytest.approx(10.0)
+    assert digest["top_items"][0]["normalized_frequency"]["pain_mentions_per_1000_comments"] == pytest.approx(2.0)
+    assert digest["top_items"][0]["normalized_frequency"]["unique_authors_count"] == 1
 
 
 async def test_evidence_first_promotion_demotes_unverified_high_wtp_signals(db, tmp_path):

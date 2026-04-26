@@ -87,6 +87,12 @@ class MacroTrendCluster:
     median_buyer_authority: float = 0.0
     incumbents: list[str] = field(default_factory=list)
     avg_opportunity_score: float = 0.0
+    pain_mentions_per_1000_posts: float = 0.0
+    pain_mentions_per_1000_comments: float = 0.0
+    unique_authors_count: int = 0
+    unique_threads_count: int = 0
+    weekly_delta: int = 0
+    source_activity_baseline: dict[str, Any] = field(default_factory=dict)
     latest_source_created_ts: int | None = None
 
 
@@ -151,6 +157,15 @@ class MacroTrendClusterer:
             opportunity_scores = [float(row.get("opportunity_score") or 0.0) for row in members]
             avg_opportunity_score = round(float(mean(opportunity_scores)), 2) if opportunity_scores else 0.0
             latest_source_created_ts = max(int(row.get("source_created_ts") or 0) for row in members) or None
+            source_counts = Counter(str(row.get("source") or "reddit").strip() or "reddit" for row in members)
+            scope_counts = Counter(str(row.get("subreddit") or "").strip() for row in members)
+            frequency_source = source_counts.most_common(1)[0][0] if source_counts else "reddit"
+            frequency_scope = scope_counts.most_common(1)[0][0] if scope_counts else ""
+            frequency_metrics = await self.db.calculate_normalized_frequency(
+                source=frequency_source,
+                scope=frequency_scope,
+                post_ids=[str(row.get("post_id")) for row in members if row.get("post_id")],
+            )
             label = await self._label_cluster(
                 cluster_text=cluster_text,
                 cluster_size=len(members),
@@ -189,6 +204,12 @@ class MacroTrendClusterer:
                 median_buyer_authority=median_buyer_authority,
                 incumbents=incumbents,
                 avg_opportunity_score=avg_opportunity_score,
+                pain_mentions_per_1000_posts=frequency_metrics["pain_mentions_per_1000_posts"],
+                pain_mentions_per_1000_comments=frequency_metrics["pain_mentions_per_1000_comments"],
+                unique_authors_count=frequency_metrics["unique_authors_count"],
+                unique_threads_count=frequency_metrics["unique_threads_count"],
+                weekly_delta=frequency_metrics["weekly_delta"],
+                source_activity_baseline=frequency_metrics["source_activity_baseline"],
                 latest_source_created_ts=latest_source_created_ts,
                 members=member_rows,
             )
@@ -207,6 +228,12 @@ class MacroTrendClusterer:
                     median_buyer_authority=median_buyer_authority,
                     incumbents=incumbents,
                     avg_opportunity_score=avg_opportunity_score,
+                    pain_mentions_per_1000_posts=frequency_metrics["pain_mentions_per_1000_posts"],
+                    pain_mentions_per_1000_comments=frequency_metrics["pain_mentions_per_1000_comments"],
+                    unique_authors_count=frequency_metrics["unique_authors_count"],
+                    unique_threads_count=frequency_metrics["unique_threads_count"],
+                    weekly_delta=frequency_metrics["weekly_delta"],
+                    source_activity_baseline=frequency_metrics["source_activity_baseline"],
                     latest_source_created_ts=latest_source_created_ts,
                 )
             )
