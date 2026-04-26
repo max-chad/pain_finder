@@ -241,6 +241,123 @@ async def test_competitor_tags_are_propagated_and_normalized():
     assert signal.competitor_tags == ["shopify", "jira"]
 
 
+async def test_classifier_verifies_model_evidence_against_post_and_comments():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Shopify sync creates daily manual work",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="E-commerce",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=[
+            "stock sync lags",
+            "Manual workaround is an export CSV",
+            "invented quote that is not in the source",
+        ],
+        confidence=0.84,
+    )
+    post = make_post(
+        title="Shopify stock sync broken",
+        body="We lose sales when stock sync lags every day.",
+        post_id="p-evidence",
+    )
+    post.top_comments = ["Same here. Manual workaround is an export CSV."]
+
+    clf = Classifier(openrouter=mock_llm, mode="b2b")
+    signal = await clf.classify(post)
+
+    assert signal is not None
+    assert [item.match_type for item in signal.verified_evidence] == ["exact", "exact", "none"]
+    assert signal.verified_evidence[1].source_type == "comment"
+    assert signal.evidence_quality == "multi_quote"
+    assert signal.evidence_match_rate == 0.667
+    assert signal.confidence == 0.84
+    assert signal.needs_human_review is False
+
+
+async def test_classifier_keeps_fuzzy_only_multi_evidence_weak():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Manual approvals still block deals",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="RevOps",
+        evidence_spans=["manual approvals still block deals", "revops exports csv nightly"],
+        confidence=0.7,
+    )
+    post = make_post(
+        title="Manual approvals still block deals",
+        body="RevOps exports CSV nightly to keep customers moving.",
+        post_id="p-fuzzy",
+    )
+
+    clf = Classifier(openrouter=mock_llm, mode="b2b")
+    signal = await clf.classify(post)
+
+    assert signal is not None
+    assert [item.match_type for item in signal.verified_evidence] == ["fuzzy", "fuzzy"]
+    assert signal.evidence_quality == "weak_quote"
+    assert signal.evidence_match_rate == 1.0
+
+
+async def test_classifier_marks_unverified_evidence_for_human_review():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Claims unsupported pain",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="DevOps",
+        evidence_spans=["invented quote that is not in the source"],
+        confidence=0.91,
+    )
+
+    clf = Classifier(openrouter=mock_llm, mode="b2b")
+    signal = await clf.classify(make_post(title="Deployment tooling is broken", body="Our release workflow is painfully slow."))
+
+    assert signal is not None
+    assert signal.evidence_quality == "no_quote"
+    assert signal.evidence_match_rate == 0.0
+    assert signal.needs_human_review is True
+    assert "No verified evidence" in signal.uncertainty_reason
+
+
+async def test_classifier_does_not_synthesize_model_evidence_when_analyzer_returns_none():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Deployment workflow is slow",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="DevOps",
+        evidence_spans=[],
+        confidence=0.72,
+    )
+
+    clf = Classifier(openrouter=mock_llm, mode="b2b")
+    signal = await clf.classify(make_post(title="Deployment tooling is broken", body="Our release workflow is painfully slow."))
+
+    assert signal is not None
+    assert signal.evidence_spans == []
+    assert signal.verified_evidence == []
+    assert signal.evidence_quality == "no_quote"
+    assert signal.evidence_match_rate == 0.0
+    assert signal.needs_human_review is True
+    assert "No evidence spans" in signal.uncertainty_reason
+
+
 def test_extract_comment_market_signals_detects_consensus_workarounds_tools_and_shill_risk():
     post = make_post(
         title="Jira approvals are still painful",

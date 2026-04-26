@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ VALID_BUYER_AUTHORITY = {
     "agency_operator",
     "unknown",
 }
+VALID_EVIDENCE_QUALITY = {"no_quote", "weak_quote", "exact_quote", "multi_quote", "linked_multi_source"}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -36,6 +38,31 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_unit_float(value: Any) -> float:
+    return round(max(0.0, min(1.0, _safe_float(value))), 3)
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _safe_bool(value: Any) -> bool:
@@ -210,7 +237,23 @@ def _default_prediction(post: Post, *, reference_now_ts: int, current_opportunit
             reference_now_ts=reference_now_ts,
         ),
         "analysis_mode": "missing",
+        "verified_evidence": [],
+        "evidence_quality": "no_quote",
+        "evidence_match_rate": 0.0,
+        "confidence": 0.0,
+        "uncertainty_reason": "",
+        "needs_human_review": False,
     }
+
+
+def _verified_evidence_payload(signal: PainSignal) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for item in signal.verified_evidence:
+        if is_dataclass(item):
+            payload.append(asdict(item))
+        elif isinstance(item, dict):
+            payload.append(dict(item))
+    return payload
 
 
 def prediction_from_signal(
@@ -239,6 +282,12 @@ def prediction_from_signal(
             "buyer_authority": "unknown",
             "opportunity_bucket": bucket,
             "analysis_mode": prediction_status,
+            "verified_evidence": [],
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0.0,
+            "confidence": 0.0,
+            "uncertainty_reason": "",
+            "needs_human_review": False,
         }
 
     return {
@@ -258,6 +307,16 @@ def prediction_from_signal(
         "willingness_to_pay": _safe_int(signal.willingness_to_pay, default=0),
         "niche_category": str(signal.niche_category or ""),
         "competitor_tags": [str(tag) for tag in signal.competitor_tags or []],
+        "verified_evidence": _verified_evidence_payload(signal),
+        "evidence_quality": _normalized_choice(
+            signal.evidence_quality,
+            allowed=VALID_EVIDENCE_QUALITY,
+            fallback="no_quote",
+        ),
+        "evidence_match_rate": _coerce_unit_float(signal.evidence_match_rate),
+        "confidence": _coerce_unit_float(signal.confidence),
+        "uncertainty_reason": str(signal.uncertainty_reason or ""),
+        "needs_human_review": bool(signal.needs_human_review),
     }
 
 
@@ -310,6 +369,35 @@ def _binary_metrics(*, tp: int, fp: int, fn: int) -> dict[str, Any]:
     }
 
 
+def _prediction_verified_evidence(prediction: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = prediction.get("verified_evidence")
+    if raw is None:
+        raw = prediction.get("verified_evidence_json")
+    return [item for item in _json_list(raw) if isinstance(item, dict)]
+
+
+def _prediction_evidence_quality(prediction: dict[str, Any]) -> str:
+    return _normalized_choice(
+        prediction.get("evidence_quality"),
+        allowed=VALID_EVIDENCE_QUALITY,
+        fallback="no_quote",
+    )
+
+
+def _has_matched_evidence(prediction: dict[str, Any], *, evidence_quality: str, evidence: list[dict[str, Any]]) -> bool:
+    if evidence_quality != "no_quote":
+        return True
+    if _coerce_unit_float(prediction.get("evidence_match_rate")) > 0:
+        return True
+    return any(str(item.get("match_type") or "none").lower() in {"exact", "fuzzy"} for item in evidence)
+
+
+def _has_exact_evidence(*, evidence_quality: str, evidence: list[dict[str, Any]]) -> bool:
+    if evidence:
+        return any(str(item.get("match_type") or "none").lower() == "exact" for item in evidence)
+    return evidence_quality in {"exact_quote", "multi_quote", "linked_multi_source"}
+
+
 def evaluate_predictions(
     *,
     posts: list[Post],
@@ -342,6 +430,13 @@ def evaluate_predictions(
     buyer_authority_matches = 0
     evaluated_count = 0
     prediction_status_counts: dict[str, int] = defaultdict(int)
+    evidence_quality_counts: dict[str, int] = defaultdict(int)
+    evidence_predicted_pain_count = 0
+    evidence_coverage_count = 0
+    evidence_exact_match_count = 0
+    evidence_needs_review_count = 0
+    evidence_match_rate_sum = 0.0
+    evidence_confidence_sum = 0.0
 
     for post_id, label in label_by_post_id.items():
         post = posts_by_id.get(post_id)
@@ -367,6 +462,19 @@ def evaluate_predictions(
             current_opportunity_max_age_days=current_opportunity_max_age_days,
             reference_now_ts=resolved_reference_now_ts,
         ))
+        evidence = _prediction_verified_evidence(prediction)
+        evidence_quality = _prediction_evidence_quality(prediction)
+        if predicted_is_pain:
+            evidence_predicted_pain_count += 1
+            evidence_quality_counts[evidence_quality] += 1
+            evidence_match_rate_sum += _coerce_unit_float(prediction.get("evidence_match_rate"))
+            evidence_confidence_sum += _coerce_unit_float(prediction.get("confidence"))
+            if _safe_bool(prediction.get("needs_human_review")):
+                evidence_needs_review_count += 1
+            if _has_matched_evidence(prediction, evidence_quality=evidence_quality, evidence=evidence):
+                evidence_coverage_count += 1
+            if _has_exact_evidence(evidence_quality=evidence_quality, evidence=evidence):
+                evidence_exact_match_count += 1
 
         label_is_pain = bool(label["is_pain"])
         label_is_monetizable = bool(label["is_monetizable"])
@@ -406,6 +514,8 @@ def evaluate_predictions(
         for actual, counts in sorted(post_type_confusion.items())
     }
     ordered_status_counts = {status: prediction_status_counts[status] for status in sorted(prediction_status_counts)}
+    ordered_evidence_quality_counts = {quality: evidence_quality_counts[quality] for quality in sorted(evidence_quality_counts)}
+    evidence_denominator = evidence_predicted_pain_count or 1
 
     return {
         "dataset_size": len(label_by_post_id),
@@ -423,4 +533,16 @@ def evaluate_predictions(
         "post_type_confusion": ordered_confusion,
         "first_handness_accuracy": round(first_handness_matches / evaluated_count, 3) if evaluated_count else 0.0,
         "buyer_authority_accuracy": round(buyer_authority_matches / evaluated_count, 3) if evaluated_count else 0.0,
+        "evidence": {
+            "predicted_pain_count": evidence_predicted_pain_count,
+            "coverage_count": evidence_coverage_count,
+            "coverage_rate": round(evidence_coverage_count / evidence_denominator, 3),
+            "exact_match_count": evidence_exact_match_count,
+            "exact_match_rate": round(evidence_exact_match_count / evidence_denominator, 3),
+            "needs_human_review_count": evidence_needs_review_count,
+            "needs_human_review_rate": round(evidence_needs_review_count / evidence_denominator, 3),
+            "avg_match_rate": round(evidence_match_rate_sum / evidence_denominator, 3),
+            "avg_confidence": round(evidence_confidence_sum / evidence_denominator, 3),
+            "quality_counts": ordered_evidence_quality_counts,
+        },
     }

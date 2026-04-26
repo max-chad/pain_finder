@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from evidence import EvidenceSource, VerifiedEvidence, verify_evidence_spans
 from openrouter import AnalysisResult, OpenRouterClient
 from scraper import Post
 
@@ -298,6 +299,12 @@ class PainSignal:
     first_handness: str = "unknown"
     buyer_authority: str = "unknown"
     evidence_spans: list[str] = field(default_factory=list)
+    verified_evidence: list[VerifiedEvidence] = field(default_factory=list)
+    evidence_quality: str = "no_quote"
+    evidence_match_rate: float = 0.0
+    confidence: float = 0.0
+    uncertainty_reason: str = ""
+    needs_human_review: bool = False
     opportunity_bucket: str = "unknown_age"
     buyer_authority_score: float = 0.55
     workflow_frequency_score: float = 0.0
@@ -501,11 +508,103 @@ class Classifier:
             spans.append(post.title[:160])
         return spans[:3]
 
+    @staticmethod
+    def _body_without_appended_comments(body: str) -> str:
+        marker = "\n\nTop comments:\n"
+        if marker in body:
+            return body.split(marker, 1)[0]
+        if body.startswith("Top comments:\n"):
+            return ""
+        return body
+
+    def _evidence_sources(self, post: Post) -> list[EvidenceSource]:
+        sources: list[EvidenceSource] = []
+        body_text = self._body_without_appended_comments(post.body)
+        if post.title.strip():
+            sources.append(
+                EvidenceSource(
+                    source_type="title",
+                    text=post.title,
+                    post_id=post.post_id,
+                    permalink=post.url,
+                    created_utc=post.source_created_ts,
+                )
+            )
+        if body_text.strip():
+            sources.append(
+                EvidenceSource(
+                    source_type="body",
+                    text=body_text,
+                    post_id=post.post_id,
+                    permalink=post.url,
+                    created_utc=post.source_created_ts,
+                )
+            )
+        for index, comment in enumerate(post.top_comments or [], start=1):
+            if not isinstance(comment, str) or not comment.strip():
+                continue
+            sources.append(
+                EvidenceSource(
+                    source_type="comment",
+                    text=comment,
+                    post_id=post.post_id,
+                    comment_id=f"{post.post_id}:comment:{index}",
+                    permalink=post.url,
+                    created_utc=post.source_created_ts,
+                )
+            )
+        return sources
+
+    @staticmethod
+    def _evidence_quality(verified_evidence: list[VerifiedEvidence]) -> tuple[str, float, str, bool]:
+        if not verified_evidence:
+            return "no_quote", 0.0, "No evidence spans were supplied by the analyzer.", True
+        matched = [item for item in verified_evidence if item.match_type != "none"]
+        matched_count = len(matched)
+        match_rate = round(matched_count / len(verified_evidence), 3)
+        if matched_count == 0:
+            return "no_quote", 0.0, "No verified evidence matched the source text.", True
+        exact_count = sum(1 for item in matched if item.match_type == "exact")
+        if exact_count >= 2:
+            quality = "multi_quote"
+        elif exact_count == 1:
+            quality = "exact_quote"
+        else:
+            quality = "weak_quote"
+        unmatched_count = len(verified_evidence) - matched_count
+        uncertainty = "" if unmatched_count == 0 else f"{unmatched_count} evidence span(s) did not match source text exactly."
+        return quality, match_rate, uncertainty, match_rate < 0.5
+
+    def _verify_evidence(self, post: Post, evidence_spans: list[str], result: AnalysisResult) -> tuple[list[VerifiedEvidence], str, float, float, str, bool]:
+        verified_evidence = verify_evidence_spans(evidence_spans, self._evidence_sources(post))
+        evidence_quality, evidence_match_rate, uncertainty_reason, needs_human_review = self._evidence_quality(verified_evidence)
+        result_uncertainty = (result.uncertainty_reason or "").strip()
+        if result_uncertainty and uncertainty_reason:
+            uncertainty_reason = f"{result_uncertainty}; {uncertainty_reason}"
+        elif result_uncertainty:
+            uncertainty_reason = result_uncertainty
+        confidence = result.confidence if result.confidence > 0 else evidence_match_rate
+        needs_human_review = bool(result.needs_human_review) or needs_human_review
+        return verified_evidence, evidence_quality, evidence_match_rate, confidence, uncertainty_reason, needs_human_review
+
     def _signal_from_analysis(self, post: Post, result: AnalysisResult, mode: str) -> PainSignal:
         pain_level = max(0, min(10, int(result.pain_level)))
         willingness_to_pay = max(0, min(10, int(result.willingness_to_pay)))
         inferred_post_type = result.post_type or self._infer_post_type(post, category=result.category)
-        evidence_spans = result.evidence_spans or self._extract_evidence_spans(post)
+        if result.evidence_spans:
+            evidence_spans = list(result.evidence_spans)
+        elif mode == "legacy_llm":
+            evidence_spans = self._extract_evidence_spans(post)
+        else:
+            evidence_spans = []
+        (
+            verified_evidence,
+            evidence_quality,
+            evidence_match_rate,
+            confidence,
+            uncertainty_reason,
+            needs_human_review,
+        ) = self._verify_evidence(post, evidence_spans, result)
         first_handness = result.first_handness if result.first_handness != "unknown" else self._infer_first_handness(post, post_type=inferred_post_type)
         buyer_authority = result.buyer_authority if result.buyer_authority != "unknown" else self._infer_buyer_authority(post)
         return PainSignal(
@@ -524,6 +623,12 @@ class Classifier:
             first_handness=first_handness,
             buyer_authority=buyer_authority,
             evidence_spans=evidence_spans,
+            verified_evidence=verified_evidence,
+            evidence_quality=evidence_quality,
+            evidence_match_rate=evidence_match_rate,
+            confidence=confidence,
+            uncertainty_reason=uncertainty_reason,
+            needs_human_review=needs_human_review,
         )
 
     async def classify(self, post: Post) -> PainSignal | None:
@@ -605,6 +710,9 @@ class Classifier:
 
         category = self._keyword_category(post)
         inferred_post_type = self._infer_post_type(post, category=category)
+        evidence_spans = self._extract_evidence_spans(post)
+        verified_evidence = verify_evidence_spans(evidence_spans, self._evidence_sources(post))
+        evidence_quality, evidence_match_rate, uncertainty_reason, needs_human_review = self._evidence_quality(verified_evidence)
         return PainSignal(
             post=post,
             category=category,
@@ -619,7 +727,13 @@ class Classifier:
             post_type=inferred_post_type,
             first_handness=self._infer_first_handness(post, post_type=inferred_post_type),
             buyer_authority=self._infer_buyer_authority(post),
-            evidence_spans=self._extract_evidence_spans(post),
+            evidence_spans=evidence_spans,
+            verified_evidence=verified_evidence,
+            evidence_quality=evidence_quality,
+            evidence_match_rate=evidence_match_rate,
+            confidence=evidence_match_rate,
+            uncertainty_reason=uncertainty_reason,
+            needs_human_review=needs_human_review,
         )
 
     async def classify_batch(self, posts: list[Post]) -> list[PainSignal]:

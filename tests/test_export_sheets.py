@@ -1,3 +1,4 @@
+import csv
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from export_sheets import ExportService
@@ -38,6 +39,88 @@ async def test_export_service_writes_csv_and_returns_warning_when_sheets_fails(t
     assert result.csv_path.endswith(".csv")
     assert result.warning is not None
     assert result.sheet_url is None
+
+
+async def test_export_service_writes_verified_evidence_fields_to_csv(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "shopify",
+            "source": "reddit",
+            "post_id": "verified-csv",
+            "title": "Need better inventory sync",
+            "summary": "Inventory sync keeps lagging.",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "E-commerce",
+            "competitor_tags": '["shopify"]',
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "",
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.82,
+            "needs_human_review": 0,
+            "verified_evidence_json": '[{"quote":"stock sync lags","match_type":"exact"}]',
+            "url": "https://reddit.com/verified-csv",
+        }
+    ]
+
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+    result = await service.export(subreddit="shopify")
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        exported_rows = list(csv.DictReader(handle))
+
+    assert exported_rows[0]["evidence_quality"] == "exact_quote"
+    assert exported_rows[0]["evidence_match_rate"] == "1.0"
+    assert exported_rows[0]["confidence"] == "0.82"
+    assert exported_rows[0]["needs_human_review"] == "0"
+    assert "stock sync lags" in exported_rows[0]["verified_evidence_json"]
+
+
+async def test_export_service_sanitizes_spreadsheet_formula_prefixes(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "shopify",
+            "post_id": "formula-row",
+            "title": "=IMPORTXML(\"https://example.com\",\"//title\")",
+            "summary": "+SUM(1,2)",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "E-commerce",
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "uncertainty_reason": "@needs review",
+            "url": "https://reddit.com/formula-row",
+        }
+    ]
+
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+    result = await service.export(subreddit="shopify")
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        exported_rows = list(csv.DictReader(handle))
+
+    assert exported_rows[0]["title"].startswith("'=")
+    assert exported_rows[0]["summary"].startswith("'+")
+    assert exported_rows[0]["uncertainty_reason"].startswith("'@")
+
+
+def test_spreadsheet_safe_sanitizes_formula_prefix_after_leading_whitespace():
+    assert ExportService._spreadsheet_safe(" =IMPORTXML('x')") == "' =IMPORTXML('x')"
+    assert ExportService._spreadsheet_safe("\n+SUM(1,2)") == "'\n+SUM(1,2)"
+    assert ExportService._spreadsheet_safe("\t@evil") == "'\t@evil"
+    assert ExportService._spreadsheet_safe("\x00=CMD()") == "'\x00=CMD()"
+    assert ExportService._spreadsheet_safe("\x1f+SUM(1,2)") == "'\x1f+SUM(1,2)"
+    assert ExportService._spreadsheet_safe("plain text") == "plain text"
 
 
 async def test_export_service_works_without_sheets_config(tmp_path):

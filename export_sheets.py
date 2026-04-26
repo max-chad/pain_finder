@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -70,6 +71,12 @@ class ExportService:
             "triage_status",
             "deep_dive_status",
             "deep_dive_summary",
+            "evidence_quality",
+            "evidence_match_rate",
+            "confidence",
+            "uncertainty_reason",
+            "needs_human_review",
+            "verified_evidence_json",
             "url",
         ]
 
@@ -78,22 +85,31 @@ class ExportService:
             writer.writeheader()
             for row in rows:
                 writer.writerow({
-                    "created_at": row.get("created_at", ""),
-                    "subreddit": row.get("subreddit", ""),
-                    "source": row.get("source", ""),
-                    "post_id": row.get("post_id", ""),
-                    "title": row.get("title", ""),
-                    "summary": row.get("summary", ""),
-                    "pain_level": row.get("pain_level", 0),
-                    "willingness_to_pay": row.get("willingness_to_pay", 0),
-                    "niche_category": row.get("niche_category", ""),
-                    "competitor_tags": row.get("competitor_tags", "[]"),
-                    "category": row.get("category", ""),
-                    "severity": row.get("severity", ""),
-                    "triage_status": row.get("triage_status", "new"),
-                    "deep_dive_status": row.get("deep_dive_status", "not_requested"),
-                    "deep_dive_summary": row.get("deep_dive_summary", ""),
-                    "url": row.get("url", ""),
+                    key: self._spreadsheet_safe(value)
+                    for key, value in {
+                        "created_at": row.get("created_at", ""),
+                        "subreddit": row.get("subreddit", ""),
+                        "source": row.get("source", ""),
+                        "post_id": row.get("post_id", ""),
+                        "title": row.get("title", ""),
+                        "summary": row.get("summary", ""),
+                        "pain_level": row.get("pain_level", 0),
+                        "willingness_to_pay": row.get("willingness_to_pay", 0),
+                        "niche_category": row.get("niche_category", ""),
+                        "competitor_tags": row.get("competitor_tags", "[]"),
+                        "category": row.get("category", ""),
+                        "severity": row.get("severity", ""),
+                        "triage_status": row.get("triage_status", "new"),
+                        "deep_dive_status": row.get("deep_dive_status", "not_requested"),
+                        "deep_dive_summary": row.get("deep_dive_summary", ""),
+                        "evidence_quality": row.get("evidence_quality", "no_quote"),
+                        "evidence_match_rate": row.get("evidence_match_rate", 0),
+                        "confidence": row.get("confidence", 0),
+                        "uncertainty_reason": row.get("uncertainty_reason", ""),
+                        "needs_human_review": row.get("needs_human_review", 0),
+                        "verified_evidence_json": row.get("verified_evidence_json", "[]"),
+                        "url": row.get("url", ""),
+                    }.items()
                 })
 
         sheet_url = None
@@ -113,6 +129,20 @@ class ExportService:
             sheet_url=sheet_url,
             warning=warning,
         )
+
+    @staticmethod
+    def _spreadsheet_safe(value: Any) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        first_visible_index = 0
+        while first_visible_index < len(value):
+            char = value[first_visible_index]
+            if not char.isspace() and unicodedata.category(char)[0] != "C":
+                break
+            first_visible_index += 1
+        if first_visible_index < len(value) and value[first_visible_index] in {"=", "+", "-", "@"}:
+            return f"'{value}"
+        return value
 
     def _upsert_google_sheet(
         self,
@@ -142,22 +172,31 @@ class ExportService:
         values = [headers]
         for row in rows:
             values.append([
-                str(row.get("created_at", "")),
-                str(row.get("subreddit", "")),
-                str(row.get("source", "")),
-                str(row.get("post_id", "")),
-                str(row.get("title", "")),
-                str(row.get("summary", "")),
-                str(row.get("pain_level", 0)),
-                str(row.get("willingness_to_pay", 0)),
-                str(row.get("niche_category", "")),
-                str(row.get("competitor_tags", "[]")),
-                str(row.get("category", "")),
-                str(row.get("severity", "")),
-                str(row.get("triage_status", "new")),
-                str(row.get("deep_dive_status", "not_requested")),
-                str(row.get("deep_dive_summary", "")),
-                str(row.get("url", "")),
+                self._spreadsheet_safe(value)
+                for value in [
+                    str(row.get("created_at", "")),
+                    str(row.get("subreddit", "")),
+                    str(row.get("source", "")),
+                    str(row.get("post_id", "")),
+                    str(row.get("title", "")),
+                    str(row.get("summary", "")),
+                    str(row.get("pain_level", 0)),
+                    str(row.get("willingness_to_pay", 0)),
+                    str(row.get("niche_category", "")),
+                    str(row.get("competitor_tags", "[]")),
+                    str(row.get("category", "")),
+                    str(row.get("severity", "")),
+                    str(row.get("triage_status", "new")),
+                    str(row.get("deep_dive_status", "not_requested")),
+                    str(row.get("deep_dive_summary", "")),
+                    str(row.get("evidence_quality", "no_quote")),
+                    str(row.get("evidence_match_rate", 0)),
+                    str(row.get("confidence", 0)),
+                    str(row.get("uncertainty_reason", "")),
+                    str(row.get("needs_human_review", 0)),
+                    str(row.get("verified_evidence_json", "[]")),
+                    str(row.get("url", "")),
+                ]
             ])
 
         worksheet.update("A1", values)

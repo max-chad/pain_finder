@@ -7,6 +7,7 @@ import pytest_asyncio
 
 from classifier import PainSignal
 from db import Database
+from evidence import VerifiedEvidence
 from openrouter import DeepDiveResult
 from pipeline import AnalysisPipeline
 from scraper import Post
@@ -51,6 +52,23 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
         first_handness="first_hand",
         buyer_authority="founder_owner",
         evidence_spans=["still broken", "can't make this work"],
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="still broken",
+                source_type="body",
+                post_id="p1",
+                comment_id=None,
+                permalink="https://reddit.com/p1",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=1776688800,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=0.5,
+        confidence=0.73,
+        uncertainty_reason="one evidence span was unmatched",
+        needs_human_review=False,
         opportunity_bucket="current_opportunity",
     )
 
@@ -104,6 +122,11 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert report_payload[0]["comment_tool_mentions"] == []
     assert report_payload[0]["opportunity_score"] > 0
     assert report_payload[0]["score_components"]["consensus_score"] > 0
+    assert report_payload[0]["evidence_quality"] == "exact_quote"
+    assert report_payload[0]["evidence_match_rate"] == 0.5
+    assert report_payload[0]["confidence"] == 0.73
+    assert report_payload[0]["needs_human_review"] is False
+    assert report_payload[0]["verified_evidence"][0]["quote"] == "still broken"
 
     latest = await db.get_latest_report(subreddit="python")
     assert latest is not None
@@ -116,6 +139,11 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert rows[0]["comment_same_here_count"] == 1
     assert rows[0]["comment_workaround_count"] == 1
     assert rows[0]["opportunity_score"] > 0
+    assert rows[0]["evidence_quality"] == "exact_quote"
+    assert rows[0]["evidence_match_rate"] == 0.5
+    assert rows[0]["confidence"] == 0.73
+    assert rows[0]["needs_human_review"] == 0
+    assert json.loads(rows[0]["verified_evidence_json"])[0]["quote"] == "still broken"
 
 
 async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):

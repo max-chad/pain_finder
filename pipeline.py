@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
@@ -196,6 +196,12 @@ class AnalysisPipeline:
                 first_handness=signal.first_handness,
                 buyer_authority=signal.buyer_authority,
                 evidence_spans=signal.evidence_spans,
+                verified_evidence=signal.verified_evidence,
+                evidence_quality=signal.evidence_quality,
+                evidence_match_rate=signal.evidence_match_rate,
+                confidence=signal.confidence,
+                uncertainty_reason=signal.uncertainty_reason,
+                needs_human_review=signal.needs_human_review,
                 comment_sample=signal.comment_sample,
                 buyer_authority_score=signal.buyer_authority_score,
                 workflow_frequency_score=signal.workflow_frequency_score,
@@ -423,6 +429,8 @@ class AnalysisPipeline:
             row_copy = dict(row)
             row_copy["opportunity_score"] = score
             row_copy["weighted_score"] = score
+            row_copy["verified_evidence"] = self._decode_json_list(row_copy.get("verified_evidence_json"))
+            row_copy["evidence_spans"] = self._decode_json_list(row_copy.get("evidence_spans_json"))
             score_components = row_copy.get("score_components_json")
             if isinstance(score_components, str) and score_components.strip():
                 try:
@@ -482,6 +490,22 @@ class AnalysisPipeline:
             raise
 
     @staticmethod
+    def _verified_evidence_payload(signal: PainSignal) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for item in signal.verified_evidence:
+            if is_dataclass(item):
+                payload.append(asdict(item))
+            elif isinstance(item, dict):
+                payload.append(dict(item))
+        return payload
+
+    @staticmethod
+    def _verified_evidence_match_type(item: Any) -> str:
+        if isinstance(item, dict):
+            return str(item.get("match_type") or "none")
+        return str(getattr(item, "match_type", "none") or "none")
+
+    @staticmethod
     def _build_report_payload(*, signals: list[PainSignal], source: str) -> list[dict[str, Any]]:
         return [
             {
@@ -507,6 +531,12 @@ class AnalysisPipeline:
                 "first_handness": signal.first_handness,
                 "buyer_authority": signal.buyer_authority,
                 "evidence_spans": signal.evidence_spans,
+                "verified_evidence": AnalysisPipeline._verified_evidence_payload(signal),
+                "evidence_quality": signal.evidence_quality,
+                "evidence_match_rate": signal.evidence_match_rate,
+                "confidence": signal.confidence,
+                "uncertainty_reason": signal.uncertainty_reason,
+                "needs_human_review": signal.needs_human_review,
                 "comment_sample": signal.comment_sample,
                 "buyer_authority_score": signal.buyer_authority_score,
                 "workflow_frequency_score": signal.workflow_frequency_score,
@@ -530,7 +560,13 @@ class AnalysisPipeline:
     def _enrich_signal(self, signal: PainSignal) -> None:
         comment_signals = extract_comment_market_signals(signal.post, competitor_tags=signal.competitor_tags)
         recency_score, stale_penalty = self._recency_profile(signal.post, signal.opportunity_bucket)
-        evidence_score = min(1.0, len(signal.evidence_spans) / 3) if signal.evidence_spans else 0.0
+        matched_evidence_count = sum(
+            1 for item in signal.verified_evidence if self._verified_evidence_match_type(item) != "none"
+        )
+        if signal.verified_evidence:
+            evidence_score = min(1.0, matched_evidence_count / 3)
+        else:
+            evidence_score = min(1.0, len(signal.evidence_spans) / 3) if signal.evidence_spans else 0.0
         authority_score = buyer_authority_score(signal.buyer_authority)
         first_hand_score = first_handness_score(signal.first_handness)
         workflow_frequency_score = estimate_workflow_frequency_score(signal.post, signal)
@@ -630,6 +666,18 @@ class AnalysisPipeline:
         if existing and existing.get("deep_dive_status") == "completed":
             return "already_completed"
         return None
+
+    @staticmethod
+    def _decode_json_list(raw: Any) -> list[Any]:
+        if isinstance(raw, list):
+            return raw
+        if not isinstance(raw, str) or not raw.strip():
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     @staticmethod
     def _row_opportunity_score(row: dict[str, Any]) -> float:

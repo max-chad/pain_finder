@@ -19,6 +19,11 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "url": "https://reddit.com/p1",
             "subreddit": "sales",
             "deep_dive_summary": "CSV handoffs between teams keep breaking.",
+            "verified_evidence_json": '[{"quote":"Sales teams still stitch data manually","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.82,
+            "needs_human_review": 0,
             "opportunity_bucket": "current_opportunity",
         },
         {
@@ -33,6 +38,11 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "url": "https://example.com/p2",
             "subreddit": "finance",
             "deep_dive_summary": "Teams export data three times before review.",
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0,
+            "confidence": 0,
+            "needs_human_review": 0,
             "opportunity_bucket": "evergreen_pain",
         },
         {
@@ -86,6 +96,9 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     assert "RevOps" in xml
     assert "FinOps" in xml
     assert "Need better onboarding handoff" in xml
+    assert "Evidence: Sales teams still stitch data manually" in xml
+    assert "Evidence quality: exact_quote | Match rate 1.00 | Confidence 0.82 | Human review no" in xml
+    assert "Evidence quality: no_quote" not in xml
     assert "Pipeline attribution is still fuzzy" in xml
     assert "Forecasting still lives in spreadsheets" in xml
 

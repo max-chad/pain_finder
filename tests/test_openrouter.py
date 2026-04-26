@@ -20,7 +20,9 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
                                 '"summary": "Inventory sync is failing for stores", "category": "complaint", '
                                 '"severity": "high", "post_type": "first_person_pain", '
                                 '"first_handness": "first_hand", "buyer_authority": "founder_owner", '
-                                '"evidence_spans": ["stock sync lags", "we lose sales"]}'
+                                '"evidence_spans": ["stock sync lags", "we lose sales"], '
+                                '"confidence": 0.73, "uncertainty_reason": "", '
+                                '"needs_human_review": false}'
                             )
                         }
                     }
@@ -44,6 +46,9 @@ async def test_analyze_returns_primary_b2b_result(respx_mock):
     assert result.first_handness == "first_hand"
     assert result.buyer_authority == "founder_owner"
     assert result.evidence_spans == ["stock sync lags", "we lose sales"]
+    assert result.confidence == 0.73
+    assert result.uncertainty_reason == ""
+    assert result.needs_human_review is False
 
 
 async def test_analyze_rejects_invalid_primary_schema(respx_mock):
@@ -70,6 +75,58 @@ async def test_analyze_rejects_invalid_primary_schema(respx_mock):
 
     client = OpenRouterClient(api_key="test-key", model="test-model")
     result = await client.analyze_post(title="T", body="B")
+    assert result is None
+
+
+def test_parse_primary_coerces_review_flag_without_inflating_nonfinite_confidence():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    result = client._parse_primary_result(
+        {
+            "is_monetizable": True,
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "E-commerce",
+            "competitor_tags": [],
+            "summary": "Inventory sync keeps failing",
+            "category": "complaint",
+            "severity": "high",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "evidence_spans": ["stock sync lags"],
+            "confidence": float("nan"),
+            "uncertainty_reason": "needs review",
+            "needs_human_review": "true",
+        }
+    )
+
+    assert result is not None
+    assert result.confidence == 0.0
+    assert result.needs_human_review is True
+
+
+def test_parse_primary_rejects_invalid_review_flag():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    result = client._parse_primary_result(
+        {
+            "is_monetizable": True,
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "E-commerce",
+            "competitor_tags": [],
+            "summary": "Inventory sync keeps failing",
+            "category": "complaint",
+            "severity": "high",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "evidence_spans": ["stock sync lags"],
+            "needs_human_review": "maybe",
+        }
+    )
+
     assert result is None
 
 

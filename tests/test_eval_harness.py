@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from classifier import PainSignal
+from evidence import VerifiedEvidence
 from scraper import Post
 
 
@@ -106,6 +107,19 @@ def sample_predictions():
             "buyer_authority": "founder_owner",
             "opportunity_bucket": "current_opportunity",
             "analysis_mode": "dspy_b2b",
+            "verified_evidence": [
+                {
+                    "quote": "manual workflow is awful",
+                    "source_type": "body",
+                    "post_id": "reddit:p1",
+                    "match_type": "exact",
+                    "match_confidence": 1.0,
+                }
+            ],
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.82,
+            "needs_human_review": False,
         },
         {
             "post_id": "reddit:p2",
@@ -118,6 +132,11 @@ def sample_predictions():
             "buyer_authority": "unknown",
             "opportunity_bucket": "current_opportunity",
             "analysis_mode": "legacy_llm",
+            "verified_evidence": [],
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0.0,
+            "confidence": 0.32,
+            "needs_human_review": True,
         },
         {
             "post_id": "reddit:p3",
@@ -163,6 +182,48 @@ def test_evaluate_predictions_computes_core_metrics(eval_harness_module, sample_
     assert metrics["post_type_confusion"]["vendor_rant"]["unclassified"] == 1
     assert metrics["first_handness_accuracy"] == pytest.approx(0.667)
     assert metrics["buyer_authority_accuracy"] == pytest.approx(0.667)
+    assert metrics["evidence"]["predicted_pain_count"] == 2
+    assert metrics["evidence"]["coverage_count"] == 1
+    assert metrics["evidence"]["coverage_rate"] == pytest.approx(0.5)
+    assert metrics["evidence"]["exact_match_count"] == 1
+    assert metrics["evidence"]["exact_match_rate"] == pytest.approx(0.5)
+    assert metrics["evidence"]["needs_human_review_count"] == 1
+    assert metrics["evidence"]["quality_counts"]["exact_quote"] == 1
+    assert metrics["evidence"]["quality_counts"]["no_quote"] == 1
+
+
+def test_evaluate_predictions_does_not_count_fuzzy_only_evidence_as_exact(eval_harness_module, sample_posts, sample_labels):
+    predictions = [
+        {
+            "post_id": "reddit:p1",
+            "prediction_status": "classified",
+            "prescreen_score": 6,
+            "is_pain": True,
+            "is_monetizable": True,
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "opportunity_bucket": "current_opportunity",
+            "verified_evidence": [
+                {"quote": "manual workflow is awful", "match_type": "fuzzy"},
+                {"quote": "takes hours", "match_type": "fuzzy"},
+            ],
+            "evidence_quality": "multi_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.8,
+        }
+    ]
+
+    metrics = eval_harness_module.evaluate_predictions(
+        posts=sample_posts[:1],
+        labels=sample_labels[:1],
+        predictions=predictions,
+        reference_now_ts=REFERENCE_NOW_TS,
+    )
+
+    assert metrics["evidence"]["coverage_count"] == 1
+    assert metrics["evidence"]["exact_match_count"] == 0
+    assert metrics["evidence"]["exact_match_rate"] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio
@@ -200,6 +261,23 @@ async def test_generate_live_predictions_tracks_prescreener_and_bucket(eval_harn
         post_type="first_person_pain",
         first_handness="first_hand",
         buyer_authority="founder_owner",
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="Manual approvals still block deals",
+                source_type="title",
+                post_id="reddit:fresh",
+                comment_id=None,
+                permalink="https://reddit.com/fresh",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=1776384000,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        confidence=0.88,
+        uncertainty_reason="",
+        needs_human_review=False,
     )
 
     class FakeClassifier:
@@ -224,10 +302,17 @@ async def test_generate_live_predictions_tracks_prescreener_and_bucket(eval_harn
     assert predictions[0]["is_pain"] is True
     assert predictions[0]["opportunity_bucket"] == "current_opportunity"
     assert predictions[0]["prescreen_score"] == 5
+    assert predictions[0]["verified_evidence"][0]["quote"] == "Manual approvals still block deals"
+    assert predictions[0]["evidence_quality"] == "exact_quote"
+    assert predictions[0]["evidence_match_rate"] == 1.0
+    assert predictions[0]["confidence"] == 0.88
+    assert predictions[0]["needs_human_review"] is False
     assert predictions[1]["prediction_status"] == "screened_out"
     assert predictions[1]["is_pain"] is False
     assert predictions[1]["opportunity_bucket"] == "evergreen_pain"
     assert predictions[1]["prescreen_score"] == 1
+    assert predictions[1]["evidence_quality"] == "no_quote"
+    assert predictions[1]["needs_human_review"] is False
 
 
 def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
@@ -280,6 +365,19 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
                 "buyer_authority": "founder_owner",
                 "opportunity_bucket": "current_opportunity",
                 "analysis_mode": "dspy_b2b",
+                "verified_evidence": [
+                    {
+                        "quote": "This takes hours every week",
+                        "source_type": "body",
+                        "post_id": "reddit:p1",
+                        "match_type": "exact",
+                        "match_confidence": 1.0,
+                    }
+                ],
+                "evidence_quality": "exact_quote",
+                "evidence_match_rate": 1.0,
+                "confidence": 0.9,
+                "needs_human_review": False,
             }
         ],
     )
@@ -313,10 +411,13 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     assert metrics["dataset_size"] == 1
     assert metrics["pain"]["precision"] == pytest.approx(1.0)
     assert metrics["stale_leakage"]["count"] == 0
+    assert metrics["evidence"]["coverage_rate"] == pytest.approx(1.0)
+    assert metrics["evidence"]["exact_match_rate"] == pytest.approx(1.0)
 
     stdout = capsys.readouterr().out
     assert "dataset_size=1" in stdout
     assert "pain_precision=1.000" in stdout
+    assert "evidence_coverage=1.000" in stdout
 
 
 def test_labels_from_jsonl_rejects_invalid_values(eval_harness_module, tmp_path):

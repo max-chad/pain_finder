@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -57,7 +58,8 @@ Task:
 5. Classify the post type before monetization scoring.
 6. Identify first-handness and buyer authority.
 7. Return 1-3 short evidence spans copied from the post text.
-8. Keep compatibility fields (category, severity).
+8. Estimate confidence and flag whether human review is needed.
+9. Keep compatibility fields (category, severity).
 
 Reject non-business consumer venting as non-monetizable with low scores.
 
@@ -74,7 +76,10 @@ Return ONLY valid JSON with this exact schema:
   "post_type": "first_person_pain",
   "first_handness": "first_hand",
   "buyer_authority": "founder_owner",
-  "evidence_spans": ["copied evidence"]
+  "evidence_spans": ["copied evidence"],
+  "confidence": 0.8,
+  "uncertainty_reason": "",
+  "needs_human_review": false
 }
 
 Rules:
@@ -85,6 +90,9 @@ Rules:
 - first_handness: one of first_hand, second_hand, aggregated, speculative, unknown
 - buyer_authority: one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown
 - evidence_spans: array with 1..3 short quotes copied from the post, max 160 chars each
+- confidence: number 0..1 for classification confidence after reading the evidence
+- uncertainty_reason: short reason when confidence is low or evidence is ambiguous, else empty string
+- needs_human_review: true when evidence is missing/ambiguous or classification confidence is low
 
 Title: {title}
 Body: {body}
@@ -98,7 +106,10 @@ LEGACY_PROMPT_TEMPLATE = """Analyze this post and extract pain point JSON:
   "post_type": "advice_thread",
   "first_handness": "unknown",
   "buyer_authority": "unknown",
-  "evidence_spans": ["copied evidence"]
+  "evidence_spans": ["copied evidence"],
+  "confidence": 0.5,
+  "uncertainty_reason": "legacy fallback",
+  "needs_human_review": true
 }
 
 Title: {title}
@@ -184,6 +195,9 @@ class AnalysisResult:
     first_handness: str = "unknown"
     buyer_authority: str = "unknown"
     evidence_spans: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    uncertainty_reason: str = ""
+    needs_human_review: bool = False
     raw_payload: dict[str, Any] | None = None
 
 
@@ -829,6 +843,32 @@ class OpenRouterClient:
             return "solution_request"
         return "advice_thread"
 
+    @staticmethod
+    def _coerce_confidence(value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(numeric):
+            return 0.0
+        return round(max(0.0, min(1.0, numeric)), 3)
+
+    @staticmethod
+    def _coerce_review_flag(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in {0, 1}:
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "yes", "1"}:
+                return True
+            if normalized in {"false", "no", "0"}:
+                return False
+        return None
+
     def _parse_primary_result(self, payload: dict[str, Any]) -> AnalysisResult | None:
         category = payload.get("category")
         severity = payload.get("severity")
@@ -842,6 +882,9 @@ class OpenRouterClient:
         first_handness = payload.get("first_handness", "unknown")
         buyer_authority = payload.get("buyer_authority", "unknown")
         evidence_spans = payload.get("evidence_spans", [])
+        confidence = self._coerce_confidence(payload.get("confidence", 0.0))
+        uncertainty_reason = payload.get("uncertainty_reason", "")
+        needs_human_review = payload.get("needs_human_review", False)
 
         if category not in VALID_CATEGORIES:
             return None
@@ -868,6 +911,10 @@ class OpenRouterClient:
         if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
             return None
         cleaned_evidence = [item.strip()[:160] for item in evidence_spans if item.strip()][:3]
+        uncertainty_reason = uncertainty_reason.strip()[:240] if isinstance(uncertainty_reason, str) else ""
+        needs_human_review = self._coerce_review_flag(needs_human_review)
+        if needs_human_review is None:
+            return None
 
         return AnalysisResult(
             category=category,
@@ -882,6 +929,9 @@ class OpenRouterClient:
             first_handness=first_handness,
             buyer_authority=buyer_authority,
             evidence_spans=cleaned_evidence,
+            confidence=confidence,
+            uncertainty_reason=uncertainty_reason,
+            needs_human_review=needs_human_review,
             raw_payload=payload,
         )
 
@@ -894,6 +944,9 @@ class OpenRouterClient:
         first_handness = payload.get("first_handness", "unknown")
         buyer_authority = payload.get("buyer_authority", "unknown")
         evidence_spans = payload.get("evidence_spans", [])
+        confidence = self._coerce_confidence(payload.get("confidence", 0.0))
+        uncertainty_reason = payload.get("uncertainty_reason", "")
+        needs_human_review = payload.get("needs_human_review", False)
 
         if category not in VALID_CATEGORIES:
             return None
@@ -911,6 +964,10 @@ class OpenRouterClient:
             return None
         if not isinstance(evidence_spans, list) or any(not isinstance(item, str) for item in evidence_spans):
             evidence_spans = []
+        uncertainty_reason = uncertainty_reason.strip()[:240] if isinstance(uncertainty_reason, str) else ""
+        needs_human_review = self._coerce_review_flag(needs_human_review)
+        if needs_human_review is None:
+            return None
 
         return AnalysisResult(
             category=category,
@@ -921,6 +978,9 @@ class OpenRouterClient:
             first_handness=first_handness,
             buyer_authority=buyer_authority,
             evidence_spans=[item.strip()[:160] for item in evidence_spans if isinstance(item, str) and item.strip()][:3],
+            confidence=confidence,
+            uncertainty_reason=uncertainty_reason,
+            needs_human_review=needs_human_review,
             raw_payload=payload,
         )
 

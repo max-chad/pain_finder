@@ -1,5 +1,7 @@
 import json
 import logging
+import math
+from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -36,6 +38,12 @@ CREATE TABLE IF NOT EXISTS pain_points (
     first_handness TEXT DEFAULT 'unknown',
     buyer_authority TEXT DEFAULT 'unknown',
     evidence_spans_json TEXT DEFAULT '[]',
+    verified_evidence_json TEXT DEFAULT '[]',
+    evidence_quality TEXT DEFAULT 'no_quote',
+    evidence_match_rate REAL DEFAULT 0,
+    confidence REAL DEFAULT 0,
+    uncertainty_reason TEXT DEFAULT '',
+    needs_human_review INTEGER DEFAULT 0,
     comment_sample_json TEXT DEFAULT '[]',
     buyer_authority_score REAL DEFAULT 0.55,
     workflow_frequency_score REAL DEFAULT 0,
@@ -247,6 +255,12 @@ PAIN_POINT_COLUMNS = {
     "first_handness": "TEXT DEFAULT 'unknown'",
     "buyer_authority": "TEXT DEFAULT 'unknown'",
     "evidence_spans_json": "TEXT DEFAULT '[]'",
+    "verified_evidence_json": "TEXT DEFAULT '[]'",
+    "evidence_quality": "TEXT DEFAULT 'no_quote'",
+    "evidence_match_rate": "REAL DEFAULT 0",
+    "confidence": "REAL DEFAULT 0",
+    "uncertainty_reason": "TEXT DEFAULT ''",
+    "needs_human_review": "INTEGER DEFAULT 0",
     "comment_sample_json": "TEXT DEFAULT '[]'",
     "buyer_authority_score": "REAL DEFAULT 0.55",
     "workflow_frequency_score": "REAL DEFAULT 0",
@@ -344,6 +358,7 @@ class Database:
             "2026_02_25_phase_5_8_expansion",
             "2026_02_27_cross_source_dedup",
             "2026_04_22_source_context_and_opportunity_bucket",
+            "2026_04_26_verified_evidence_fields",
         ]
         for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
@@ -419,6 +434,74 @@ class Database:
             out.append(clean)
         return out
 
+    @staticmethod
+    def _coerce_unit_float(value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(numeric):
+            return 0.0
+        return round(max(0.0, min(1.0, numeric)), 3)
+
+    @staticmethod
+    def _coerce_bool_int(value: Any) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return int(bool(value))
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "y", "on"}:
+                return 1
+            if normalized in {"0", "false", "no", "n", "off", ""}:
+                return 0
+        return 0
+
+    @staticmethod
+    def _normalize_verified_evidence(items: list[Any] | None) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for item in items or []:
+            if is_dataclass(item):
+                raw = asdict(item)
+            elif isinstance(item, dict):
+                raw = dict(item)
+            else:
+                continue
+            quote = str(raw.get("quote") or "").strip()[:240]
+            if not quote:
+                continue
+            match_type = str(raw.get("match_type") or "none").strip().lower()
+            if match_type not in {"exact", "fuzzy", "none"}:
+                match_type = "none"
+            try:
+                match_confidence = Database._coerce_unit_float(raw.get("match_confidence"))
+            except (TypeError, ValueError):
+                match_confidence = 0.0
+            created_utc = raw.get("created_utc")
+            if created_utc is not None:
+                try:
+                    created_utc = int(created_utc)
+                except (TypeError, ValueError):
+                    created_utc = None
+            normalized.append(
+                {
+                    "quote": quote,
+                    "source_type": str(raw.get("source_type") or "").strip()[:32],
+                    "post_id": str(raw.get("post_id") or "").strip()[:128],
+                    "comment_id": str(raw.get("comment_id")).strip()[:128] if raw.get("comment_id") is not None else None,
+                    "permalink": str(raw.get("permalink") or "").strip()[:500],
+                    "match_type": match_type,
+                    "match_confidence": match_confidence,
+                    "created_utc": created_utc,
+                }
+            )
+            if len(normalized) >= 10:
+                break
+        return normalized
+
     async def _replace_competitor_tags(self, post_id: str, tags: list[str]) -> None:
         await self._conn.execute("DELETE FROM pain_point_competitors WHERE post_id = ?", (post_id,))
         for tag in tags:
@@ -452,6 +535,12 @@ class Database:
         first_handness: str = "unknown",
         buyer_authority: str = "unknown",
         evidence_spans: list[str] | None = None,
+        verified_evidence: list[Any] | None = None,
+        evidence_quality: str = "no_quote",
+        evidence_match_rate: float = 0.0,
+        confidence: float = 0.0,
+        uncertainty_reason: str = "",
+        needs_human_review: bool = False,
         comment_sample: list[str] | None = None,
         buyer_authority_score: float = 0.55,
         workflow_frequency_score: float = 0.0,
@@ -488,6 +577,14 @@ class Database:
             for item in (evidence_spans or [])
             if isinstance(item, str) and str(item).strip()
         ][:3]
+        normalized_verified_evidence = self._normalize_verified_evidence(verified_evidence)
+        normalized_evidence_quality = str(evidence_quality or "no_quote").strip()[:64] or "no_quote"
+        if normalized_evidence_quality not in {"no_quote", "exact_quote", "weak_quote", "multi_quote", "linked_multi_source"}:
+            normalized_evidence_quality = "no_quote"
+        normalized_evidence_match_rate = self._coerce_unit_float(evidence_match_rate)
+        normalized_confidence = self._coerce_unit_float(confidence)
+        normalized_needs_human_review = self._coerce_bool_int(needs_human_review)
+        normalized_uncertainty_reason = str(uncertainty_reason or "").strip()[:500]
         normalized_comment_sample = [
             str(item).strip()[:240]
             for item in (comment_sample or [])
@@ -504,13 +601,15 @@ class Database:
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
                     competitor_tags, source, source_created_at, source_created_ts, author_name,
                     opportunity_bucket, post_type, first_handness, buyer_authority, evidence_spans_json,
+                    verified_evidence_json, evidence_quality, evidence_match_rate, confidence,
+                    uncertainty_reason, needs_human_review,
                     comment_sample_json, buyer_authority_score, workflow_frequency_score, impact_score,
                     consensus_score, incumbent_failure_score, recency_score, stale_penalty, solved_penalty,
                     opportunity_score, score_components_json, comment_consensus_count, comment_same_here_count,
                     comment_workaround_count, comment_tool_mentions_json, comment_shill_risk,
                     triage_status, analysis_mode, deep_dive_status, deep_dive_summary, analysis_payload_json,
                     emb_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -533,6 +632,12 @@ class Database:
                     first_handness = excluded.first_handness,
                     buyer_authority = excluded.buyer_authority,
                     evidence_spans_json = excluded.evidence_spans_json,
+                    verified_evidence_json = excluded.verified_evidence_json,
+                    evidence_quality = excluded.evidence_quality,
+                    evidence_match_rate = excluded.evidence_match_rate,
+                    confidence = excluded.confidence,
+                    uncertainty_reason = excluded.uncertainty_reason,
+                    needs_human_review = excluded.needs_human_review,
                     comment_sample_json = excluded.comment_sample_json,
                     buyer_authority_score = excluded.buyer_authority_score,
                     workflow_frequency_score = excluded.workflow_frequency_score,
@@ -580,6 +685,12 @@ class Database:
                     first_handness,
                     buyer_authority,
                     json.dumps(normalized_evidence_spans, ensure_ascii=False),
+                    json.dumps(normalized_verified_evidence, ensure_ascii=False),
+                    normalized_evidence_quality,
+                    normalized_evidence_match_rate,
+                    normalized_confidence,
+                    normalized_uncertainty_reason,
+                    normalized_needs_human_review,
                     json.dumps(normalized_comment_sample, ensure_ascii=False),
                     float(buyer_authority_score),
                     float(workflow_frequency_score),

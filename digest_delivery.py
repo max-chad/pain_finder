@@ -187,6 +187,12 @@ class DailyDigestDocumentService:
                 )
                 metrics.style = "Intense Quote"
                 document.add_paragraph(summary)
+                evidence = self._verified_evidence(row)
+                if evidence:
+                    document.add_paragraph(f"Evidence: {evidence[0].get('quote', '')}")
+                evidence_meta = self._evidence_metadata(row)
+                if evidence_meta:
+                    document.add_paragraph(evidence_meta)
                 document.add_paragraph(f"Competitors/tags: {competitors}")
                 if deep_dive_summary:
                     document.add_paragraph(f"Deep dive: {deep_dive_summary}")
@@ -238,6 +244,73 @@ class DailyDigestDocumentService:
             if parsed:
                 return [str(parsed)]
         return []
+
+    @staticmethod
+    def _verified_evidence(row: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = row.get("verified_evidence")
+        if isinstance(raw, list):
+            parsed = raw
+        else:
+            raw = row.get("verified_evidence_json")
+            if not isinstance(raw, str) or not raw.strip():
+                return []
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        if not isinstance(parsed, list):
+            return []
+        evidence = [
+            item
+            for item in parsed
+            if isinstance(item, dict)
+            and str(item.get("quote") or "").strip()
+            and str(item.get("match_type") or "none").lower() in {"exact", "fuzzy"}
+        ]
+        return sorted(evidence, key=lambda item: 0 if str(item.get("match_type") or "") == "exact" else 1)
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y"}
+        return False
+
+    @staticmethod
+    def _evidence_metadata(row: dict[str, Any]) -> str:
+        quality = str(row.get("evidence_quality") or "").strip()
+        if not quality:
+            return ""
+        try:
+            match_rate = float(row.get("evidence_match_rate") or 0.0)
+        except (TypeError, ValueError):
+            match_rate = 0.0
+        try:
+            confidence = float(row.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        needs_review = DailyDigestDocumentService._coerce_bool(row.get("needs_human_review"))
+        uncertainty_reason = str(row.get("uncertainty_reason") or "").strip()
+        if (
+            quality == "no_quote"
+            and match_rate == 0.0
+            and confidence == 0.0
+            and not needs_review
+            and not uncertainty_reason
+            and not DailyDigestDocumentService._verified_evidence(row)
+        ):
+            return ""
+        human_review = "yes" if needs_review else "no"
+        metadata = (
+            f"Evidence quality: {quality} | Match rate {match_rate:.2f} | "
+            f"Confidence {confidence:.2f} | Human review {human_review}"
+        )
+        if uncertainty_reason:
+            metadata = f"{metadata} | Reason: {uncertainty_reason}"
+        return metadata
 
     @staticmethod
     def _recurring_blockers(rows: list[dict[str, Any]]) -> list[str]:

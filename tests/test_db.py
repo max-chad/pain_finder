@@ -43,6 +43,92 @@ async def test_insert_and_fetch_pain_point(db):
     assert results[0]["opportunity_bucket"] == "current_opportunity"
 
 
+async def test_insert_pain_point_persists_verified_evidence_quality(db):
+    verified = [
+        {
+            "quote": "stock sync lags",
+            "source_type": "body",
+            "post_id": "verified1",
+            "comment_id": None,
+            "permalink": "https://reddit.com/r/shopify/comments/verified1",
+            "match_type": "exact",
+            "match_confidence": 1.0,
+            "created_utc": 1776688800,
+        }
+    ]
+
+    await db.insert_pain_point(
+        subreddit="shopify",
+        post_id="verified1",
+        url="https://reddit.com/r/shopify/comments/verified1",
+        title="Shopify sync broken",
+        body="stock sync lags every day",
+        category="complaint",
+        summary="Inventory sync lag",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=9,
+        verified_evidence=verified,
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        confidence=0.82,
+        uncertainty_reason="",
+        needs_human_review=False,
+    )
+
+    row = await db.get_pain_point("verified1")
+    assert row is not None
+    assert json.loads(row["verified_evidence_json"]) == verified
+    assert row["evidence_quality"] == "exact_quote"
+    assert row["evidence_match_rate"] == 1.0
+    assert row["confidence"] == 0.82
+    assert row["needs_human_review"] == 0
+
+
+async def test_insert_pain_point_coerces_evidence_quality_numbers_and_review_flag(db):
+    await db.insert_pain_point(
+        subreddit="shopify",
+        post_id="coerce-evidence",
+        url="https://reddit.com/r/shopify/comments/coerce-evidence",
+        title="Shopify sync broken",
+        body="stock sync lags every day",
+        category="complaint",
+        summary="Inventory sync lag",
+        severity="high",
+        evidence_match_rate="-0.2",
+        confidence="1.5",
+        needs_human_review="yes",
+    )
+
+    row = await db.get_pain_point("coerce-evidence")
+    assert row is not None
+    assert row["evidence_match_rate"] == 0.0
+    assert row["confidence"] == 1.0
+    assert row["needs_human_review"] == 1
+
+
+async def test_insert_pain_point_preserves_linked_multi_source_evidence_quality(db):
+    await db.insert_pain_point(
+        subreddit="shopify",
+        post_id="linked-multi-source",
+        url="https://reddit.com/r/shopify/comments/linked-multi-source",
+        title="Shopify sync broken",
+        body="stock sync lags every day",
+        category="complaint",
+        summary="Inventory sync lag",
+        severity="high",
+        verified_evidence=[{"quote": "stock sync lags", "match_type": "exact"}],
+        evidence_quality="linked_multi_source",
+        evidence_match_rate=1.0,
+        confidence=0.9,
+    )
+
+    row = await db.get_pain_point("linked-multi-source")
+    assert row is not None
+    assert row["evidence_quality"] == "linked_multi_source"
+
+
 async def test_duplicate_post_id_upserts(db):
     await db.insert_pain_point(
         subreddit="python",

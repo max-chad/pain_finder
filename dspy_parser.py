@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
+import re
 from typing import Any
 
-from openrouter import AnalysisResult, VALID_CATEGORIES, VALID_SEVERITIES
+from openrouter import (
+    AnalysisResult,
+    VALID_BUYER_AUTHORITIES,
+    VALID_CATEGORIES,
+    VALID_FIRST_HANDNESS,
+    VALID_POST_TYPES,
+    VALID_SEVERITIES,
+)
 from scraper import Post
 
 logger = logging.getLogger(__name__)
@@ -81,6 +91,17 @@ class DSPyRedditPainParser:
             niche_category = dspy.OutputField(desc="short B2B niche category")
             competitor_tags_csv = dspy.OutputField(desc="comma-separated lowercase software tags")
             summary = dspy.OutputField(desc="one-sentence summary of the pain")
+            post_type = dspy.OutputField(
+                desc="one of first_person_pain, solution_request, founder_pitch, news_analysis, tool_comparison, advice_thread, vendor_rant"
+            )
+            first_handness = dspy.OutputField(desc="one of first_hand, second_hand, aggregated, speculative, unknown")
+            buyer_authority = dspy.OutputField(
+                desc="one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown"
+            )
+            evidence_spans = dspy.OutputField(desc="1-3 short exact quotes copied from title, body, or comments")
+            confidence = dspy.OutputField(desc="number 0..1 for classification confidence after reading evidence")
+            uncertainty_reason = dspy.OutputField(desc="short reason when confidence/evidence is ambiguous, else empty")
+            needs_human_review = dspy.OutputField(desc="true if evidence is missing/ambiguous or confidence is low")
 
         lm = dspy.LM(self._model_name_for_provider(), **self._lm_kwargs())
         program = dspy.ChainOfThought(RedditPainSignature)
@@ -127,6 +148,13 @@ class DSPyRedditPainParser:
         pain_level = self._int_field(prediction, "pain_level")
         willingness_to_pay = self._int_field(prediction, "willingness_to_pay")
         competitor_tags = self._competitor_tags(prediction)
+        post_type = self._choice_field(prediction, "post_type", VALID_POST_TYPES, fallback="advice_thread")
+        first_handness = self._choice_field(prediction, "first_handness", VALID_FIRST_HANDNESS, fallback="unknown")
+        buyer_authority = self._choice_field(prediction, "buyer_authority", VALID_BUYER_AUTHORITIES, fallback="unknown")
+        evidence_spans = self._evidence_spans(prediction)
+        confidence = self._confidence_field(prediction, "confidence")
+        uncertainty_reason = self._string_field(prediction, "uncertainty_reason")[:240]
+        needs_human_review = self._bool_field(prediction, "needs_human_review")
 
         if category not in VALID_CATEGORIES:
             return None
@@ -140,6 +168,12 @@ class DSPyRedditPainParser:
             return None
         if willingness_to_pay is None or not (0 <= willingness_to_pay <= 10):
             return None
+        if post_type is None or first_handness is None or buyer_authority is None:
+            return None
+        if confidence is None:
+            confidence = 0.0
+        if needs_human_review is None:
+            needs_human_review = not evidence_spans or confidence < 0.5
 
         raw_payload = {
             "category": category,
@@ -150,6 +184,13 @@ class DSPyRedditPainParser:
             "willingness_to_pay": willingness_to_pay,
             "niche_category": niche_category,
             "competitor_tags": competitor_tags,
+            "post_type": post_type,
+            "first_handness": first_handness,
+            "buyer_authority": buyer_authority,
+            "evidence_spans": evidence_spans,
+            "confidence": confidence,
+            "uncertainty_reason": uncertainty_reason,
+            "needs_human_review": needs_human_review,
         }
         return AnalysisResult(
             category=category,
@@ -160,6 +201,13 @@ class DSPyRedditPainParser:
             willingness_to_pay=willingness_to_pay if is_monetizable else min(willingness_to_pay, 3),
             niche_category=niche_category,
             competitor_tags=competitor_tags,
+            post_type=post_type,
+            first_handness=first_handness,
+            buyer_authority=buyer_authority,
+            evidence_spans=evidence_spans,
+            confidence=confidence,
+            uncertainty_reason=uncertainty_reason,
+            needs_human_review=needs_human_review,
             raw_payload=raw_payload,
         )
 
@@ -196,6 +244,58 @@ class DSPyRedditPainParser:
             return int(str(value).strip())
         except (TypeError, ValueError):
             return None
+
+    def _choice_field(self, prediction: Any, field_name: str, allowed: set[str], *, fallback: str) -> str | None:
+        value = self._get_value(prediction, field_name)
+        if value is None or str(value).strip() == "":
+            return fallback
+        normalized = str(value).strip()
+        return normalized if normalized in allowed else None
+
+    def _confidence_field(self, prediction: Any, field_name: str) -> float | None:
+        value = self._get_value(prediction, field_name)
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            numeric = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return round(max(0.0, min(1.0, numeric)), 3)
+
+    def _evidence_spans(self, prediction: Any) -> list[str]:
+        value = self._get_value(prediction, "evidence_spans")
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_text = value.strip()
+            if not raw_text:
+                return []
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                raw_items = parsed
+            else:
+                raw_items = [line for line in re.split(r"[\n;]+", raw_text) if line]
+        elif isinstance(value, list | tuple):
+            raw_items = list(value)
+        else:
+            return []
+
+        output: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            clean = str(item).strip()[:160]
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            output.append(clean)
+            if len(output) >= 3:
+                break
+        return output
 
     def _competitor_tags(self, prediction: Any) -> list[str]:
         value = self._get_value(prediction, "competitor_tags_csv")

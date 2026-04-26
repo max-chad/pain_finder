@@ -122,11 +122,14 @@ def main() -> int:
 
     print(
         "dataset_size={dataset} pain_precision={pain_precision:.3f} monetizable_precision={monetizable_precision:.3f} "
-        "stale_leakage_rate={stale_leakage:.3f}".format(
+        "stale_leakage_rate={stale_leakage:.3f} evidence_coverage={evidence_coverage:.3f} "
+        "evidence_exact_match={evidence_exact_match:.3f}".format(
             dataset=metrics["dataset_size"],
             pain_precision=metrics["pain"]["precision"],
             monetizable_precision=metrics["monetizable"]["precision"],
             stale_leakage=metrics["stale_leakage"]["rate"],
+            evidence_coverage=metrics["evidence"]["coverage_rate"],
+            evidence_exact_match=metrics["evidence"]["exact_match_rate"],
         )
     )
     return 0
