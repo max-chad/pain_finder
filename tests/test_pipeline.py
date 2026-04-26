@@ -389,7 +389,24 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         niche_category="DevOps",
         deep_dive_summary="Need better alerts",
         opportunity_score=87.5,
-        score_components={"consensus_score": 0.9, "impact_score": 0.8},
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="Need better alerts",
+                source_type="body",
+                post_id="d1",
+                comment_id=None,
+                permalink="",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=None,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        score_components={"consensus_score": 0.9, "impact_score": 0.8, "promotion_eligible": True},
     )
     await db.insert_pain_point(
         subreddit="python",
@@ -405,7 +422,28 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         willingness_to_pay=9,
         niche_category="DevOps",
         opportunity_score=61.0,
-        score_components={"consensus_score": 0.2, "impact_score": 0.5},
+        score_components={
+            "consensus_score": 0.2,
+            "impact_score": 0.5,
+            "promotion_eligible": False,
+            "evidence_rejection_reason": "no_verified_exact_quote",
+        },
+    )
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="d3",
+        url="",
+        title="t3",
+        body="",
+        category="wish",
+        summary="s3",
+        severity="high",
+        is_monetizable=True,
+        pain_level=10,
+        willingness_to_pay=10,
+        niche_category="DevOps",
+        opportunity_score=99.0,
+        score_components={"consensus_score": 1.0, "impact_score": 1.0, "promotion_eligible": True},
     )
 
     pipeline = AnalysisPipeline(
@@ -415,7 +453,7 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
         reports_dir=str(tmp_path / "reports"),
     )
 
-    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=3, cluster_count=1)
     await db.save_macro_cluster(
         run_id=run_id,
         canonical_key="alert-fatigue",
@@ -435,13 +473,116 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
     )
 
     digest = await pipeline.generate_digest(subreddit="python", hours=24)
-    assert digest["total"] == 2
+    assert digest["total"] == 3
     assert digest["top_items"][0]["post_id"] == "d1"
     assert digest["top_items"][0]["opportunity_score"] == 87.5
-    assert digest["top_items"][1]["post_id"] == "d2"
-    assert digest["niche_counts"]["DevOps"] == 2
+    assert [item["post_id"] for item in digest["needs_review_items"]] == ["d3", "d2"]
+    assert digest["needs_review_items"][0]["evidence_rejection_reason"] == "no_verified_exact_quote"
+    assert digest["needs_review_items"][1]["evidence_rejection_reason"] == "no_verified_exact_quote"
+    assert digest["niche_counts"]["DevOps"] == 3
     assert digest["top_clusters"][0]["canonical_key"] == "alert-fatigue"
     assert "Need better alerts" in digest["recurring_blockers"]
+
+
+async def test_evidence_first_promotion_demotes_unverified_high_wtp_signals(db, tmp_path):
+    supported_post = Post(
+        post_id="supported",
+        subreddit="python",
+        title="Manual invoice reconciliation breaks every week",
+        body="As founder, I manually reconcile vendor invoices every week because the ERP sync fails.",
+        url="https://reddit.com/supported",
+        score=8,
+        top_comments=["Same here — this manual workaround costs us hours."],
+    )
+    unsupported_post = Post(
+        post_id="unsupported",
+        subreddit="python",
+        title="ERP automation is painful",
+        body="I need better automation for operations.",
+        url="https://reddit.com/unsupported",
+        score=18,
+        top_comments=[],
+    )
+    supported_signal = PainSignal(
+        post=supported_post,
+        category="complaint",
+        summary="Invoice reconciliation breaks weekly",
+        severity="high",
+        is_monetizable=True,
+        pain_level=7,
+        willingness_to_pay=7,
+        niche_category="FinOps",
+        analysis_mode="b2b",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["I manually reconcile vendor invoices every week"],
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="I manually reconcile vendor invoices every week",
+                source_type="body",
+                post_id="supported",
+                comment_id=None,
+                permalink="https://reddit.com/supported",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=None,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        confidence=0.82,
+    )
+    unsupported_signal = PainSignal(
+        post=unsupported_post,
+        category="complaint",
+        summary="Unsupported but attractive ERP claim",
+        severity="high",
+        is_monetizable=True,
+        pain_level=10,
+        willingness_to_pay=10,
+        niche_category="FinOps",
+        analysis_mode="b2b",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["invented quote not present in source"],
+        verified_evidence=[],
+        evidence_quality="no_quote",
+        evidence_match_rate=0.0,
+        confidence=0.96,
+        needs_human_review=True,
+    )
+
+    scraper = AsyncMock()
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[unsupported_signal, supported_signal]),
+        openrouter=None,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+    )
+
+    await pipeline.analyze_external_posts(posts=[unsupported_post, supported_post], source="reddit", run_scope="python")
+
+    supported_row = await db.get_pain_point("supported")
+    unsupported_row = await db.get_pain_point("unsupported")
+    assert supported_row is not None
+    assert unsupported_row is not None
+    supported_components = json.loads(supported_row["score_components_json"])
+    unsupported_components = json.loads(unsupported_row["score_components_json"])
+    assert supported_components["promotion_eligible"] is True
+    assert unsupported_components["promotion_eligible"] is False
+    assert unsupported_components["evidence_rejection_reason"] == "no_verified_exact_quote"
+    assert unsupported_row["opportunity_score"] < supported_row["opportunity_score"]
+
+    digest = await pipeline.generate_digest(subreddit="python", hours=24)
+    assert [item["post_id"] for item in digest["top_items"]] == ["supported"]
+    assert [item["post_id"] for item in digest["needs_review_items"]] == ["unsupported"]
 
 
 async def test_generate_digest_returns_no_clusters_when_no_rows(db, tmp_path):

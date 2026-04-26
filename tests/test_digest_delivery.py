@@ -25,6 +25,9 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "confidence": 0.82,
             "needs_human_review": 0,
             "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
         },
         {
             "post_id": "p2",
@@ -81,7 +84,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     result = await service.build_document(hours=24, group_by="niche", min_wtp=8, max_items_per_group=5)
 
     assert result.total_items == 3
-    assert result.group_count == 2
+    assert result.group_count == 3
     assert result.docx_path is not None
     assert result.docx_path.endswith(".docx")
 
@@ -92,13 +95,14 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     assert "Canonical pain clusters" in xml
     assert "RevOps handoff breakage" in xml
     assert "Current opportunities" in xml
-    assert "Evergreen pain index" in xml
+    assert "Needs Review / Weak signals" in xml
+    assert "Evergreen pain index: 0" in xml
     assert "RevOps" in xml
     assert "FinOps" in xml
     assert "Need better onboarding handoff" in xml
     assert "Evidence: Sales teams still stitch data manually" in xml
     assert "Evidence quality: exact_quote | Match rate 1.00 | Confidence 0.82 | Human review no" in xml
-    assert "Evidence quality: no_quote" not in xml
+    assert "Evidence rejection: no_verified_exact_quote" in xml
     assert "Pipeline attribution is still fuzzy" in xml
     assert "Forecasting still lives in spreadsheets" in xml
 
@@ -134,6 +138,13 @@ async def test_daily_digest_document_orders_rows_by_opportunity_score_within_gro
             "subreddit": "sales",
             "deep_dive_summary": "CSV handoffs between teams keep breaking.",
             "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "verified_evidence_json": '[{"quote":"Ops teams keep repeating the same manual workaround","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "score_components_json": '{"promotion_eligible": true}',
         },
         {
             "post_id": "p-low",
@@ -149,6 +160,13 @@ async def test_daily_digest_document_orders_rows_by_opportunity_score_within_gro
             "subreddit": "sales",
             "deep_dive_summary": "Single-team complaint.",
             "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "verified_evidence_json": '[{"quote":"Pain exists but consensus is weak","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "score_components_json": '{"promotion_eligible": true}',
         },
     ]
 
@@ -160,3 +178,61 @@ async def test_daily_digest_document_orders_rows_by_opportunity_score_within_gro
         xml = archive.read("word/document.xml").decode("utf-8")
 
     assert xml.index("Lower WTP but stronger consensus") < xml.index("Higher WTP but weaker score")
+
+
+async def test_daily_digest_document_routes_weak_rows_out_of_current_opportunities(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "eligible",
+            "title": "Verified RevOps workflow pain",
+            "summary": "Ops owner quotes the exact recurring workflow breakage.",
+            "pain_level": 7,
+            "willingness_to_pay": 7,
+            "opportunity_score": 72.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot"]',
+            "source": "reddit",
+            "url": "https://reddit.com/eligible",
+            "subreddit": "sales",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "verified_evidence_json": '[{"quote":"workflow breakage","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+        {
+            "post_id": "weak",
+            "title": "Unsupported high-WTP RevOps claim",
+            "summary": "Looks attractive but the analyzer supplied no quote.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 95.0,
+            "niche_category": "RevOps",
+            "competitor_tags": "[]",
+            "source": "reddit",
+            "url": "https://reddit.com/weak",
+            "subreddit": "sales",
+            "opportunity_bucket": "current_opportunity",
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0.0,
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+    ]
+
+    db.get_latest_canonical_clusters.return_value = []
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert "Current opportunities" in xml
+    assert "Needs Review / Weak signals" in xml
+    assert xml.index("Verified RevOps workflow pain") < xml.index("Needs Review / Weak signals")
+    assert xml.index("Needs Review / Weak signals") < xml.index("Unsupported high-WTP RevOps claim")
+    assert "Evidence rejection: no_verified_exact_quote" in xml

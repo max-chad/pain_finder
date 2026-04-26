@@ -9,6 +9,18 @@ from typing import Any
 
 from docx import Document
 
+PROMOTION_BUYER_AUTHORITY_MIN_SCORE = 0.82
+BUYER_AUTHORITY_SCORES = {
+    "intern": 0.35,
+    "ic": 0.6,
+    "engineer": 0.72,
+    "manager": 0.82,
+    "head_of_ops": 0.94,
+    "founder_owner": 1.0,
+    "agency_operator": 0.88,
+    "unknown": 0.55,
+}
+
 
 @dataclass
 class DigestDocumentResult:
@@ -39,12 +51,15 @@ class DailyDigestDocumentService:
         filtered_post_ids = [str(row.get("post_id")) for row in filtered_rows if row.get("post_id")]
         canonical_clusters = await self.db.get_latest_canonical_clusters(limit=6, post_ids=filtered_post_ids)
 
-        current_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "current_opportunity"]
-        evergreen_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "evergreen_pain"]
-        unknown_rows = [row for row in filtered_rows if self._opportunity_bucket(row) == "unknown_age"]
+        promotion_rows = [row for row in filtered_rows if self._promotion_eligible(row)]
+        weak_rows = [row for row in filtered_rows if not self._promotion_eligible(row)]
+        current_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "current_opportunity"]
+        evergreen_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "evergreen_pain"]
+        unknown_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "unknown_age"]
         current_groups = self._order_groups(self._group_rows(current_rows, group_by=group_by)) if current_rows else []
         evergreen_groups = self._order_groups(self._group_rows(evergreen_rows, group_by=group_by)) if evergreen_rows else []
         unknown_groups = self._order_groups(self._group_rows(unknown_rows, group_by=group_by)) if unknown_rows else []
+        weak_groups = self._order_groups(self._group_rows(weak_rows, group_by=group_by)) if weak_rows else []
 
         document = Document()
         document.add_heading("Pain Finder Daily Digest", level=0)
@@ -55,7 +70,8 @@ class DailyDigestDocumentService:
                 f"Grouping: {group_by}\n"
                 f"Current opportunities: {sum(len(items) for _, items in current_groups)}\n"
                 f"Evergreen pain index: {sum(len(items) for _, items in evergreen_groups)}\n"
-                f"Unknown age review queue: {sum(len(items) for _, items in unknown_groups)}"
+                f"Unknown age review queue: {sum(len(items) for _, items in unknown_groups)}\n"
+                f"Needs review / weak signals: {sum(len(items) for _, items in weak_groups)}"
             )
         )
 
@@ -70,6 +86,10 @@ class DailyDigestDocumentService:
         unknown_overview = document.add_paragraph()
         unknown_overview.add_run("Unknown-age groups: ").bold = True
         unknown_overview.add_run(", ".join(f"{label} ({len(items)})" for label, items in unknown_groups[:8]) or "none")
+
+        weak_overview = document.add_paragraph()
+        weak_overview.add_run("Needs-review / weak-signal groups: ").bold = True
+        weak_overview.add_run(", ".join(f"{label} ({len(items)})" for label, items in weak_groups[:8]) or "none")
 
         blockers = self._recurring_blockers(filtered_rows)
         if blockers:
@@ -90,6 +110,9 @@ class DailyDigestDocumentService:
         if unknown_groups:
             document.add_heading("Unknown age review queue", level=1)
             self._render_grouped_section(document, unknown_groups, max_items_per_group=max_items_per_group)
+        if weak_groups:
+            document.add_heading("Needs Review / Weak signals", level=1)
+            self._render_grouped_section(document, weak_groups, max_items_per_group=max_items_per_group)
 
         os.makedirs(self.reports_dir, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -103,7 +126,7 @@ class DailyDigestDocumentService:
                 os.remove(tmp_path)
             raise
 
-        all_groups = current_groups + evergreen_groups + unknown_groups
+        all_groups = current_groups + evergreen_groups + unknown_groups + weak_groups
         return DigestDocumentResult(
             docx_path=final_path,
             total_items=sum(len(items[:max_items_per_group]) for _, items in all_groups),
@@ -280,6 +303,52 @@ class DailyDigestDocumentService:
         return False
 
     @staticmethod
+    def _score_components(row: dict[str, Any]) -> dict[str, Any]:
+        raw = row.get("score_components")
+        if isinstance(raw, dict):
+            return raw
+        raw = row.get("score_components_json")
+        if not isinstance(raw, str) or not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _buyer_authority_score(row: dict[str, Any]) -> float:
+        try:
+            return float(row.get("buyer_authority_score"))
+        except (TypeError, ValueError):
+            authority = str(row.get("buyer_authority") or "unknown").strip().lower()
+            return float(BUYER_AUTHORITY_SCORES.get(authority, BUYER_AUTHORITY_SCORES["unknown"]))
+
+    @staticmethod
+    def _exact_evidence_count(row: dict[str, Any]) -> int:
+        return sum(1 for item in DailyDigestDocumentService._verified_evidence(row) if item.get("match_type") == "exact")
+
+    @staticmethod
+    def _evidence_rejection_reason(row: dict[str, Any]) -> str:
+        components = DailyDigestDocumentService._score_components(row)
+        reason = str(components.get("evidence_rejection_reason") or "").strip()
+        if reason:
+            return reason
+        if DailyDigestDocumentService._exact_evidence_count(row) <= 0:
+            return "no_verified_exact_quote"
+        if DailyDigestDocumentService._coerce_bool(row.get("needs_human_review")):
+            return "needs_human_review"
+        first_handness = str(row.get("first_handness") or "unknown").strip().lower()
+        authority_score = DailyDigestDocumentService._buyer_authority_score(row)
+        if first_handness != "first_hand" and authority_score < PROMOTION_BUYER_AUTHORITY_MIN_SCORE:
+            return "missing_first_hand_or_buyer_signal"
+        return ""
+
+    @staticmethod
+    def _promotion_eligible(row: dict[str, Any]) -> bool:
+        return not DailyDigestDocumentService._evidence_rejection_reason(row)
+
+    @staticmethod
     def _evidence_metadata(row: dict[str, Any]) -> str:
         quality = str(row.get("evidence_quality") or "").strip()
         if not quality:
@@ -294,12 +363,14 @@ class DailyDigestDocumentService:
             confidence = 0.0
         needs_review = DailyDigestDocumentService._coerce_bool(row.get("needs_human_review"))
         uncertainty_reason = str(row.get("uncertainty_reason") or "").strip()
+        rejection_reason = DailyDigestDocumentService._evidence_rejection_reason(row)
         if (
             quality == "no_quote"
             and match_rate == 0.0
             and confidence == 0.0
             and not needs_review
             and not uncertainty_reason
+            and not rejection_reason
             and not DailyDigestDocumentService._verified_evidence(row)
         ):
             return ""
@@ -310,6 +381,8 @@ class DailyDigestDocumentService:
         )
         if uncertainty_reason:
             metadata = f"{metadata} | Reason: {uncertainty_reason}"
+        if rejection_reason:
+            metadata = f"{metadata} | Evidence rejection: {rejection_reason}"
         return metadata
 
     @staticmethod

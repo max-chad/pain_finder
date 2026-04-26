@@ -28,6 +28,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+PROMOTION_BUYER_AUTHORITY_MIN_SCORE = 0.82
+WEAK_SIGNAL_SCORE_CAP = 49.0
+
 
 @dataclass
 class DeepDiveRun:
@@ -410,6 +413,7 @@ class AnalysisPipeline:
                 "subreddit": subreddit,
                 "total": 0,
                 "top_items": [],
+                "needs_review_items": [],
                 "top_clusters": [],
                 "niche_counts": {},
                 "source_counts": {},
@@ -437,6 +441,11 @@ class AnalysisPipeline:
                     row_copy["score_components"] = json.loads(score_components)
                 except json.JSONDecodeError:
                     row_copy["score_components"] = {}
+            elif not isinstance(row_copy.get("score_components"), dict):
+                row_copy["score_components"] = {}
+            rejection_reason = self._row_evidence_rejection_reason(row_copy)
+            row_copy["promotion_eligible"] = not rejection_reason
+            row_copy["evidence_rejection_reason"] = rejection_reason
             scored_rows.append(row_copy)
 
             niche = (row.get("niche_category") or "Uncategorized").strip() or "Uncategorized"
@@ -459,6 +468,9 @@ class AnalysisPipeline:
             reverse=True,
         )
 
+        top_rows = [row for row in scored_rows if row.get("promotion_eligible")]
+        needs_review_rows = [row for row in scored_rows if not row.get("promotion_eligible")]
+
         recurring_blockers = [
             item[0]
             for item in sorted(blockers.items(), key=lambda item: item[1], reverse=True)[:5]
@@ -467,7 +479,8 @@ class AnalysisPipeline:
             "hours": hours,
             "subreddit": subreddit,
             "total": len(rows),
-            "top_items": scored_rows[:5],
+            "top_items": top_rows[:5],
+            "needs_review_items": needs_review_rows[:5],
             "top_clusters": top_clusters,
             "niche_counts": niche_counts,
             "source_counts": source_counts,
@@ -504,6 +517,75 @@ class AnalysisPipeline:
         if isinstance(item, dict):
             return str(item.get("match_type") or "none")
         return str(getattr(item, "match_type", "none") or "none")
+
+    @classmethod
+    def _evidence_match_counts(cls, evidence_items: list[Any]) -> tuple[int, int, int, int]:
+        exact_count = 0
+        fuzzy_count = 0
+        none_count = 0
+        for item in evidence_items:
+            match_type = cls._verified_evidence_match_type(item).strip().lower()
+            if match_type == "exact":
+                exact_count += 1
+            elif match_type == "fuzzy":
+                fuzzy_count += 1
+            else:
+                none_count += 1
+        matched_count = exact_count + fuzzy_count
+        return exact_count, fuzzy_count, none_count, matched_count
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y"}
+        return False
+
+    @classmethod
+    def _score_components_from_row(cls, row: dict[str, Any]) -> dict[str, Any]:
+        raw = row.get("score_components")
+        if isinstance(raw, dict):
+            return raw
+        raw = row.get("score_components_json")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    @classmethod
+    def _verified_evidence_from_row(cls, row: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = row.get("verified_evidence")
+        if raw is None:
+            raw = row.get("verified_evidence_json")
+        return [item for item in cls._decode_json_list(raw) if isinstance(item, dict)]
+
+    @classmethod
+    def _row_evidence_rejection_reason(cls, row: dict[str, Any]) -> str:
+        components = cls._score_components_from_row(row)
+        component_reason = str(components.get("evidence_rejection_reason") or "").strip()
+        if component_reason:
+            return component_reason
+
+        exact_count, _, _, _ = cls._evidence_match_counts(cls._verified_evidence_from_row(row))
+        if exact_count <= 0:
+            return "no_verified_exact_quote"
+        if cls._coerce_bool(row.get("needs_human_review")):
+            return "needs_human_review"
+
+        first_handness = str(row.get("first_handness") or "unknown").strip().lower()
+        try:
+            authority_score = float(row.get("buyer_authority_score"))
+        except (TypeError, ValueError):
+            authority_score = buyer_authority_score(str(row.get("buyer_authority") or "unknown"))
+        if first_handness != "first_hand" and authority_score < PROMOTION_BUYER_AUTHORITY_MIN_SCORE:
+            return "missing_first_hand_or_buyer_signal"
+        return ""
 
     @staticmethod
     def _build_report_payload(*, signals: list[PainSignal], source: str) -> list[dict[str, Any]]:
@@ -547,6 +629,8 @@ class AnalysisPipeline:
                 "stale_penalty": signal.stale_penalty,
                 "solved_penalty": signal.solved_penalty,
                 "opportunity_score": signal.opportunity_score,
+                "promotion_eligible": signal.promotion_eligible,
+                "evidence_rejection_reason": signal.evidence_rejection_reason,
                 "score_components": signal.score_components or {},
                 "comment_consensus_count": signal.comment_consensus_count,
                 "comment_same_here_count": signal.comment_same_here_count,
@@ -560,13 +644,18 @@ class AnalysisPipeline:
     def _enrich_signal(self, signal: PainSignal) -> None:
         comment_signals = extract_comment_market_signals(signal.post, competitor_tags=signal.competitor_tags)
         recency_score, stale_penalty = self._recency_profile(signal.post, signal.opportunity_bucket)
-        matched_evidence_count = sum(
-            1 for item in signal.verified_evidence if self._verified_evidence_match_type(item) != "none"
+        exact_evidence_count, fuzzy_evidence_count, unmatched_evidence_count, matched_evidence_count = self._evidence_match_counts(
+            signal.verified_evidence
         )
+        if signal.verified_evidence and signal.evidence_match_rate <= 0 and matched_evidence_count > 0:
+            signal.evidence_match_rate = round(matched_evidence_count / len(signal.verified_evidence), 3)
         if signal.verified_evidence:
-            evidence_score = min(1.0, matched_evidence_count / 3)
+            effective_match_rate = max(0.0, min(1.0, float(signal.evidence_match_rate)))
+            evidence_quality_weight = exact_evidence_count + fuzzy_evidence_count * 0.35
+            evidence_score = min(1.0, (evidence_quality_weight / 3) * effective_match_rate)
         else:
-            evidence_score = min(1.0, len(signal.evidence_spans) / 3) if signal.evidence_spans else 0.0
+            effective_match_rate = 0.0
+            evidence_score = 0.0
         authority_score = buyer_authority_score(signal.buyer_authority)
         first_hand_score = first_handness_score(signal.first_handness)
         workflow_frequency_score = estimate_workflow_frequency_score(signal.post, signal)
@@ -602,7 +691,20 @@ class AnalysisPipeline:
             - float(comment_signals["comment_shill_risk"]) * 6
             - type_penalty * 10
         )
-        opportunity_score = round(max(0.0, raw_score), 2)
+        pre_promotion_score = round(max(0.0, raw_score), 2)
+        has_first_hand_or_buyer_signal = (
+            signal.first_handness == "first_hand" or authority_score >= PROMOTION_BUYER_AUTHORITY_MIN_SCORE
+        )
+        if exact_evidence_count <= 0:
+            evidence_rejection_reason = "no_verified_exact_quote"
+        elif signal.needs_human_review:
+            evidence_rejection_reason = "needs_human_review"
+        elif not has_first_hand_or_buyer_signal:
+            evidence_rejection_reason = "missing_first_hand_or_buyer_signal"
+        else:
+            evidence_rejection_reason = ""
+        promotion_eligible = not evidence_rejection_reason
+        opportunity_score = pre_promotion_score if promotion_eligible else min(pre_promotion_score, WEAK_SIGNAL_SCORE_CAP)
 
         signal.comment_consensus_count = int(comment_signals["comment_consensus_count"])
         signal.comment_same_here_count = int(comment_signals["comment_same_here_count"])
@@ -619,6 +721,8 @@ class AnalysisPipeline:
         signal.stale_penalty = round(stale_penalty, 3)
         signal.solved_penalty = round(solved_penalty + type_penalty, 3)
         signal.opportunity_score = opportunity_score
+        signal.promotion_eligible = promotion_eligible
+        signal.evidence_rejection_reason = evidence_rejection_reason
         signal.score_components = {
             "buyer_authority_score": signal.buyer_authority_score,
             "first_handness_score": round(first_hand_score, 3),
@@ -629,6 +733,15 @@ class AnalysisPipeline:
             "recency_score": signal.recency_score,
             "stale_penalty": signal.stale_penalty,
             "solved_penalty": signal.solved_penalty,
+            "raw_opportunity_score": pre_promotion_score,
+            "opportunity_score": signal.opportunity_score,
+            "promotion_eligible": signal.promotion_eligible,
+            "evidence_rejection_reason": signal.evidence_rejection_reason,
+            "evidence_match_rate": round(effective_match_rate, 3),
+            "exact_evidence_count": exact_evidence_count,
+            "fuzzy_evidence_count": fuzzy_evidence_count,
+            "unmatched_evidence_count": unmatched_evidence_count,
+            "matched_evidence_count": matched_evidence_count,
             "evidence_score": round(evidence_score, 3),
             "type_penalty": round(type_penalty, 3),
             "comment_consensus_count": signal.comment_consensus_count,
@@ -659,6 +772,8 @@ class AnalysisPipeline:
     def _deep_dive_skip_reason(self, signal: PainSignal, *, existing: dict[str, Any] | None) -> str | None:
         if not signal.is_monetizable:
             return "not_monetizable"
+        if not signal.promotion_eligible:
+            return "evidence_needs_review"
         if signal.willingness_to_pay < self.deep_dive_wtp_threshold:
             return "below_wtp_threshold"
         if getattr(self.classifier, "openrouter", None) is None:

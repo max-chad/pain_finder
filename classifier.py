@@ -324,6 +324,8 @@ class PainSignal:
     stale_penalty: float = 0.0
     solved_penalty: float = 0.0
     opportunity_score: float = 0.0
+    promotion_eligible: bool = False
+    evidence_rejection_reason: str = ""
     comment_consensus_count: int = 0
     comment_same_here_count: int = 0
     comment_workaround_count: int = 0
