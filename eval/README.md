@@ -1,53 +1,94 @@
 # Evaluation harness
 
-This directory is the reproducible scorecard for the Reddit pain parser.
+This directory is the reproducible scorecard for the Reddit pain parser and opportunity-ranking pipeline.
 
 ## What is in here
-- `seed_posts.jsonl` — small checked-in starter dataset of Reddit-like posts.
+
+- `seed_posts.jsonl` — checked-in starter dataset of Reddit-like posts.
 - `labels.jsonl` — hand labels for the seed set.
 - `labels.schema.json` — label shape and allowed taxonomy values.
+- `label_guide.md` — labeling rules, positive/negative examples, and hard-negative taxonomy.
+- `baselines.example.yaml` — documented baseline-comparison naming convention.
 - `run_eval.py` — CLI for evaluating either:
-  - live classifier output from the configured runtime, or
-  - a saved predictions file.
+  - live classifier output from the configured runtime,
+  - a saved predictions file, or
+  - multiple named offline baseline prediction files in one command.
 
 ## Why this exists
-The parser has already grown more opinionated:
+
+The parser has grown beyond simple keyword search:
+
 - source-age buckets,
 - typed post taxonomy,
 - cheap screening,
 - composite scoring,
+- verified evidence quality,
+- evidence-first promotion rules,
 - comment signals,
 - canonical clusters.
 
-Without a labeled eval set, every parser change turns into vibe-based debate. This harness makes the next iterations measurable.
+Without a labeled eval set, every parser change turns into vibe-based debate. This harness makes prompt/schema/scoring changes measurable.
 
 ## Seed-set caveat
-The checked-in seed set is intentionally small and cheap. It is a **starter set**, not a final benchmark.
+
+The checked-in seed set is still a starter benchmark, not a final quality gate. It now includes:
+
+- 60 total labeled examples,
+- 54 hard negatives,
+- B2B workflow positives with expected cluster keys,
+- consumer/B2C, founder-pitch, news, solved-issue, generic recommendation, vendor-comparison, and low-context negative examples.
 
 Target direction:
+
 - grow toward 100-150 labeled posts,
 - keep subreddit/domain diversity,
-- expand hard negatives (founder pitches, news, generic advice, B2C noise),
+- keep expanding hard negatives before widening recall,
 - refresh labels when taxonomy changes.
 
 ## Label fields
-Each `labels.jsonl` row records:
+
+Every `labels.jsonl` row must include:
+
 - `is_pain`
 - `is_monetizable`
 - `post_type`
-- `is_current_opportunity`
+- `pain_type`
+- `expression_type`
 - `first_handness`
 - `buyer_authority`
+- `intensity_label`
+- `urgency_label`
+- `wtp_label`
+- `current_workaround`
+- `incumbent_failure`
+- `evidence_quality`
+- `evidence_expected` (derived compatibility boolean)
+- `opportunity_type`
+- `is_current_opportunity`
+- `hard_negative_type`
 - `reference_now_ts`
-- optional `notes`
+
+Optional but supported:
+
+- `expected_cluster_key`
+- `evidence_relevance`
+- `source_link_validity`
+- `feedback_useful`
+- `notes`
 
 `reference_now_ts` is important: it freezes the freshness boundary so `current_opportunity` vs `evergreen_pain` stays deterministic over time.
 
 Current checked-in seed labels use:
+
 - `reference_now_ts = 1776729600`
 - which corresponds to `2026-04-21T00:00:00Z`
 
+See `label_guide.md` before adding labels.
+
 ## Metrics reported
+
+Core classifier metrics:
+
 - `pain`: precision / recall / f1
 - `monetizable`: precision / recall / f1
 - `stale_leakage.rate`
@@ -56,29 +97,35 @@ Current checked-in seed labels use:
 - `first_handness_accuracy`
 - `buyer_authority_accuracy`
 
+Evidence metrics:
+
+- `evidence.coverage_rate`
+- `evidence.exact_match_rate`
+- `evidence.needs_human_review_rate`
+- `evidence.quality_counts`
+- `evidence.manual_relevance`
+- `evidence.source_link_validity`
+
+Hard-negative metrics:
+
+- `hard_negatives.false_positive_rate`
+- `hard_negatives.by_type.*.false_positive_rate`
+
+Cluster/usefulness metrics:
+
+- `clusters.duplicate_rate`
+- `clusters.purity`
+- `top_n_useful_rate.top_1/top_3/top_5`
+- `cost_per_useful_insight`
+- `latency_ms_per_prediction`
+
+Metrics that cannot be computed because labels/artifact fields are absent return `null`, not guessed defaults.
+
 ## Run against live Codex / DSPy stack
+
 This uses the same runtime defaults as the app. If your env already points at Codex + DSPy, the harness will use that.
 
-Example:
-
 ```bash
-python eval/run_eval.py \
-  --dataset eval/seed_posts.jsonl \
-  --labels eval/labels.jsonl \
-  --live \
-  --output-dir eval/artifacts/seed-live \
-  --reference-now-ts 1776729600
-```
-
-To force the current preferred stack explicitly:
-
-```bash
-export LLM_PROVIDER=codex
-export LLM_MODEL=gpt-5.3-spark
-export LLM_REASONING_EFFORT=high
-export DSPY_PROVIDER=codex
-export DSPY_MODEL=gpt-5.3-spark
-export DSPY_REASONING_EFFORT=high
 python eval/run_eval.py \
   --dataset eval/seed_posts.jsonl \
   --labels eval/labels.jsonl \
@@ -100,6 +147,7 @@ python eval/run_eval.py \
 ```
 
 ## Run against a saved predictions file
+
 Useful when you already captured predictions and want deterministic re-scoring.
 
 ```bash
@@ -111,17 +159,45 @@ python eval/run_eval.py \
   --reference-now-ts 1776729600
 ```
 
+## Compare named baselines offline
+
+Use repeated `--baseline-predictions NAME=PATH` arguments. Each baseline gets its own `metrics.json` and `predictions.jsonl` under the output directory, plus a top-level `baseline_summary.json`. The first named baseline is treated as the reference baseline; later baselines get `*_delta` comparisons against it.
+
+```bash
+python eval/run_eval.py \
+  --dataset eval/seed_posts.jsonl \
+  --labels eval/labels.jsonl \
+  --baseline-predictions current=eval/artifacts/current/predictions.jsonl \
+  --baseline-predictions rules_only=eval/artifacts/rules-only/predictions.jsonl \
+  --baseline-predictions no_prescreen=eval/artifacts/no-prescreen/predictions.jsonl \
+  --output-dir reports/eval/seed-offline-comparison \
+  --reference-now-ts 1776729600
+```
+
+See `baselines.example.yaml` for the preferred baseline names: `current`, `rules_only`, `no_prescreen`, `llm_only`, and `dspy`.
+
 ## Artifact layout
-Each run writes:
+
+Single-mode runs write:
+
 - `metrics.json`
 - `predictions.jsonl`
 
 inside the `--output-dir` you pass.
 
+Baseline-comparison runs write:
+
+- `<baseline>/metrics.json`
+- `<baseline>/predictions.jsonl`
+- `baseline_summary.json`
+
 ## Labeling guidance
+
 Prefer these rules when expanding the set:
+
 - `is_pain=true` only when there is a concrete broken workflow, repeated frustration, or clear unmet demand.
 - `is_monetizable=true` only when the pain plausibly maps to a software budget owner or operational buyer.
 - `founder_pitch`, `news_analysis`, and generic `advice_thread` rows should mostly be hard negatives.
 - mark B2C complaints as `is_pain=false` for this product, even if they are emotionally intense.
 - if freshness is ambiguous, label `is_current_opportunity=false` until proven fresh.
+- hard negatives should be expanded first whenever a recall change creates new false positives.

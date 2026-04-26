@@ -1,0 +1,32 @@
+# Example offline baseline comparison config.
+# The eval CLI accepts repeated --baseline-predictions NAME=PATH arguments;
+# this file documents the naming convention and expected artifact layout.
+
+run_id: seed-offline-comparison
+reference_now_ts: 1776729600
+baselines:
+  current:
+    predictions_path: eval/artifacts/current/predictions.jsonl
+    notes: Current pipeline/runtime predictions captured from the latest branch.
+  rules_only:
+    predictions_path: eval/artifacts/rules-only/predictions.jsonl
+    notes: Prescreen/rules-only prediction export for false-negative comparison.
+  no_prescreen:
+    predictions_path: eval/artifacts/no-prescreen/predictions.jsonl
+    notes: Candidate set scored without prescreen rejection.
+  llm_only:
+    predictions_path: eval/artifacts/llm-only/predictions.jsonl
+    notes: LLM parser without DSPy wrapper.
+  dspy:
+    predictions_path: eval/artifacts/dspy/predictions.jsonl
+    notes: DSPy parser path for schema-parity comparison.
+
+# Equivalent CLI shape. Put the reference/control baseline first; later baselines
+# get *_delta comparisons against that first baseline in baseline_summary.json.
+# python eval/run_eval.py \
+#   --dataset eval/seed_posts.jsonl \
+#   --labels eval/labels.jsonl \
+#   --baseline-predictions current=eval/artifacts/current/predictions.jsonl \
+#   --baseline-predictions rules_only=eval/artifacts/rules-only/predictions.jsonl \
+#   --output-dir reports/eval/seed-offline-comparison \
+#   --reference-now-ts 1776729600

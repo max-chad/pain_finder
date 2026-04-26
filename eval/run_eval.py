@@ -26,6 +26,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", required=True, help="Path to seed posts JSONL")
     parser.add_argument("--labels", required=True, help="Path to hand labels JSONL")
     parser.add_argument("--predictions-path", help="Path to precomputed predictions JSONL")
+    parser.add_argument(
+        "--baseline-predictions",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Offline baseline prediction JSONL. Repeat to compare named baselines in one run.",
+    )
     parser.add_argument("--live", action="store_true", help="Run the configured live classifier stack instead of using precomputed predictions")
     parser.add_argument("--output-dir", required=True, help="Directory for metrics.json and predictions.jsonl artifacts")
     parser.add_argument("--reference-now-ts", type=int, help="Override evaluation reference timestamp")
@@ -33,9 +40,80 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--classifier-mode", help="Optional override for classifier mode when running live")
     parser.add_argument("--disable-dspy", action="store_true", help="Disable DSPy even if enabled in config when running live")
     args = parser.parse_args()
-    if args.live == bool(args.predictions_path):
-        parser.error("Choose exactly one of --live or --predictions-path")
+    mode_count = int(bool(args.live)) + int(bool(args.predictions_path)) + int(bool(args.baseline_predictions))
+    if mode_count != 1:
+        parser.error("Choose exactly one of --live, --predictions-path, or repeated --baseline-predictions")
     return args
+
+
+def _parse_baseline_prediction_spec(spec: str) -> tuple[str, Path]:
+    if "=" not in spec:
+        raise ValueError(f"invalid --baseline-predictions value: {spec!r}; expected NAME=PATH")
+    name, raw_path = spec.split("=", 1)
+    normalized_name = name.strip()
+    if not normalized_name or not all(char.isalnum() or char in {"_", "-"} for char in normalized_name):
+        raise ValueError(f"invalid baseline name: {name!r}")
+    if not raw_path.strip():
+        raise ValueError(f"invalid baseline path for {normalized_name!r}")
+    return normalized_name, Path(raw_path)
+
+
+BASELINE_SUMMARY_FIELDS = (
+    "pain_precision",
+    "pain_recall",
+    "pain_f1",
+    "monetizable_precision",
+    "monetizable_recall",
+    "monetizable_f1",
+    "stale_leakage_rate",
+    "screening_false_negative_count",
+    "hard_negative_false_positive_rate",
+    "hard_negative_false_positive_count",
+    "evidence_coverage_rate",
+    "evidence_exact_match_rate",
+    "cluster_purity",
+    "cost_per_useful_insight",
+    "latency_ms_per_prediction",
+)
+
+
+def _baseline_metric_summary(metrics: dict[str, object]) -> dict[str, object]:
+    pain = metrics["pain"]
+    monetizable = metrics["monetizable"]
+    stale_leakage = metrics["stale_leakage"]
+    hard_negatives = metrics["hard_negatives"]
+    evidence = metrics["evidence"]
+    clusters = metrics["clusters"]
+    return {
+        "pain_precision": pain["precision"],
+        "pain_recall": pain["recall"],
+        "pain_f1": pain["f1"],
+        "monetizable_precision": monetizable["precision"],
+        "monetizable_recall": monetizable["recall"],
+        "monetizable_f1": monetizable["f1"],
+        "stale_leakage_rate": stale_leakage["rate"],
+        "screening_false_negative_count": metrics["screening_false_negative_count"],
+        "hard_negative_false_positive_rate": hard_negatives["false_positive_rate"],
+        "hard_negative_false_positive_count": hard_negatives["false_positive_count"],
+        "evidence_coverage_rate": evidence["coverage_rate"],
+        "evidence_exact_match_rate": evidence["exact_match_rate"],
+        "cluster_purity": clusters["purity"],
+        "cost_per_useful_insight": metrics["cost_per_useful_insight"],
+        "latency_ms_per_prediction": metrics["latency_ms_per_prediction"],
+    }
+
+
+def _baseline_delta(value: object, reference: object) -> float | None:
+    if value is None or reference is None:
+        return None
+    return round(float(value) - float(reference), 3)
+
+
+def _baseline_comparison(summary: dict[str, object], reference: dict[str, object]) -> dict[str, object]:
+    comparison = {f"{field}_delta": _baseline_delta(summary[field], reference[field]) for field in BASELINE_SUMMARY_FIELDS}
+    comparison["screening_false_negative_delta"] = comparison["screening_false_negative_count_delta"]
+    comparison["hard_negative_false_positive_delta"] = comparison["hard_negative_false_positive_count_delta"]
+    return comparison
 
 
 def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dspy: bool = False):
@@ -102,6 +180,59 @@ def main() -> int:
     if reference_now_ts is None:
         raise SystemExit("reference_now_ts must be provided either via labels or --reference-now-ts")
 
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.baseline_predictions:
+        summary: dict[str, object] = {
+            "dataset_size": len(posts),
+            "reference_now_ts": int(reference_now_ts),
+            "reference_baseline": None,
+            "baselines": {},
+            "comparisons": {},
+        }
+        seen_names: set[str] = set()
+        reference_baseline_name = ""
+        reference_metrics: dict[str, object] | None = None
+        for spec in args.baseline_predictions:
+            try:
+                baseline_name, predictions_path = _parse_baseline_prediction_spec(spec)
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
+            if baseline_name in seen_names:
+                raise SystemExit(f"duplicate baseline name: {baseline_name}")
+            seen_names.add(baseline_name)
+            predictions = load_jsonl(predictions_path)
+            metrics = evaluate_predictions(
+                posts=posts,
+                labels=labels,
+                predictions=predictions,
+                reference_now_ts=reference_now_ts,
+                current_opportunity_max_age_days=args.current_opportunity_max_age_days,
+            )
+            baseline_dir = output_dir / baseline_name
+            write_json(baseline_dir / "metrics.json", metrics)
+            write_jsonl(baseline_dir / "predictions.jsonl", predictions)
+            metrics_summary = _baseline_metric_summary(metrics)
+            if reference_metrics is None:
+                reference_baseline_name = baseline_name
+                reference_metrics = metrics_summary
+                summary["reference_baseline"] = baseline_name
+            else:
+                summary["comparisons"][f"{baseline_name}_vs_{reference_baseline_name}"] = _baseline_comparison(
+                    metrics_summary,
+                    reference_metrics,
+                )
+            summary["baselines"][baseline_name] = {
+                "metrics_path": f"{baseline_name}/metrics.json",
+                "predictions_path": f"{baseline_name}/predictions.jsonl",
+                "metrics": metrics_summary,
+                **metrics_summary,
+            }
+        write_json(output_dir / "baseline_summary.json", summary)
+        print(f"baseline_count={len(seen_names)} reference_baseline={reference_baseline_name} output_dir={output_dir}")
+        return 0
+
     if args.live:
         predictions = asyncio.run(_run_live_predictions(args, reference_now_ts, posts))
     else:
@@ -115,8 +246,6 @@ def main() -> int:
         current_opportunity_max_age_days=args.current_opportunity_max_age_days,
     )
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "metrics.json", metrics)
     write_jsonl(output_dir / "predictions.jsonl", predictions)
 

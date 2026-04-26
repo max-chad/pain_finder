@@ -8,9 +8,20 @@
     "is_pain",
     "is_monetizable",
     "post_type",
-    "is_current_opportunity",
+    "pain_type",
+    "expression_type",
     "first_handness",
     "buyer_authority",
+    "intensity_label",
+    "urgency_label",
+    "wtp_label",
+    "current_workaround",
+    "incumbent_failure",
+    "evidence_quality",
+    "evidence_expected",
+    "opportunity_type",
+    "is_current_opportunity",
+    "hard_negative_type",
     "reference_now_ts"
   ],
   "properties": {
@@ -36,8 +47,33 @@
         "vendor_rant"
       ]
     },
-    "is_current_opportunity": {
-      "type": "boolean"
+    "pain_type": {
+      "type": "string",
+      "enum": [
+        "operational",
+        "integration",
+        "reporting",
+        "billing",
+        "support",
+        "compliance",
+        "security",
+        "data_quality",
+        "workflow",
+        "unknown"
+      ]
+    },
+    "expression_type": {
+      "type": "string",
+      "enum": [
+        "first_person_complaint",
+        "solution_request",
+        "wish",
+        "workaround",
+        "tool_comparison",
+        "vendor_rant",
+        "second_hand_report",
+        "unknown"
+      ]
     },
     "first_handness": {
       "type": "string",
@@ -61,6 +97,106 @@
         "agency_operator",
         "unknown"
       ]
+    },
+    "intensity_label": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "urgency_label": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "wtp_label": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "current_workaround": {
+      "type": "string"
+    },
+    "incumbent_failure": {
+      "type": "string"
+    },
+    "evidence_quality": {
+      "type": "string",
+      "enum": [
+        "no_quote",
+        "weak_quote",
+        "exact_quote",
+        "multi_quote",
+        "linked_multi_source"
+      ]
+    },
+    "evidence_expected": {
+      "type": "boolean",
+      "description": "Backward-compatible alias for whether verified evidence is required/expected. Derived from evidence_quality != no_quote."
+    },
+    "opportunity_type": {
+      "type": "string",
+      "enum": [
+        "current_opportunity",
+        "evergreen_pain",
+        "research_lead",
+        "needs_validation",
+        "not_opportunity",
+        "unknown"
+      ]
+    },
+    "is_current_opportunity": {
+      "type": "boolean"
+    },
+    "hard_negative_type": {
+      "type": "string",
+      "enum": [
+        "none",
+        "generic_recommendation",
+        "generic_opinion",
+        "b2c_consumer_rant",
+        "solved_issue",
+        "founder_pitch",
+        "news_analysis",
+        "vendor_comparison_no_consequence",
+        "low_context_complaint",
+        "out_of_scope"
+      ]
+    },
+    "expected_cluster_key": {
+      "type": "string"
+    },
+    "evidence_relevance": {
+      "type": "string",
+      "enum": [
+        "relevant",
+        "irrelevant",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "source_link_validity": {
+      "type": "string",
+      "enum": [
+        "valid",
+        "invalid",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "feedback_useful": {
+      "type": "boolean"
     },
     "reference_now_ts": {
       "type": "integer",

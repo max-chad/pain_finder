@@ -31,6 +31,51 @@ VALID_BUYER_AUTHORITY = {
     "unknown",
 }
 VALID_EVIDENCE_QUALITY = {"no_quote", "weak_quote", "exact_quote", "multi_quote", "linked_multi_source"}
+VALID_PAIN_TYPES = {
+    "operational",
+    "integration",
+    "reporting",
+    "billing",
+    "support",
+    "compliance",
+    "security",
+    "data_quality",
+    "workflow",
+    "unknown",
+}
+VALID_EXPRESSION_TYPES = {
+    "first_person_complaint",
+    "solution_request",
+    "wish",
+    "workaround",
+    "tool_comparison",
+    "vendor_rant",
+    "second_hand_report",
+    "unknown",
+}
+VALID_OPPORTUNITY_TYPES = {
+    "current_opportunity",
+    "evergreen_pain",
+    "research_lead",
+    "needs_validation",
+    "not_opportunity",
+    "unknown",
+}
+VALID_LABEL_STRENGTHS = {"none", "low", "medium", "high"}
+VALID_HARD_NEGATIVE_TYPES = {
+    "none",
+    "generic_recommendation",
+    "generic_opinion",
+    "b2c_consumer_rant",
+    "solved_issue",
+    "founder_pitch",
+    "news_analysis",
+    "vendor_comparison_no_consequence",
+    "low_context_complaint",
+    "out_of_scope",
+}
+VALID_EVIDENCE_RELEVANCE = {"relevant", "irrelevant", "not_applicable", "unknown"}
+VALID_SOURCE_LINK_VALIDITY = {"valid", "invalid", "not_applicable", "unknown"}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -101,6 +146,27 @@ def _require_label_choice(value: Any, *, field_name: str, allowed: set[str]) -> 
     if normalized in allowed:
         return normalized
     raise ValueError(f"invalid {field_name}: {value!r}")
+
+
+def _optional_label_choice(value: Any, *, field_name: str, allowed: set[str]) -> str | None:
+    if value in {None, ""}:
+        return None
+    return _require_label_choice(value, field_name=field_name, allowed=allowed)
+
+
+def _require_label_text(row: dict[str, Any], field_name: str) -> str:
+    if field_name not in row:
+        raise ValueError(f"label row is missing {field_name}")
+    value = row[field_name]
+    if value is None:
+        raise ValueError(f"invalid {field_name}: {value!r}")
+    return str(value).strip()
+
+
+def _optional_label_bool(value: Any, *, field_name: str) -> bool | None:
+    if value in {None, ""}:
+        return None
+    return _require_label_bool(value, field_name=field_name)
 
 
 def _parse_optional_reference_now_ts(value: Any) -> int | None:
@@ -174,14 +240,59 @@ def posts_from_jsonl(path: str | Path) -> list[Post]:
 def _normalize_label_row(row: dict[str, Any]) -> dict[str, Any]:
     if not row.get("post_id"):
         raise ValueError("label row is missing post_id")
+    evidence_quality = _require_label_choice(
+        row.get("evidence_quality"),
+        field_name="evidence_quality",
+        allowed=VALID_EVIDENCE_QUALITY,
+    )
+    evidence_expected = (
+        evidence_quality != "no_quote"
+        if row.get("evidence_expected") is None
+        else _require_label_bool(row.get("evidence_expected"), field_name="evidence_expected")
+    )
     return {
         "post_id": str(row["post_id"]),
         "is_pain": _require_label_bool(row.get("is_pain"), field_name="is_pain"),
         "is_monetizable": _require_label_bool(row.get("is_monetizable"), field_name="is_monetizable"),
         "post_type": _require_label_choice(row.get("post_type"), field_name="post_type", allowed=VALID_POST_TYPES - {"unclassified"}),
-        "is_current_opportunity": _require_label_bool(row.get("is_current_opportunity"), field_name="is_current_opportunity"),
+        "pain_type": _require_label_choice(row.get("pain_type"), field_name="pain_type", allowed=VALID_PAIN_TYPES),
+        "expression_type": _require_label_choice(
+            row.get("expression_type"),
+            field_name="expression_type",
+            allowed=VALID_EXPRESSION_TYPES,
+        ),
         "first_handness": _require_label_choice(row.get("first_handness"), field_name="first_handness", allowed=VALID_FIRST_HANDNESS),
         "buyer_authority": _require_label_choice(row.get("buyer_authority"), field_name="buyer_authority", allowed=VALID_BUYER_AUTHORITY),
+        "intensity_label": _require_label_choice(row.get("intensity_label"), field_name="intensity_label", allowed=VALID_LABEL_STRENGTHS),
+        "urgency_label": _require_label_choice(row.get("urgency_label"), field_name="urgency_label", allowed=VALID_LABEL_STRENGTHS),
+        "wtp_label": _require_label_choice(row.get("wtp_label"), field_name="wtp_label", allowed=VALID_LABEL_STRENGTHS),
+        "current_workaround": _require_label_text(row, "current_workaround"),
+        "incumbent_failure": _require_label_text(row, "incumbent_failure"),
+        "evidence_quality": evidence_quality,
+        "evidence_expected": evidence_expected,
+        "opportunity_type": _require_label_choice(
+            row.get("opportunity_type"),
+            field_name="opportunity_type",
+            allowed=VALID_OPPORTUNITY_TYPES,
+        ),
+        "is_current_opportunity": _require_label_bool(row.get("is_current_opportunity"), field_name="is_current_opportunity"),
+        "hard_negative_type": _require_label_choice(
+            row.get("hard_negative_type"),
+            field_name="hard_negative_type",
+            allowed=VALID_HARD_NEGATIVE_TYPES,
+        ),
+        "expected_cluster_key": str(row.get("expected_cluster_key") or "").strip(),
+        "evidence_relevance": _optional_label_choice(
+            row.get("evidence_relevance"),
+            field_name="evidence_relevance",
+            allowed=VALID_EVIDENCE_RELEVANCE,
+        ),
+        "source_link_validity": _optional_label_choice(
+            row.get("source_link_validity"),
+            field_name="source_link_validity",
+            allowed=VALID_SOURCE_LINK_VALIDITY,
+        ),
+        "feedback_useful": _optional_label_bool(row.get("feedback_useful"), field_name="feedback_useful"),
         "reference_now_ts": _parse_optional_reference_now_ts(row.get("reference_now_ts")),
         "notes": str(row.get("notes", "")),
     }
@@ -327,16 +438,28 @@ async def generate_live_predictions(
     reference_now_ts: int,
     current_opportunity_max_age_days: int = 180,
 ) -> list[dict[str, Any]]:
-    signals = await classifier.classify_batch(posts)
-    signal_by_post_id = {signal.post.post_id: signal for signal in signals}
     screen_min_rule_score = max(0, _safe_int(getattr(classifier, "screen_min_rule_score", 0), default=0))
+    prescreen_scores = {post.post_id: _safe_int(classifier.prescreen_score(post), default=0) for post in posts}
+    if hasattr(classifier, "prescreen_posts"):
+        candidate_posts, _screen_stats = classifier.prescreen_posts(posts, max_candidates=None)
+    else:
+        scored = [(prescreen_scores[post.post_id], post) for post in posts if prescreen_scores[post.post_id] >= screen_min_rule_score]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        candidate_posts = [post for _, post in scored]
+        candidate_cap = max(0, _safe_int(getattr(classifier, "screen_max_llm_candidates_per_run", 0), default=0))
+        if candidate_cap > 0:
+            candidate_posts = candidate_posts[:candidate_cap]
+
+    signals = await classifier.classify_batch(candidate_posts)
+    signal_by_post_id = {signal.post.post_id: signal for signal in signals}
+    candidate_post_ids = {post.post_id for post in candidate_posts}
 
     predictions: list[dict[str, Any]] = []
     for post in posts:
-        prescreen_score = _safe_int(classifier.prescreen_score(post), default=0)
+        prescreen_score = prescreen_scores.get(post.post_id, 0)
         signal = signal_by_post_id.get(post.post_id)
-        if prescreen_score < screen_min_rule_score:
-            status = "screened_out"
+        if post.post_id not in candidate_post_ids:
+            status = "screened_out" if prescreen_score < screen_min_rule_score else "capped_out"
             signal = None
         elif signal is None:
             status = "no_signal"
@@ -398,6 +521,30 @@ def _has_exact_evidence(*, evidence_quality: str, evidence: list[dict[str, Any]]
     return evidence_quality in {"exact_quote", "multi_quote", "linked_multi_source"}
 
 
+def _prediction_cluster_key(prediction: dict[str, Any]) -> str:
+    for field_name in ("cluster_key", "canonical_cluster_key", "cluster_id", "canonical_cluster_id", "cluster"):
+        value = prediction.get(field_name)
+        if value not in {None, ""}:
+            return str(value)
+    return ""
+
+
+def _prediction_score(prediction: dict[str, Any]) -> float | None:
+    for field_name in ("opportunity_score", "score", "pain_score"):
+        value = prediction.get(field_name)
+        if value not in {None, ""}:
+            return _safe_float(value)
+    return None
+
+
+def _rate_payload(*, count: int, denominator: int) -> dict[str, Any]:
+    return {
+        "count": count,
+        "candidate_count": denominator,
+        "rate": round(count / denominator, 3) if denominator else None,
+    }
+
+
 def evaluate_predictions(
     *,
     posts: list[Post],
@@ -437,6 +584,19 @@ def evaluate_predictions(
     evidence_needs_review_count = 0
     evidence_match_rate_sum = 0.0
     evidence_confidence_sum = 0.0
+    hard_negative_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"count": 0, "false_positive_count": 0})
+    hard_negative_total_count = 0
+    hard_negative_false_positive_count = 0
+    manual_evidence_relevance_counts: dict[str, int] = defaultdict(int)
+    manual_source_link_validity_counts: dict[str, int] = defaultdict(int)
+    expected_to_predicted_clusters: dict[str, set[str]] = defaultdict(set)
+    predicted_cluster_expected_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    cluster_evaluated_count = 0
+    feedback_rows: list[tuple[float, bool]] = []
+    useful_prediction_count = 0
+    total_prediction_cost = 0.0
+    cost_observed_count = 0
+    latency_values: list[float] = []
 
     for post_id, label in label_by_post_id.items():
         post = posts_by_id.get(post_id)
@@ -464,6 +624,12 @@ def evaluate_predictions(
         ))
         evidence = _prediction_verified_evidence(prediction)
         evidence_quality = _prediction_evidence_quality(prediction)
+        has_matched_evidence = predicted_is_pain and _has_matched_evidence(
+            prediction,
+            evidence_quality=evidence_quality,
+            evidence=evidence,
+        )
+        has_exact_evidence = predicted_is_pain and _has_exact_evidence(evidence_quality=evidence_quality, evidence=evidence)
         if predicted_is_pain:
             evidence_predicted_pain_count += 1
             evidence_quality_counts[evidence_quality] += 1
@@ -471,14 +637,50 @@ def evaluate_predictions(
             evidence_confidence_sum += _coerce_unit_float(prediction.get("confidence"))
             if _safe_bool(prediction.get("needs_human_review")):
                 evidence_needs_review_count += 1
-            if _has_matched_evidence(prediction, evidence_quality=evidence_quality, evidence=evidence):
+            if has_matched_evidence:
                 evidence_coverage_count += 1
-            if _has_exact_evidence(evidence_quality=evidence_quality, evidence=evidence):
+            if has_exact_evidence:
                 evidence_exact_match_count += 1
 
         label_is_pain = bool(label["is_pain"])
         label_is_monetizable = bool(label["is_monetizable"])
         label_is_current = bool(label["is_current_opportunity"])
+        hard_negative_type = str(label.get("hard_negative_type") or "none")
+        if hard_negative_type != "none":
+            hard_negative_counts[hard_negative_type]["count"] += 1
+            hard_negative_total_count += 1
+            if predicted_is_pain:
+                hard_negative_counts[hard_negative_type]["false_positive_count"] += 1
+                hard_negative_false_positive_count += 1
+
+        evidence_relevance = label.get("evidence_relevance")
+        if has_matched_evidence and evidence_relevance in {"relevant", "irrelevant"}:
+            manual_evidence_relevance_counts[str(evidence_relevance)] += 1
+        source_link_validity = label.get("source_link_validity")
+        if has_matched_evidence and source_link_validity in {"valid", "invalid"}:
+            manual_source_link_validity_counts[str(source_link_validity)] += 1
+
+        expected_cluster_key = str(label.get("expected_cluster_key") or "")
+        predicted_cluster_key = _prediction_cluster_key(prediction)
+        if expected_cluster_key and predicted_cluster_key:
+            expected_to_predicted_clusters[expected_cluster_key].add(predicted_cluster_key)
+            predicted_cluster_expected_counts[predicted_cluster_key][expected_cluster_key] += 1
+            cluster_evaluated_count += 1
+
+        feedback_useful = label.get("feedback_useful")
+        if predicted_is_pain and feedback_useful is not None:
+            if bool(feedback_useful):
+                useful_prediction_count += 1
+            prediction_score = _prediction_score(prediction)
+            if prediction_score is not None:
+                feedback_rows.append((prediction_score, bool(feedback_useful)))
+        cost_value = prediction.get("cost_usd")
+        if cost_value not in {None, ""}:
+            total_prediction_cost += max(0.0, _safe_float(cost_value))
+            cost_observed_count += 1
+        latency_value = prediction.get("latency_ms")
+        if latency_value not in {None, ""}:
+            latency_values.append(max(0.0, _safe_float(latency_value)))
 
         if predicted_is_pain and label_is_pain:
             pain_tp += 1
@@ -494,9 +696,9 @@ def evaluate_predictions(
         elif (not predicted_is_monetizable) and label_is_monetizable:
             monetizable_fn += 1
 
-        if not label_is_current:
+        if label_is_pain and not label_is_current:
             stale_candidate_count += 1
-            if predicted_bucket == "current_opportunity":
+            if predicted_is_pain and predicted_bucket == "current_opportunity":
                 stale_leakage_count += 1
 
         if label_is_pain and prediction_status == "screened_out":
@@ -516,6 +718,27 @@ def evaluate_predictions(
     ordered_status_counts = {status: prediction_status_counts[status] for status in sorted(prediction_status_counts)}
     ordered_evidence_quality_counts = {quality: evidence_quality_counts[quality] for quality in sorted(evidence_quality_counts)}
     evidence_denominator = evidence_predicted_pain_count or 1
+    ordered_hard_negative_counts = {
+        hard_type: {
+            "count": counts["count"],
+            "false_positive_count": counts["false_positive_count"],
+            "false_positive_rate": round(counts["false_positive_count"] / counts["count"], 3) if counts["count"] else None,
+        }
+        for hard_type, counts in sorted(hard_negative_counts.items())
+    }
+    manual_relevance_total = manual_evidence_relevance_counts["relevant"] + manual_evidence_relevance_counts["irrelevant"]
+    source_validity_total = manual_source_link_validity_counts["valid"] + manual_source_link_validity_counts["invalid"]
+    cluster_duplicate_count = sum(max(0, len(predicted_keys) - 1) for predicted_keys in expected_to_predicted_clusters.values())
+    predicted_cluster_total = sum(sum(counts.values()) for counts in predicted_cluster_expected_counts.values())
+    predicted_cluster_majority_total = sum(max(counts.values()) for counts in predicted_cluster_expected_counts.values() if counts)
+    feedback_rows.sort(key=lambda row: row[0], reverse=True)
+    top_n_useful_rate = {
+        f"top_{n}": round(sum(1 for _, useful in feedback_rows[:n] if useful) / min(n, len(feedback_rows)), 3)
+        if feedback_rows
+        else None
+        for n in (1, 3, 5)
+    }
+    useful_insight_count = useful_prediction_count
 
     return {
         "dataset_size": len(label_by_post_id),
@@ -533,6 +756,8 @@ def evaluate_predictions(
         "post_type_confusion": ordered_confusion,
         "first_handness_accuracy": round(first_handness_matches / evaluated_count, 3) if evaluated_count else 0.0,
         "buyer_authority_accuracy": round(buyer_authority_matches / evaluated_count, 3) if evaluated_count else 0.0,
+        "evidence_coverage": round(evidence_coverage_count / evidence_denominator, 3),
+        "evidence_exact_match_rate": round(evidence_exact_match_count / evidence_denominator, 3),
         "evidence": {
             "predicted_pain_count": evidence_predicted_pain_count,
             "coverage_count": evidence_coverage_count,
@@ -544,5 +769,38 @@ def evaluate_predictions(
             "avg_match_rate": round(evidence_match_rate_sum / evidence_denominator, 3),
             "avg_confidence": round(evidence_confidence_sum / evidence_denominator, 3),
             "quality_counts": ordered_evidence_quality_counts,
+            "manual_relevance": {
+                "evaluated_count": manual_relevance_total,
+                "relevant_count": manual_evidence_relevance_counts["relevant"],
+                "irrelevant_count": manual_evidence_relevance_counts["irrelevant"],
+                "relevant_rate": round(manual_evidence_relevance_counts["relevant"] / manual_relevance_total, 3)
+                if manual_relevance_total
+                else None,
+            },
+            "source_link_validity": {
+                "evaluated_count": source_validity_total,
+                "valid_count": manual_source_link_validity_counts["valid"],
+                "invalid_count": manual_source_link_validity_counts["invalid"],
+                "valid_rate": round(manual_source_link_validity_counts["valid"] / source_validity_total, 3)
+                if source_validity_total
+                else None,
+            },
         },
+        "hard_negatives": {
+            "total_count": hard_negative_total_count,
+            "false_positive_count": hard_negative_false_positive_count,
+            "false_positive_rate": round(hard_negative_false_positive_count / hard_negative_total_count, 3)
+            if hard_negative_total_count
+            else None,
+            "by_type": ordered_hard_negative_counts,
+        },
+        "clusters": {
+            "evaluated_count": cluster_evaluated_count,
+            "duplicate_count": cluster_duplicate_count,
+            "duplicate_rate": round(cluster_duplicate_count / cluster_evaluated_count, 3) if cluster_evaluated_count else None,
+            "purity": round(predicted_cluster_majority_total / predicted_cluster_total, 3) if predicted_cluster_total else None,
+        },
+        "top_n_useful_rate": top_n_useful_rate,
+        "cost_per_useful_insight": round(total_prediction_cost / useful_insight_count, 3) if useful_insight_count and cost_observed_count else None,
+        "latency_ms_per_prediction": round(sum(latency_values) / len(latency_values), 3) if latency_values else None,
     }
