@@ -210,6 +210,8 @@ Paths and source auth:
 - `/export` always returns a CSV file.
 - If Sheets credentials and spreadsheet ID are set, export also upserts to Sheets.
 - Sheets failures do not block CSV; a warning message is returned.
+- CSV/Sheets are research-review friendly: rows include verified evidence, the score breakdown JSON, latest canonical cluster key/label, cluster quality signals, source coverage/frequency fields, and feedback status/counts.
+- Feedback fields are diagnostic only; they are exported for manual review and do not promote weak/no-evidence rows.
 
 ## Setup and Run
 

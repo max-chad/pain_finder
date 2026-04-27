@@ -643,6 +643,73 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
     assert "r4" not in ids
 
 
+async def test_list_export_rows_adds_cluster_coverage_and_feedback_research_fields(db):
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="reddit:research-export",
+        url="https://reddit.com/r/ops/comments/research-export",
+        title="Manual reconciliation blocks fulfillment",
+        body="We reconcile inventory in spreadsheets every Friday.",
+        category="complaint",
+        summary="Manual reconciliation blocks fulfillment.",
+        severity="high",
+        willingness_to_pay=9,
+        pain_level=8,
+        is_monetizable=True,
+        evidence_quality="exact_quote",
+        verified_evidence=[{"quote": "reconcile inventory in spreadsheets", "match_type": "exact"}],
+        confidence=0.88,
+        opportunity_score=72.5,
+        score_components={"weights": {"evidence": 0.24}, "raw_score": 72.5},
+        pain_mentions_per_1000_posts=12.5,
+        pain_mentions_per_1000_comments=4.5,
+        unique_authors_count=7,
+        unique_threads_count=4,
+        weekly_delta=2,
+        source_activity_baseline={"posts_scanned": 400},
+    )
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="inventory-sync-reconciliation",
+        cluster_key="inventory-sync-reconciliation:v1",
+        label="Inventory sync reconciliation",
+        summary="Ops teams reconcile inventory manually.",
+        estimated_monetization_signal="high",
+        item_count=1,
+        aggregate_wtp=9.0,
+        avg_opportunity_score=72.5,
+        cluster_stability_score=0.91,
+        verified_quote_count=5,
+        independent_source_count=2,
+        members=[("reddit:research-export", 0.87)],
+    )
+    await db.record_feedback(post_id="reddit:research-export", feedback_value="useful", source="telegram")
+    await db.record_feedback(post_id="reddit:research-export", feedback_value="bad_evidence", source="telegram")
+
+    rows = await db.list_export_rows(subreddit="ops", min_wtp=8, include_favorites=True)
+
+    row = next(item for item in rows if item["post_id"] == "reddit:research-export")
+    assert row["canonical_cluster_key"] == "inventory-sync-reconciliation"
+    assert row["cluster_key"] == "inventory-sync-reconciliation:v1"
+    assert row["cluster_label"] == "Inventory sync reconciliation"
+    assert row["cluster_stability_score"] == 0.91
+    assert row["cluster_verified_quote_count"] == 5
+    assert row["cluster_independent_source_count"] == 2
+    assert row["cluster_similarity"] == 0.87
+    assert row["pain_mentions_per_1000_posts"] == 12.5
+    assert row["pain_mentions_per_1000_comments"] == 4.5
+    assert row["unique_authors_count"] == 7
+    assert row["unique_threads_count"] == 4
+    assert row["weekly_delta"] == 2
+    assert json.loads(row["source_activity_baseline_json"]) == {"posts_scanned": 400}
+    assert row["feedback_status"] == "needs_review"
+    assert row["feedback_total"] == 2
+    assert json.loads(row["feedback_counts_json"]) == {"bad_evidence": 1, "useful": 1}
+    assert row["latest_feedback_value"] == "bad_evidence"
+    assert row["latest_feedback_at"]
+
+
 async def test_get_recent_pain_points_filters_by_opportunity_bucket_and_source_age(db):
     now = datetime.now(UTC)
     fresh_ts = int((now - timedelta(days=5)).timestamp())

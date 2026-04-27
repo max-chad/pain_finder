@@ -1554,30 +1554,113 @@ class Database:
         opportunity_bucket: str | None = None,
         max_source_age_days: int | None = None,
     ) -> list[dict[str, Any]]:
-        conditions = ["triage_status NOT IN ('discarded', 'merged')"]
+        conditions = ["p.triage_status NOT IN ('discarded', 'merged')"]
         params: list[Any] = []
         if subreddit:
-            conditions.append("subreddit = ?")
+            conditions.append("p.subreddit = ?")
             params.append(subreddit)
         if opportunity_bucket:
-            conditions.append("opportunity_bucket = ?")
+            conditions.append("p.opportunity_bucket = ?")
             params.append(opportunity_bucket)
         if max_source_age_days is not None:
             cutoff_ts = int((datetime.now(timezone.utc).timestamp()) - max(0, max_source_age_days) * 86400)
-            conditions.append("source_created_ts IS NOT NULL AND source_created_ts >= ?")
+            conditions.append("p.source_created_ts IS NOT NULL AND p.source_created_ts >= ?")
             params.append(cutoff_ts)
         if include_favorites:
-            conditions.append("(willingness_to_pay >= ? OR triage_status = 'favorite')")
+            conditions.append("(p.willingness_to_pay >= ? OR p.triage_status = 'favorite')")
             params.append(min_wtp)
         else:
-            conditions.append("willingness_to_pay >= ?")
+            conditions.append("p.willingness_to_pay >= ?")
             params.append(min_wtp)
 
-        query = "SELECT * FROM pain_points WHERE " + " AND ".join(conditions)  # nosec B608
-        query += " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, willingness_to_pay DESC, pain_level DESC, created_at DESC"  # nosec B608
+        latest_cluster_subquery = """
+            FROM macro_trend_members m
+            JOIN macro_trend_clusters c ON c.id = m.cluster_id
+            JOIN macro_trend_runs r ON r.id = c.run_id
+            WHERE m.post_id = p.post_id
+            ORDER BY r.created_at DESC, r.id DESC, c.avg_opportunity_score DESC, c.item_count DESC
+            LIMIT 1
+        """
+        query = f"""
+            SELECT
+                p.*,
+                (SELECT c.canonical_key {latest_cluster_subquery}) AS canonical_cluster_key,
+                (SELECT c.cluster_key {latest_cluster_subquery}) AS cluster_key,
+                (SELECT c.label {latest_cluster_subquery}) AS cluster_label,
+                (SELECT c.cluster_stability_score {latest_cluster_subquery}) AS cluster_stability_score,
+                (SELECT c.verified_quote_count {latest_cluster_subquery}) AS cluster_verified_quote_count,
+                (SELECT c.independent_source_count {latest_cluster_subquery}) AS cluster_independent_source_count,
+                (SELECT m.similarity {latest_cluster_subquery}) AS cluster_similarity
+            FROM pain_points p
+            WHERE {" AND ".join(conditions)}
+            ORDER BY CASE WHEN p.triage_status = 'favorite' THEN 0 ELSE 1 END,
+                     p.willingness_to_pay DESC,
+                     p.pain_level DESC,
+                     p.created_at DESC
+        """  # nosec B608 - conditions are constant fragments; values are bound separately.
         async with self._conn.execute(query, tuple(params)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            rows = [dict(row) for row in await cursor.fetchall()]
+        return await self._add_export_feedback_fields(rows)
+
+    async def _add_export_feedback_fields(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not rows:
+            return rows
+        post_ids = [str(row.get("post_id") or "") for row in rows if row.get("post_id")]
+        if not post_ids:
+            return rows
+        placeholders = ",".join("?" * len(post_ids))
+        counts_by_post: dict[str, dict[str, int]] = {post_id: {} for post_id in post_ids}
+        async with self._conn.execute(
+            f"""
+            SELECT post_id, feedback_value, COUNT(*) AS feedback_count
+            FROM feedback_events
+            WHERE post_id IN ({placeholders})
+            GROUP BY post_id, feedback_value
+            """,  # nosec B608 - placeholders are generated from row count; values are bound below.
+            tuple(post_ids),
+        ) as cursor:
+            for row in await cursor.fetchall():
+                post_id = str(row["post_id"])
+                counts_by_post.setdefault(post_id, {})[str(row["feedback_value"])] = int(row["feedback_count"] or 0)
+
+        latest_by_post: dict[str, dict[str, Any]] = {}
+        async with self._conn.execute(
+            f"""
+            SELECT f.post_id, f.feedback_value, f.created_at
+            FROM feedback_events f
+            JOIN (
+                SELECT post_id, MAX(id) AS latest_id
+                FROM feedback_events
+                WHERE post_id IN ({placeholders})
+                GROUP BY post_id
+            ) latest ON latest.latest_id = f.id
+            """,  # nosec B608 - placeholders are generated from row count; values are bound below.
+            tuple(post_ids),
+        ) as cursor:
+            for row in await cursor.fetchall():
+                latest_by_post[str(row["post_id"])] = dict(row)
+
+        for row in rows:
+            post_id = str(row.get("post_id") or "")
+            counts = counts_by_post.get(post_id, {})
+            total = sum(counts.values())
+            latest = latest_by_post.get(post_id, {})
+            row["feedback_total"] = total
+            row["feedback_counts_json"] = json.dumps(counts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            row["latest_feedback_value"] = latest.get("feedback_value", "") or ""
+            row["latest_feedback_at"] = latest.get("created_at", "") or ""
+            row["feedback_status"] = self._export_feedback_status(counts)
+        return rows
+
+    @staticmethod
+    def _export_feedback_status(counts: dict[str, int]) -> str:
+        total = sum(counts.values())
+        if total <= 0:
+            return "none"
+        useful_count = int(counts.get("useful") or 0)
+        if useful_count == total:
+            return "useful"
+        return "needs_review"
 
     async def record_analysis_run(
         self,

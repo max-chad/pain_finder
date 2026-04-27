@@ -143,6 +143,131 @@ async def test_export_service_writes_wave5_taxonomy_and_score_fields_to_csv(tmp_
     assert '"raw_score":71.2' in row["score_components_json"]
 
 
+async def test_export_service_writes_research_friendly_cluster_coverage_feedback_fields_to_csv(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-04-27T00:00:00",
+            "subreddit": "shopify",
+            "source": "reddit",
+            "post_id": "research-export",
+            "title": "Inventory sync blocks fulfillment",
+            "summary": "Inventory reconciliation blocks fulfillment.",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "E-commerce",
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.88,
+            "needs_human_review": 0,
+            "verified_evidence_json": '[{"quote":"reconcile inventory in spreadsheets","match_type":"exact"}]',
+            "opportunity_score": 72.5,
+            "score_components_json": '{"weights":{"evidence":0.24},"raw_score":72.5}',
+            "canonical_cluster_key": "inventory-sync-reconciliation",
+            "cluster_key": "inventory-sync-reconciliation:v1",
+            "cluster_label": "Inventory sync reconciliation",
+            "cluster_stability_score": 0.91,
+            "cluster_verified_quote_count": 5,
+            "cluster_independent_source_count": 2,
+            "cluster_similarity": 0.87,
+            "pain_mentions_per_1000_posts": 12.5,
+            "pain_mentions_per_1000_comments": 4.5,
+            "unique_authors_count": 7,
+            "unique_threads_count": 4,
+            "weekly_delta": 2,
+            "source_activity_baseline_json": '{"posts_scanned":400}',
+            "feedback_status": "needs_review",
+            "feedback_total": 2,
+            "feedback_counts_json": '{"useful":1,"bad_evidence":1}',
+            "latest_feedback_value": "bad_evidence",
+            "latest_feedback_at": "2026-04-27T12:00:00",
+            "url": "https://reddit.com/research-export",
+        }
+    ]
+
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+    result = await service.export(subreddit="shopify")
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        exported_rows = list(csv.DictReader(handle))
+
+    row = exported_rows[0]
+    assert row["canonical_cluster_key"] == "inventory-sync-reconciliation"
+    assert row["cluster_key"] == "inventory-sync-reconciliation:v1"
+    assert row["cluster_label"] == "Inventory sync reconciliation"
+    assert row["cluster_stability_score"] == "0.91"
+    assert row["cluster_verified_quote_count"] == "5"
+    assert row["cluster_independent_source_count"] == "2"
+    assert row["cluster_similarity"] == "0.87"
+    assert row["pain_mentions_per_1000_posts"] == "12.5"
+    assert row["pain_mentions_per_1000_comments"] == "4.5"
+    assert row["unique_authors_count"] == "7"
+    assert row["unique_threads_count"] == "4"
+    assert row["weekly_delta"] == "2"
+    assert row["source_activity_baseline_json"] == '{"posts_scanned":400}'
+    assert row["score_breakdown_json"] == '{"weights":{"evidence":0.24},"raw_score":72.5}'
+    assert row["feedback_status"] == "needs_review"
+    assert row["feedback_total"] == "2"
+    assert row["feedback_counts_json"] == '{"useful":1,"bad_evidence":1}'
+    assert row["latest_feedback_value"] == "bad_evidence"
+
+
+async def test_google_sheet_export_uses_same_research_friendly_headers_as_csv(tmp_path):
+    db = MagicMock()
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8, sheets_spreadsheet_id="sheet-id")
+    captured: dict[str, list[list[object]]] = {}
+
+    class FakeWorksheet:
+        def clear(self):
+            captured["cleared"] = True
+
+        def update(self, cell, values):
+            captured["cell"] = cell
+            captured["values"] = values
+
+    class FakeSpreadsheet:
+        def worksheet(self, name):
+            return FakeWorksheet()
+
+    class FakeGspread:
+        class WorksheetNotFound(Exception):
+            pass
+
+        @staticmethod
+        def service_account_from_dict(creds):
+            return MagicMock(open_by_key=MagicMock(return_value=FakeSpreadsheet()))
+
+    row = {
+        "created_at": "2026-04-27T00:00:00",
+        "subreddit": "ops",
+        "post_id": "sheet-export",
+        "title": "Manual reconciliation",
+        "summary": "Summary",
+        "pain_level": 8,
+        "willingness_to_pay": 9,
+        "canonical_cluster_key": "manual-reconciliation",
+        "score_components_json": '{"raw_score":81}',
+        "feedback_status": "useful",
+        "feedback_counts_json": '{"useful":1}',
+    }
+    with patch("export_sheets.gspread", FakeGspread):
+        service.sheets_credentials_json = '{"type":"service_account"}'
+        service._upsert_google_sheet(rows=[row], headers=service._headers(), subreddit="ops")
+
+    headers = captured["values"][0]
+    values = captured["values"][1]
+    assert captured["cell"] == "A1"
+    assert "canonical_cluster_key" in headers
+    assert "score_breakdown_json" in headers
+    assert "feedback_status" in headers
+    assert values[headers.index("canonical_cluster_key")] == "manual-reconciliation"
+    assert values[headers.index("score_breakdown_json")] == '{"raw_score":81}'
+    assert values[headers.index("feedback_status")] == "useful"
+
+
 async def test_export_service_sanitizes_spreadsheet_formula_prefixes(tmp_path):
     db = AsyncMock()
     db.list_export_rows.return_value = [
