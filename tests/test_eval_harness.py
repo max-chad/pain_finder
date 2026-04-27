@@ -389,6 +389,76 @@ def test_assess_mvp_thresholds_allows_explicit_benchmark_waiver(eval_harness_mod
     assert assessment["release_decision"] == "mvp_ready"
 
 
+def test_assess_mvp_thresholds_declares_eval_audit_scope(eval_harness_module):
+    metrics = {
+        "dataset_size": 150,
+        "pain": {"precision": 0.8, "recall": 0.7},
+        "monetizable": {"precision": 0.72},
+        "evidence": {"exact_match_rate": 0.98},
+        "top_n_useful_rate": {"top_10": 0.6},
+        "clusters": {"duplicate_rate": 0.1},
+    }
+
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics)
+
+    assert assessment["readiness_scope"] == "eval_audit_gate_only"
+    assert assessment["production_ready_claimed"] is False
+    assert assessment["usable_for_mvp"] is True
+    assert assessment["overall_pass"] is True
+
+
+def test_build_eval_run_manifest_links_inputs_artifacts_and_threshold_scope(eval_harness_module):
+    metrics = {
+        "dataset_size": 150,
+        "reference_now_ts": REFERENCE_NOW_TS,
+        "pain": {"precision": 0.8, "recall": 0.7},
+        "monetizable": {"precision": 0.72},
+        "evidence": {"exact_match_rate": 0.98},
+        "top_n_useful_rate": {"top_10": 0.6},
+        "clusters": {"duplicate_rate": 0.1},
+    }
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics)
+
+    manifest = eval_harness_module.build_eval_run_manifest(
+        run_mode="offline_predictions",
+        dataset_path=Path("eval/seed_posts.jsonl"),
+        labels_path=Path("eval/labels.jsonl"),
+        output_dir=Path("reports/eval/run-1"),
+        reference_now_ts=REFERENCE_NOW_TS,
+        metrics=metrics,
+        mvp_thresholds=assessment,
+        artifacts={
+            "input_predictions_path": Path("eval/artifacts/current/predictions.jsonl"),
+            "metrics_path": Path("reports/eval/run-1/metrics.json"),
+            "predictions_path": Path("reports/eval/run-1/predictions.jsonl"),
+            "mvp_thresholds_path": Path("reports/eval/run-1/mvp_thresholds.json"),
+        },
+    )
+
+    assert manifest["schema_version"] == "eval_run_manifest_v1"
+    assert manifest["readiness_scope"] == "eval_audit_gate_only"
+    assert manifest["production_ready_claimed"] is False
+    assert manifest["run_mode"] == "offline_predictions"
+    assert manifest["inputs"] == {
+        "dataset_path": "eval/seed_posts.jsonl",
+        "labels_path": "eval/labels.jsonl",
+        "input_predictions_path": "eval/artifacts/current/predictions.jsonl",
+    }
+    assert manifest["eval"] == {"dataset_size": 150, "reference_now_ts": REFERENCE_NOW_TS}
+    assert manifest["artifacts"] == {
+        "metrics_path": "metrics.json",
+        "predictions_path": "predictions.jsonl",
+        "mvp_thresholds_path": "mvp_thresholds.json",
+    }
+    assert manifest["mvp_thresholds"] == {
+        "readiness_scope": "eval_audit_gate_only",
+        "production_ready_claimed": False,
+        "release_decision": "mvp_ready",
+        "usable_for_mvp": True,
+        "overall_pass": True,
+    }
+
+
 def test_missing_predictions_do_not_create_usefulness_or_stale_leakage(eval_harness_module, sample_posts, sample_labels):
     metrics = eval_harness_module.evaluate_predictions(
         posts=sample_posts,
@@ -795,12 +865,15 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     metrics_path = output_dir / "metrics.json"
     written_predictions_path = output_dir / "predictions.jsonl"
     mvp_thresholds_path = output_dir / "mvp_thresholds.json"
+    manifest_path = output_dir / "run_manifest.json"
     assert metrics_path.exists()
     assert written_predictions_path.exists()
     assert mvp_thresholds_path.exists()
+    assert manifest_path.exists()
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     threshold_assessment = json.loads(mvp_thresholds_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert metrics["dataset_size"] == 1
     assert metrics["pain"]["precision"] == pytest.approx(1.0)
     assert metrics["stale_leakage"]["count"] == 0
@@ -809,6 +882,21 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     assert threshold_assessment["usable_for_mvp"] is False
     assert threshold_assessment["release_decision"] == "not_ready_expanded_benchmark_required"
     assert threshold_assessment["checks"]["top_10_useful_insight_rate"]["observed"] == pytest.approx(1.0)
+    assert threshold_assessment["readiness_scope"] == "eval_audit_gate_only"
+    assert threshold_assessment["production_ready_claimed"] is False
+    assert manifest["run_mode"] == "offline_predictions"
+    assert manifest["readiness_scope"] == "eval_audit_gate_only"
+    assert manifest["production_ready_claimed"] is False
+    assert manifest["inputs"]["dataset_path"] == str(dataset_path)
+    assert manifest["inputs"]["labels_path"] == str(labels_path)
+    assert manifest["inputs"]["input_predictions_path"] == str(predictions_path)
+    assert manifest["artifacts"] == {
+        "metrics_path": "metrics.json",
+        "predictions_path": "predictions.jsonl",
+        "mvp_thresholds_path": "mvp_thresholds.json",
+    }
+    assert manifest["mvp_thresholds"]["release_decision"] == "not_ready_expanded_benchmark_required"
+    assert manifest["mvp_thresholds"]["readiness_scope"] == "eval_audit_gate_only"
 
     stdout = capsys.readouterr().out
     assert "dataset_size=1" in stdout
@@ -902,6 +990,7 @@ def test_run_eval_offline_writes_baseline_artifacts(tmp_path, monkeypatch):
     current_metrics = json.loads((output_dir / "current" / "metrics.json").read_text(encoding="utf-8"))
     rules_only_metrics = json.loads((output_dir / "rules_only" / "metrics.json").read_text(encoding="utf-8"))
     summary = json.loads((output_dir / "baseline_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
 
     assert current_metrics["pain"]["recall"] == pytest.approx(1.0)
     assert rules_only_metrics["pain"]["recall"] == pytest.approx(0.0)
@@ -918,6 +1007,14 @@ def test_run_eval_offline_writes_baseline_artifacts(tmp_path, monkeypatch):
     assert summary["comparisons"]["rules_only_vs_current"]["screening_false_negative_delta"] == 1
     assert summary["comparisons"]["rules_only_vs_current"]["evidence_exact_match_rate_delta"] == pytest.approx(-1.0)
     assert (output_dir / "current" / "mvp_thresholds.json").exists()
+    assert manifest["run_mode"] == "baseline_comparison"
+    assert manifest["readiness_scope"] == "eval_audit_gate_only"
+    assert manifest["production_ready_claimed"] is False
+    assert manifest["artifacts"]["baseline_summary_path"] == "baseline_summary.json"
+    assert manifest["baselines"]["current"]["metrics_path"] == "current/metrics.json"
+    assert manifest["baselines"]["current"]["predictions_path"] == "current/predictions.jsonl"
+    assert manifest["baselines"]["current"]["mvp_thresholds_path"] == "current/mvp_thresholds.json"
+    assert manifest["baselines"]["current"]["mvp_release_decision"] == "not_ready_expanded_benchmark_required"
 
 
 def test_checked_in_seed_labels_include_expanded_hard_negatives(eval_harness_module):

@@ -79,6 +79,8 @@ VALID_EVIDENCE_RELEVANCE = {"relevant", "irrelevant", "not_applicable", "unknown
 VALID_SOURCE_LINK_VALIDITY = {"valid", "invalid", "not_applicable", "unknown"}
 
 MVP_MIN_DATASET_SIZE = 100
+MVP_READINESS_SCOPE = "eval_audit_gate_only"
+MVP_PRODUCTION_READY_CLAIMED = False
 MVP_TARGET_THRESHOLDS: dict[str, dict[str, Any]] = {
     "pain_precision": {"metric_path": "pain.precision", "operator": ">=", "target": 0.75},
     "pain_recall": {"metric_path": "pain.recall", "operator": ">=", "target": 0.60},
@@ -643,6 +645,8 @@ def assess_mvp_thresholds(
         release_decision = "not_ready_thresholds_missing_or_failing"
     return {
         "schema_version": "mvp_threshold_assessment_v1",
+        "readiness_scope": MVP_READINESS_SCOPE,
+        "production_ready_claimed": MVP_PRODUCTION_READY_CLAIMED,
         "targets": MVP_TARGET_THRESHOLDS,
         "benchmark_gate": {
             "dataset_size": dataset_size,
@@ -655,6 +659,79 @@ def assess_mvp_thresholds(
         "usable_for_mvp": overall_pass,
         "release_decision": release_decision,
     }
+
+
+def _manifest_path_value(path: str | Path) -> str:
+    return Path(path).as_posix()
+
+
+def _manifest_artifact_path(path: str | Path, *, output_dir: str | Path) -> str:
+    path_obj = Path(path)
+    output_obj = Path(output_dir)
+    try:
+        return path_obj.relative_to(output_obj).as_posix()
+    except ValueError:
+        return path_obj.as_posix()
+
+
+def _mvp_threshold_manifest_summary(mvp_thresholds: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "readiness_scope": str(mvp_thresholds.get("readiness_scope") or MVP_READINESS_SCOPE),
+        "production_ready_claimed": _safe_bool(
+            mvp_thresholds.get("production_ready_claimed", MVP_PRODUCTION_READY_CLAIMED)
+        ),
+        "release_decision": str(mvp_thresholds.get("release_decision") or "not_evaluated"),
+        "usable_for_mvp": _safe_bool(mvp_thresholds.get("usable_for_mvp", False)),
+        "overall_pass": _safe_bool(mvp_thresholds.get("overall_pass", False)),
+    }
+
+
+def build_eval_run_manifest(
+    *,
+    run_mode: str,
+    dataset_path: str | Path,
+    labels_path: str | Path,
+    output_dir: str | Path,
+    reference_now_ts: int,
+    metrics: dict[str, Any],
+    mvp_thresholds: dict[str, Any],
+    artifacts: dict[str, str | Path],
+    baselines: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build an audit-only traceability manifest for eval artifacts.
+
+    The manifest links inputs, generated artifact paths, and Wave 9.2 threshold
+    assessment scope. It is deliberately a release/audit packet, not a runtime
+    promotion or production-readiness signal.
+    """
+
+    inputs = {
+        "dataset_path": _manifest_path_value(dataset_path),
+        "labels_path": _manifest_path_value(labels_path),
+    }
+    output_artifacts: dict[str, str] = {}
+    for name, path in artifacts.items():
+        if name.startswith("input_"):
+            inputs[name] = _manifest_path_value(path)
+        else:
+            output_artifacts[name] = _manifest_artifact_path(path, output_dir=output_dir)
+
+    manifest: dict[str, Any] = {
+        "schema_version": "eval_run_manifest_v1",
+        "readiness_scope": MVP_READINESS_SCOPE,
+        "production_ready_claimed": MVP_PRODUCTION_READY_CLAIMED,
+        "run_mode": str(run_mode),
+        "inputs": inputs,
+        "eval": {
+            "dataset_size": _safe_int(metrics.get("dataset_size"), default=0),
+            "reference_now_ts": int(reference_now_ts),
+        },
+        "artifacts": output_artifacts,
+        "mvp_thresholds": _mvp_threshold_manifest_summary(mvp_thresholds),
+    }
+    if baselines is not None:
+        manifest["baselines"] = baselines
+    return manifest
 
 
 def evaluate_predictions(

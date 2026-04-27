@@ -41,6 +41,11 @@ def test_hardening_audit_report_covers_wave9_release_gates():
 
     assert "PR #6" in text
     assert "draft" in text.lower()
+    assert "e3327c8" in text
+    assert "mvp_thresholds.json" in text
+    assert "run_manifest.json" in text
+    assert "eval/audit gate" in text.lower()
+    assert "production-readiness claim" in text.lower()
     assert "pytest --cov=. --cov-fail-under=80 -q" in text
     assert "static added-lines secret scan" in text
     assert "not ready for unattended production use" in text.lower()
@@ -57,6 +62,7 @@ def test_readme_documents_self_research_workflow():
         "local static HTML report",
         "grouped `.docx` digest",
         "MVP threshold status",
+        "run_manifest.json",
     ]
     for marker in required_markers:
         assert marker in text
@@ -68,6 +74,7 @@ def test_eval_readme_documents_wave92_mvp_threshold_assessment():
     required_markers = [
         "## Wave 9.2 MVP threshold assessment",
         "mvp_thresholds.json",
+        "run_manifest.json",
         "not usable for MVP",
         "expanded benchmark",
         "explicit waiver",

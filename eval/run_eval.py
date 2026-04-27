@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from eval_harness import (  # noqa: E402
     MVP_MIN_DATASET_SIZE,
     assess_mvp_thresholds,
+    build_eval_run_manifest,
     evaluate_predictions,
     generate_live_predictions,
     labels_from_jsonl,
@@ -142,6 +143,32 @@ def _write_mvp_thresholds(output_dir: Path, metrics: dict[str, object], args: ar
     return assessment
 
 
+def _write_run_manifest(
+    output_dir: Path,
+    *,
+    run_mode: str,
+    args: argparse.Namespace,
+    reference_now_ts: int,
+    metrics: dict[str, object],
+    mvp_thresholds: dict[str, object],
+    artifacts: dict[str, str | Path],
+    baselines: dict[str, object] | None = None,
+) -> dict[str, object]:
+    manifest = build_eval_run_manifest(
+        run_mode=run_mode,
+        dataset_path=args.dataset,
+        labels_path=args.labels,
+        output_dir=output_dir,
+        reference_now_ts=reference_now_ts,
+        metrics=metrics,
+        mvp_thresholds=mvp_thresholds,
+        artifacts=artifacts,
+        baselines=baselines,
+    )
+    write_json(output_dir / "run_manifest.json", manifest)
+    return manifest
+
+
 def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dspy: bool = False):
     import config
     from classifier import Classifier
@@ -221,6 +248,7 @@ def main() -> int:
         seen_names: set[str] = set()
         reference_baseline_name = ""
         reference_metrics: dict[str, object] | None = None
+        reference_mvp_thresholds: dict[str, object] | None = None
         for spec in args.baseline_predictions:
             try:
                 baseline_name, predictions_path = _parse_baseline_prediction_spec(spec)
@@ -245,6 +273,7 @@ def main() -> int:
             if reference_metrics is None:
                 reference_baseline_name = baseline_name
                 reference_metrics = metrics_summary
+                reference_mvp_thresholds = mvp_thresholds
                 summary["reference_baseline"] = baseline_name
             else:
                 summary["comparisons"][f"{baseline_name}_vs_{reference_baseline_name}"] = _baseline_comparison(
@@ -261,6 +290,16 @@ def main() -> int:
                 **metrics_summary,
             }
         write_json(output_dir / "baseline_summary.json", summary)
+        _write_run_manifest(
+            output_dir,
+            run_mode="baseline_comparison",
+            args=args,
+            reference_now_ts=reference_now_ts,
+            metrics={"dataset_size": len(posts), "reference_now_ts": int(reference_now_ts)},
+            mvp_thresholds=reference_mvp_thresholds or {},
+            artifacts={"baseline_summary_path": output_dir / "baseline_summary.json"},
+            baselines=summary["baselines"],
+        )
         print(f"baseline_count={len(seen_names)} reference_baseline={reference_baseline_name} output_dir={output_dir}")
         return 0
 
@@ -280,6 +319,22 @@ def main() -> int:
     write_json(output_dir / "metrics.json", metrics)
     mvp_thresholds = _write_mvp_thresholds(output_dir, metrics, args)
     write_jsonl(output_dir / "predictions.jsonl", predictions)
+    manifest_artifacts: dict[str, str | Path] = {
+        "metrics_path": output_dir / "metrics.json",
+        "predictions_path": output_dir / "predictions.jsonl",
+        "mvp_thresholds_path": output_dir / "mvp_thresholds.json",
+    }
+    if args.predictions_path:
+        manifest_artifacts["input_predictions_path"] = args.predictions_path
+    _write_run_manifest(
+        output_dir,
+        run_mode="live" if args.live else "offline_predictions",
+        args=args,
+        reference_now_ts=reference_now_ts,
+        metrics=metrics,
+        mvp_thresholds=mvp_thresholds,
+        artifacts=manifest_artifacts,
+    )
 
     print(
         "dataset_size={dataset} pain_precision={pain_precision:.3f} monetizable_precision={monetizable_precision:.3f} "
