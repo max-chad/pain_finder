@@ -176,6 +176,18 @@ python eval/run_eval.py \
 
 See `baselines.example.yaml` for the preferred baseline names: `current`, `rules_only`, `no_prescreen`, `llm_only`, and `dspy`.
 
+## Score calibration artifact
+
+Wave 5 adds a deterministic, review-only calibration helper for visible opportunity score components. It evaluates deterministic default weights against saved labels/predictions and writes review-only recommendations, but deliberately sets `auto_apply=false`; never wire its output directly into runtime without a regression pass.
+
+```bash
+python eval/calibrate_score.py \
+  --labels eval/labels.jsonl \
+  --predictions eval/artifacts/seed-live/predictions.jsonl \
+  --output eval/artifacts/score-calibration.json \
+  --top-n 10
+```
+
 ## Artifact layout
 
 Single-mode runs write:

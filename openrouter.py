@@ -42,29 +42,47 @@ VALID_BUYER_AUTHORITIES = {
 VALID_PAIN_TYPES = {
     "operational",
     "integration",
+    "integration_gap",
     "reporting",
+    "reporting_gap",
     "billing",
+    "billing_payout",
     "support",
     "compliance",
     "security",
     "data_quality",
+    "data_reconciliation",
     "workflow",
+    "workflow_friction",
+    "manual_process",
+    "approval_bottleneck",
     "unknown",
 }
 VALID_EXPRESSION_TYPES = {
     "first_person_complaint",
+    "complaint",
     "solution_request",
+    "feature_request",
     "wish",
     "workaround",
+    "implicit_workaround",
     "tool_comparison",
     "vendor_rant",
     "second_hand_report",
+    "switching_trigger",
+    "approval_blocker",
     "unknown",
 }
 VALID_EVIDENCE_QUALITY = {"no_quote", "weak_quote", "exact_quote", "multi_quote", "linked_multi_source"}
 VALID_OPPORTUNITY_TYPES = {
     "current_opportunity",
     "evergreen_pain",
+    "automation",
+    "integration",
+    "reporting",
+    "workflow_tool",
+    "data_quality",
+    "billing_ops",
     "research_lead",
     "needs_validation",
     "not_opportunity",
@@ -132,14 +150,14 @@ Rules:
 - first_handness: one of first_hand, second_hand, aggregated, speculative, unknown
 - buyer_authority: one of intern, ic, engineer, manager, head_of_ops, founder_owner, agency_operator, unknown
 - evidence_spans: array with 1..3 short quotes copied from the post, max 160 chars each
-- pain_type: one of operational, integration, reporting, billing, support, compliance, security, data_quality, workflow, unknown
-- expression_type: one of first_person_complaint, solution_request, wish, workaround, tool_comparison, vendor_rant, second_hand_report, unknown
+- pain_type: one of operational, integration, integration_gap, reporting, reporting_gap, billing, billing_payout, support, compliance, security, data_quality, data_reconciliation, workflow, workflow_friction, manual_process, approval_bottleneck, unknown
+- expression_type: one of first_person_complaint, complaint, solution_request, feature_request, wish, workaround, implicit_workaround, tool_comparison, vendor_rant, second_hand_report, switching_trigger, approval_blocker, unknown
 - user_context: concise user/company/workflow context from the post
 - intensity, frequency, urgency: integer 0..10
 - current_workaround: current manual/tool workaround, empty string only if not stated
 - incumbent_failure: why existing tools/processes fail, empty string only if not stated
 - evidence_quality: one of no_quote, weak_quote, exact_quote, multi_quote, linked_multi_source
-- opportunity_type: one of current_opportunity, evergreen_pain, research_lead, needs_validation, not_opportunity, unknown
+- opportunity_type: one of current_opportunity, evergreen_pain, automation, integration, reporting, workflow_tool, data_quality, billing_ops, research_lead, needs_validation, not_opportunity, unknown
 - confidence: number 0..1 for classification confidence after reading the evidence
 - uncertainty_reason: short reason when confidence is low or evidence is ambiguous, else empty string
 - needs_human_review: true when evidence is missing/ambiguous or classification confidence is low

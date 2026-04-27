@@ -9,7 +9,7 @@ from classifier import PainSignal
 from db import Database
 from evidence import VerifiedEvidence
 from openrouter import DeepDiveResult
-from pipeline import AnalysisPipeline
+from pipeline import AnalysisPipeline, WEAK_SIGNAL_SCORE_CAP
 from scraper import Post, RedditComment
 
 
@@ -19,6 +19,77 @@ async def db(tmp_path):
     await database.init()
     yield database
     await database.close()
+
+
+def _wave5_signal(
+    post_id: str,
+    *,
+    intensity_score: float = 0.72,
+    frequency_signal: str = "thread_consensus",
+    urgency: str = "active_blocker",
+    current_workaround: str = "manual",
+    wtp_score: float = 0.64,
+    incumbent_failure: str = "weak",
+    verified: bool = True,
+    needs_human_review: bool = False,
+) -> PainSignal:
+    quote = "manual reconciliation blocks payroll"
+    post = Post(
+        post_id=post_id,
+        subreddit="financeops",
+        title="Manual reconciliation blocks payroll",
+        body=f"As ops lead, {quote} every Friday and our ERP export keeps failing.",
+        url=f"https://example.com/{post_id}",
+        score=14,
+        top_comments=["Same here, we use spreadsheets too."],
+        source_created_ts=1776688800,
+        source_created_at="2026-04-20T10:00:00+00:00",
+    )
+    verified_evidence = [
+        VerifiedEvidence(
+            quote=quote,
+            source_type="body",
+            post_id=post_id,
+            comment_id=None,
+            permalink=f"https://example.com/{post_id}",
+            match_type="exact",
+            match_confidence=1.0,
+            created_utc=1776688800,
+        )
+    ] if verified else []
+    return PainSignal(
+        post=post,
+        category="complaint",
+        summary="Manual reconciliation blocks payroll.",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=round(wtp_score * 10),
+        niche_category="Finance Ops",
+        competitor_tags=["netsuite"],
+        analysis_mode="b2b",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="head_of_ops",
+        pain_type="workflow_friction",
+        expression_type="complaint",
+        user_context="Ops lead at a mid-market finance team",
+        user_context_json={"role": "ops_lead", "company_size": "mid_market", "process": "payroll reconciliation"},
+        intensity_score=intensity_score,
+        frequency_signal=frequency_signal,
+        urgency=urgency,
+        current_workaround=current_workaround,
+        wtp_score=wtp_score,
+        incumbent_failure=incumbent_failure,
+        opportunity_type="automation",
+        evidence_spans=[quote],
+        verified_evidence=verified_evidence,
+        evidence_quality="exact_quote" if verified else "no_quote",
+        evidence_match_rate=1.0 if verified else 0.0,
+        confidence=0.88,
+        needs_human_review=needs_human_review,
+        opportunity_bucket="current_opportunity",
+    )
 
 
 async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
@@ -144,6 +215,59 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert rows[0]["confidence"] == 0.73
     assert rows[0]["needs_human_review"] == 0
     assert json.loads(rows[0]["verified_evidence_json"])[0]["quote"] == "still broken"
+
+
+async def test_pipeline_persists_wave5_taxonomy_fields_to_db_and_report(db, tmp_path):
+    signal = _wave5_signal(
+        "wave5-pipeline",
+        intensity_score=0.82,
+        frequency_signal="thread_consensus",
+        urgency="active_blocker",
+        current_workaround="spreadsheet",
+        wtp_score=0.91,
+        incumbent_failure="explicit_competitor_failure",
+    )
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[signal]),
+        openrouter=None,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[signal.post], source="reddit", run_scope="financeops")
+
+    row = await db.get_pain_point("wave5-pipeline")
+    assert row is not None
+    assert row["pain_type"] == "workflow_friction"
+    assert row["expression_type"] == "complaint"
+    assert json.loads(row["user_context_json"])["role"] == "ops_lead"
+    assert row["intensity_score"] == 0.82
+    assert row["frequency_signal"] == "thread_consensus"
+    assert row["urgency"] == "active_blocker"
+    assert row["current_workaround"] == "spreadsheet"
+    assert row["wtp_score"] == 0.91
+    assert row["incumbent_failure"] == "explicit_competitor_failure"
+    assert row["opportunity_type"] == "automation"
+
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    report_row = report_payload[0]
+    assert report_row["pain_type"] == "workflow_friction"
+    assert report_row["expression_type"] == "complaint"
+    assert report_row["user_context_json"]["process"] == "payroll reconciliation"
+    assert report_row["intensity_score"] == 0.82
+    assert report_row["frequency_signal"] == "thread_consensus"
+    assert report_row["urgency"] == "active_blocker"
+    assert report_row["current_workaround"] == "spreadsheet"
+    assert report_row["wtp_score"] == 0.91
+    assert report_row["incumbent_failure"] == "explicit_competitor_failure"
+    assert report_row["opportunity_type"] == "automation"
+    assert "weights" in report_row["score_components"]
 
 
 async def test_analyze_external_posts_persists_structured_comments_flags_and_coverage(db, tmp_path):
@@ -776,6 +900,83 @@ async def test_evidence_first_promotion_demotes_unverified_high_wtp_signals(db, 
     digest = await pipeline.generate_digest(subreddit="python", hours=24)
     assert [item["post_id"] for item in digest["top_items"]] == ["supported"]
     assert [item["post_id"] for item in digest["needs_review_items"]] == ["unsupported"]
+
+
+def test_wave5_score_components_include_weights_and_raw_score_increases_with_wtp_workaround_failure(tmp_path):
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=AsyncMock(),
+        reports_dir=str(tmp_path),
+    )
+    lower_signal = _wave5_signal(
+        "wave5-score-lower",
+        wtp_score=0.2,
+        current_workaround="none",
+        incumbent_failure="none",
+        frequency_signal="single",
+        urgency="mild",
+    )
+    higher_signal = _wave5_signal(
+        "wave5-score-higher",
+        wtp_score=0.9,
+        current_workaround="paid_tool",
+        incumbent_failure="explicit_competitor_failure",
+        frequency_signal="thread_consensus",
+        urgency="active_blocker",
+    )
+
+    pipeline._enrich_signal(lower_signal)
+    pipeline._enrich_signal(higher_signal)
+
+    components = higher_signal.score_components
+    assert components is not None
+    assert components["weights"] == {
+        "intensity": 0.18,
+        "frequency": 0.14,
+        "wtp": 0.14,
+        "buyer_authority": 0.12,
+        "current_workaround": 0.10,
+        "incumbent_failure": 0.10,
+        "urgency": 0.08,
+        "evidence_quality": 0.08,
+        "recency": 0.06,
+    }
+    assert set(components["factors"]) == set(components["weights"])
+    assert {"noise", "shill_risk", "solved", "stale", "type"} <= set(components["penalties"])
+    assert components["raw_score"] == components["pre_promotion_score"]
+    assert components["raw_opportunity_score"] == components["pre_promotion_score"]
+    assert components["promotion_eligible"] is True
+    assert components["evidence_rejection_reason"] == ""
+    assert higher_signal.score_components["raw_score"] > lower_signal.score_components["raw_score"]
+
+
+def test_wave5_unsupported_evidence_is_capped_and_not_promoted(tmp_path):
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=AsyncMock(),
+        reports_dir=str(tmp_path),
+    )
+    signal = _wave5_signal(
+        "wave5-score-unsupported",
+        intensity_score=1.0,
+        wtp_score=1.0,
+        current_workaround="paid_tool",
+        incumbent_failure="switching",
+        urgency="revenue_critical",
+        verified=False,
+        needs_human_review=True,
+    )
+
+    pipeline._enrich_signal(signal)
+
+    assert signal.promotion_eligible is False
+    assert signal.evidence_rejection_reason == "no_verified_exact_quote"
+    assert signal.opportunity_score <= WEAK_SIGNAL_SCORE_CAP
+    assert signal.score_components["promotion_eligible"] is False
+    assert signal.score_components["evidence_rejection_reason"] == "no_verified_exact_quote"
+    assert signal.score_components["pre_promotion_score"] >= signal.opportunity_score
 
 
 async def test_pipeline_uses_semantic_candidates_and_routes_low_confidence_to_review(db, tmp_path):

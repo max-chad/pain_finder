@@ -158,6 +158,64 @@ async def test_insert_pain_point_persists_verified_evidence_quality(db):
     assert json.loads(row["verified_evidence_json"]) == verified
     assert row["evidence_quality"] == "exact_quote"
     assert row["evidence_match_rate"] == 1.0
+
+
+async def test_insert_pain_point_persists_wave5_taxonomy_fields(db):
+    user_context = {
+        "role": "ops_lead",
+        "industry": "ecommerce",
+        "company_size": "50-200",
+        "tool_stack": ["shopify", "netsuite"],
+        "process": "inventory reconciliation",
+    }
+    score_components = {
+        "weights": {"intensity": 0.18, "frequency": 0.14},
+        "raw_score": 71.2,
+        "promotion_eligible": True,
+    }
+
+    await db.insert_pain_point(
+        subreddit="shopify",
+        post_id="wave5-taxonomy",
+        url="https://reddit.com/r/shopify/comments/wave5-taxonomy",
+        title="Inventory sync blocks fulfillment",
+        body="Ops lead here. We still reconcile inventory in spreadsheets before every fulfillment run.",
+        category="complaint",
+        summary="Inventory reconciliation is blocking fulfillment.",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=9,
+        pain_type="integration_gap",
+        expression_type="feature_request",
+        user_context_json=user_context,
+        intensity_score=0.82,
+        frequency_signal="thread_consensus",
+        urgency="active_blocker",
+        current_workaround="spreadsheet",
+        wtp_score=0.91,
+        incumbent_failure="explicit_competitor_failure",
+        opportunity_type="automation",
+        opportunity_score=71.2,
+        score_components=score_components,
+        confidence=0.82,
+        needs_human_review=False,
+    )
+
+    row = await db.get_pain_point("wave5-taxonomy")
+
+    assert row is not None
+    assert row["pain_type"] == "integration_gap"
+    assert row["expression_type"] == "feature_request"
+    assert json.loads(row["user_context_json"]) == user_context
+    assert row["intensity_score"] == 0.82
+    assert row["frequency_signal"] == "thread_consensus"
+    assert row["urgency"] == "active_blocker"
+    assert row["current_workaround"] == "spreadsheet"
+    assert row["wtp_score"] == 0.91
+    assert row["incumbent_failure"] == "explicit_competitor_failure"
+    assert row["opportunity_type"] == "automation"
+    assert json.loads(row["score_components_json"]) == score_components
     assert row["confidence"] == 0.82
     assert row["needs_human_review"] == 0
 

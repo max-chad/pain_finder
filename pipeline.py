@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 
 PROMOTION_BUYER_AUTHORITY_MIN_SCORE = 0.82
 WEAK_SIGNAL_SCORE_CAP = 49.0
+OPPORTUNITY_SCORE_WEIGHTS = {
+    "intensity": 0.18,
+    "frequency": 0.14,
+    "wtp": 0.14,
+    "buyer_authority": 0.12,
+    "current_workaround": 0.10,
+    "incumbent_failure": 0.10,
+    "urgency": 0.08,
+    "evidence_quality": 0.08,
+    "recency": 0.06,
+}
 
 
 @dataclass
@@ -246,6 +257,16 @@ class AnalysisPipeline:
                 post_type=signal.post_type,
                 first_handness=signal.first_handness,
                 buyer_authority=signal.buyer_authority,
+                pain_type=signal.pain_type,
+                expression_type=signal.expression_type,
+                user_context_json=signal.user_context_json,
+                intensity_score=signal.intensity_score,
+                frequency_signal=signal.frequency_signal,
+                urgency=signal.urgency,
+                current_workaround=signal.current_workaround,
+                wtp_score=signal.wtp_score,
+                incumbent_failure=signal.incumbent_failure,
+                opportunity_type=signal.opportunity_type,
                 evidence_spans=signal.evidence_spans,
                 verified_evidence=signal.verified_evidence,
                 evidence_quality=signal.evidence_quality,
@@ -799,6 +820,17 @@ class AnalysisPipeline:
                 "post_type": signal.post_type,
                 "first_handness": signal.first_handness,
                 "buyer_authority": signal.buyer_authority,
+                "pain_type": signal.pain_type,
+                "expression_type": signal.expression_type,
+                "user_context": signal.user_context,
+                "user_context_json": signal.user_context_json,
+                "intensity_score": signal.intensity_score,
+                "frequency_signal": signal.frequency_signal,
+                "urgency": signal.urgency,
+                "current_workaround": signal.current_workaround,
+                "wtp_score": signal.wtp_score,
+                "incumbent_failure": signal.incumbent_failure,
+                "opportunity_type": signal.opportunity_type,
                 "evidence_spans": signal.evidence_spans,
                 "verified_evidence": AnalysisPipeline._verified_evidence_payload(signal),
                 "evidence_quality": signal.evidence_quality,
@@ -855,6 +887,7 @@ class AnalysisPipeline:
             + len(signal.competitor_tags) * 0.16
             + len(comment_signals["comment_tool_mentions"]) * 0.05
             + comment_signals["comment_workaround_count"] * 0.11
+            + self._incumbent_failure_factor(signal.incumbent_failure) * 0.35
             + (0.14 if signal.post_type in {"vendor_rant", "tool_comparison"} else 0.0),
         )
         type_penalty = 0.0
@@ -862,23 +895,29 @@ class AnalysisPipeline:
             type_penalty += 0.22
         elif signal.post_type == "advice_thread":
             type_penalty += 0.08
-        raw_score = (
-            signal.pain_level / 10 * 22
-            + signal.willingness_to_pay / 10 * 18
-            + authority_score * 14
-            + first_hand_score * 8
-            + workflow_frequency_score * 10
-            + impact_score * 12
-            + consensus_score * 10
-            + incumbent_failure_score * 8
-            + recency_score * 10
-            + evidence_score * 6
-            - stale_penalty * 10
-            - solved_penalty * 12
-            - float(comment_signals["comment_shill_risk"]) * 6
-            - type_penalty * 10
-        )
-        pre_promotion_score = round(max(0.0, raw_score), 2)
+
+        factors = {
+            "intensity": self._unit_score(signal.intensity_score or signal.pain_level / 10),
+            "frequency": max(self._frequency_signal_factor(signal.frequency_signal), workflow_frequency_score),
+            "wtp": self._unit_score(signal.wtp_score or signal.willingness_to_pay / 10),
+            "buyer_authority": authority_score,
+            "current_workaround": self._current_workaround_factor(signal.current_workaround),
+            "incumbent_failure": max(self._incumbent_failure_factor(signal.incumbent_failure), incumbent_failure_score),
+            "urgency": self._urgency_factor(signal.urgency),
+            "evidence_quality": max(evidence_score, self._evidence_quality_factor(signal.evidence_quality, effective_match_rate)),
+            "recency": recency_score,
+        }
+        factors = {key: round(self._unit_score(value), 3) for key, value in factors.items()}
+        penalties = {
+            "noise": round(self._noise_penalty(signal), 3),
+            "shill_risk": round(self._unit_score(comment_signals["comment_shill_risk"]) * 0.06, 3),
+            "solved": round(self._unit_score(solved_penalty) * 0.12, 3),
+            "stale": round(self._unit_score(stale_penalty) * 0.10, 3),
+            "type": round(self._unit_score(type_penalty) * 0.10, 3),
+        }
+        weighted_score = sum(factors[key] * OPPORTUNITY_SCORE_WEIGHTS[key] for key in OPPORTUNITY_SCORE_WEIGHTS)
+        raw_score = (weighted_score - sum(penalties.values())) * 100
+        pre_promotion_score = round(max(0.0, min(100.0, raw_score)), 2)
         has_first_hand_or_buyer_signal = (
             signal.first_handness == "first_hand" or authority_score >= PROMOTION_BUYER_AUTHORITY_MIN_SCORE
         )
@@ -919,6 +958,11 @@ class AnalysisPipeline:
         signal.promotion_eligible = promotion_eligible
         signal.evidence_rejection_reason = evidence_rejection_reason
         signal.score_components = {
+            "weights": dict(OPPORTUNITY_SCORE_WEIGHTS),
+            "factors": factors,
+            "penalties": penalties,
+            "raw_score": pre_promotion_score,
+            "pre_promotion_score": pre_promotion_score,
             "buyer_authority_score": signal.buyer_authority_score,
             "first_handness_score": round(first_hand_score, 3),
             "workflow_frequency_score": signal.workflow_frequency_score,
@@ -953,6 +997,112 @@ class AnalysisPipeline:
         if isinstance(signal.analysis_payload, dict):
             signal.analysis_payload.setdefault("comment_sample", signal.comment_sample)
             signal.analysis_payload.setdefault("score_components", signal.score_components)
+
+    @staticmethod
+    def _unit_score(value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if numeric != numeric:
+            return 0.0
+        return max(0.0, min(1.0, numeric))
+
+    @classmethod
+    def _frequency_signal_factor(cls, value: Any) -> float:
+        if not isinstance(value, str):
+            return cls._unit_score(value)
+        normalized = value.strip().lower()
+        if normalized in {"trend", "repeated_multi_source"}:
+            return 1.0
+        if normalized in {"repeated_cross_thread", "cross_thread"}:
+            return 0.78
+        if normalized in {"thread_consensus", "multi_comment"}:
+            return 0.58
+        if normalized in {"single", "one_off", "unknown", ""}:
+            return 0.18
+        try:
+            return cls._unit_score(float(normalized))
+        except ValueError:
+            return 0.35
+
+    @classmethod
+    def _urgency_factor(cls, value: Any) -> float:
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            numeric = float(value)
+            return cls._unit_score(numeric / 10 if numeric > 1 else numeric)
+        normalized = str(value or "").strip().lower().replace(" ", "_")
+        mapping = {
+            "none": 0.0,
+            "unknown": 0.0,
+            "low": 0.2,
+            "mild": 0.25,
+            "medium": 0.5,
+            "active_blocker": 0.78,
+            "blocked": 0.78,
+            "urgent": 0.86,
+            "high": 0.86,
+            "revenue_critical": 1.0,
+            "critical": 1.0,
+        }
+        if normalized in mapping:
+            return mapping[normalized]
+        try:
+            numeric = float(normalized)
+        except ValueError:
+            return 0.35
+        return cls._unit_score(numeric / 10 if numeric > 1 else numeric)
+
+    @staticmethod
+    def _current_workaround_factor(value: Any) -> float:
+        normalized = str(value or "").strip().lower().replace(" ", "_")
+        if normalized in {"", "none", "no", "unknown", "not_stated"}:
+            return 0.0
+        if any(marker in normalized for marker in ("spreadsheet", "csv", "manual", "email", "slack", "copy", "reconcile")):
+            return 0.85
+        if any(marker in normalized for marker in ("paid_tool", "outsourced", "consultant", "custom_script")):
+            return 1.0
+        if normalized in {"weak", "partial"}:
+            return 0.35
+        return 0.55
+
+    @staticmethod
+    def _incumbent_failure_factor(value: Any) -> float:
+        normalized = str(value or "").strip().lower().replace(" ", "_")
+        if normalized in {"", "none", "no", "unknown", "not_stated"}:
+            return 0.0
+        if normalized in {"weak", "partial"}:
+            return 0.35
+        if any(marker in normalized for marker in ("explicit_competitor_failure", "switching", "broken", "fails", "lag", "data_loss", "duplicate", "sync")):
+            return 1.0
+        if any(marker in normalized for marker in ("expensive", "slow", "manual", "missing")):
+            return 0.72
+        return 0.55
+
+    @staticmethod
+    def _evidence_quality_factor(quality: Any, match_rate: float) -> float:
+        normalized = str(quality or "").strip().lower()
+        base = {
+            "linked_multi_source": 1.0,
+            "multi_quote": 1.0,
+            "exact_quote": 0.86,
+            "weak_quote": 0.35,
+            "no_quote": 0.0,
+        }.get(normalized, 0.0)
+        return base * max(0.0, min(1.0, float(match_rate or 0.0)))
+
+    @staticmethod
+    def _noise_penalty(signal: PainSignal) -> float:
+        penalty = 0.0
+        if not signal.is_monetizable:
+            penalty += 0.15
+        if signal.post_type in {"founder_pitch", "news_analysis"}:
+            penalty += 0.08
+        if signal.pain_level <= 2 and signal.willingness_to_pay <= 2:
+            penalty += 0.06
+        return min(0.25, penalty)
 
     @staticmethod
     def _has_explicit_confidence(signal: PainSignal) -> bool:

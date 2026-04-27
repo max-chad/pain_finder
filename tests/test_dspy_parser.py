@@ -67,6 +67,46 @@ def test_coerce_prediction_normalizes_strings_into_analysis_result():
     assert result.needs_human_review is False
 
 
+def test_coerce_prediction_accepts_wave5_taxonomy_values():
+    parser = DSPyRedditPainParser(api_key="test-key", provider="codex", model="gpt-5.3-spark")
+    prediction = SimpleNamespace(
+        category="complaint",
+        severity="high",
+        summary="Inventory reconciliation blocks fulfillment",
+        is_monetizable="true",
+        pain_level="8",
+        willingness_to_pay="9",
+        niche_category="E-commerce Ops",
+        competitor_tags_csv="netsuite",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="head_of_ops",
+        pain_type="integration_gap",
+        expression_type="feature_request",
+        user_context="Ops lead reconciling fulfillment inventory",
+        intensity="8",
+        frequency="7",
+        urgency="8",
+        current_workaround="spreadsheet",
+        incumbent_failure="explicit_competitor_failure",
+        evidence_spans='["reconcile inventory in spreadsheets"]',
+        evidence_quality="exact_quote",
+        opportunity_type="automation",
+        confidence="0.81",
+        uncertainty_reason="",
+        needs_human_review="false",
+    )
+
+    result = parser._coerce_prediction(prediction)
+
+    assert result is not None
+    assert result.pain_type == "integration_gap"
+    assert result.expression_type == "feature_request"
+    assert result.current_workaround == "spreadsheet"
+    assert result.incumbent_failure == "explicit_competitor_failure"
+    assert result.opportunity_type == "automation"
+
+
 def test_coerce_prediction_marks_missing_dspy_evidence_for_review():
     parser = DSPyRedditPainParser(api_key="test-key", provider="codex", model="gpt-5.3-spark")
     prediction = SimpleNamespace(

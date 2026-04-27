@@ -42,6 +42,16 @@ CREATE TABLE IF NOT EXISTS pain_points (
     post_type TEXT DEFAULT 'advice_thread',
     first_handness TEXT DEFAULT 'unknown',
     buyer_authority TEXT DEFAULT 'unknown',
+    pain_type TEXT DEFAULT 'unknown',
+    expression_type TEXT DEFAULT 'unknown',
+    user_context_json TEXT DEFAULT '{}',
+    intensity_score REAL DEFAULT 0,
+    frequency_signal TEXT DEFAULT 'single',
+    urgency TEXT DEFAULT 'none',
+    current_workaround TEXT DEFAULT '',
+    wtp_score REAL DEFAULT 0,
+    incumbent_failure TEXT DEFAULT '',
+    opportunity_type TEXT DEFAULT 'unknown',
     evidence_spans_json TEXT DEFAULT '[]',
     verified_evidence_json TEXT DEFAULT '[]',
     evidence_quality TEXT DEFAULT 'no_quote',
@@ -337,6 +347,16 @@ PAIN_POINT_COLUMNS = {
     "post_type": "TEXT DEFAULT 'advice_thread'",
     "first_handness": "TEXT DEFAULT 'unknown'",
     "buyer_authority": "TEXT DEFAULT 'unknown'",
+    "pain_type": "TEXT DEFAULT 'unknown'",
+    "expression_type": "TEXT DEFAULT 'unknown'",
+    "user_context_json": "TEXT DEFAULT '{}'",
+    "intensity_score": "REAL DEFAULT 0",
+    "frequency_signal": "TEXT DEFAULT 'single'",
+    "urgency": "TEXT DEFAULT 'none'",
+    "current_workaround": "TEXT DEFAULT ''",
+    "wtp_score": "REAL DEFAULT 0",
+    "incumbent_failure": "TEXT DEFAULT ''",
+    "opportunity_type": "TEXT DEFAULT 'unknown'",
     "evidence_spans_json": "TEXT DEFAULT '[]'",
     "verified_evidence_json": "TEXT DEFAULT '[]'",
     "evidence_quality": "TEXT DEFAULT 'no_quote'",
@@ -464,6 +484,7 @@ class Database:
             "2026_04_22_source_context_and_opportunity_bucket",
             "2026_04_26_verified_evidence_fields",
             "2026_04_26_wave3_comments_coverage_frequency",
+            "2026_04_27_wave5_taxonomy_scoring",
         ]
         for migration_name in pain_point_migrations:
             if await self._is_migration_applied(migration_name):
@@ -656,6 +677,16 @@ class Database:
         post_type: str = "advice_thread",
         first_handness: str = "unknown",
         buyer_authority: str = "unknown",
+        pain_type: str = "unknown",
+        expression_type: str = "unknown",
+        user_context_json: dict[str, Any] | None = None,
+        intensity_score: float = 0.0,
+        frequency_signal: str = "single",
+        urgency: int | str = "none",
+        current_workaround: str = "",
+        wtp_score: float = 0.0,
+        incumbent_failure: str = "",
+        opportunity_type: str = "unknown",
         evidence_spans: list[str] | None = None,
         verified_evidence: list[Any] | None = None,
         evidence_quality: str = "no_quote",
@@ -697,6 +728,17 @@ class Database:
         if deep_dive_status not in DEEP_DIVE_STATUSES:
             deep_dive_status = "not_requested"
 
+        normalized_pain_type = str(pain_type or "unknown").strip()[:96] or "unknown"
+        normalized_expression_type = str(expression_type or "unknown").strip()[:96] or "unknown"
+        normalized_user_context = user_context_json if isinstance(user_context_json, dict) else {}
+        user_context_json_text = json.dumps(normalized_user_context, ensure_ascii=False, default=str)
+        normalized_intensity_score = self._coerce_unit_float(intensity_score)
+        normalized_frequency_signal = str(frequency_signal or "single").strip()[:64] or "single"
+        normalized_urgency = str(urgency if urgency is not None else "none").strip()[:96] or "none"
+        normalized_current_workaround = str(current_workaround or "").strip()[:240]
+        normalized_wtp_score = self._coerce_unit_float(wtp_score)
+        normalized_incumbent_failure = str(incumbent_failure or "").strip()[:240]
+        normalized_opportunity_type = str(opportunity_type or "unknown").strip()[:96] or "unknown"
         normalized_tags = self._normalize_competitor_tags(competitor_tags)
         if opportunity_bucket not in OPPORTUNITY_BUCKETS:
             opportunity_bucket = "unknown_age"
@@ -734,8 +776,10 @@ class Database:
                     is_monetizable, pain_level, willingness_to_pay, niche_category,
                     competitor_tags, source, source_created_at, source_created_ts, author_name,
                     is_deleted, is_removed, body_available, deleted_detected_at, author_hash,
-                    opportunity_bucket, post_type, first_handness, buyer_authority, evidence_spans_json,
-                    verified_evidence_json, evidence_quality, evidence_match_rate, confidence,
+                    opportunity_bucket, post_type, first_handness, buyer_authority,
+                    pain_type, expression_type, user_context_json, intensity_score, frequency_signal,
+                    urgency, current_workaround, wtp_score, incumbent_failure, opportunity_type,
+                    evidence_spans_json, verified_evidence_json, evidence_quality, evidence_match_rate, confidence,
                     uncertainty_reason, needs_human_review,
                     comment_sample_json, buyer_authority_score, workflow_frequency_score, impact_score,
                     consensus_score, incumbent_failure_score, recency_score, stale_penalty, solved_penalty,
@@ -745,7 +789,7 @@ class Database:
                     pain_mentions_per_1000_posts, pain_mentions_per_1000_comments, unique_authors_count,
                     unique_threads_count, weekly_delta, source_activity_baseline_json,
                     emb_vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     subreddit = excluded.subreddit,
                     url = excluded.url,
@@ -772,6 +816,16 @@ class Database:
                     post_type = excluded.post_type,
                     first_handness = excluded.first_handness,
                     buyer_authority = excluded.buyer_authority,
+                    pain_type = excluded.pain_type,
+                    expression_type = excluded.expression_type,
+                    user_context_json = excluded.user_context_json,
+                    intensity_score = excluded.intensity_score,
+                    frequency_signal = excluded.frequency_signal,
+                    urgency = excluded.urgency,
+                    current_workaround = excluded.current_workaround,
+                    wtp_score = excluded.wtp_score,
+                    incumbent_failure = excluded.incumbent_failure,
+                    opportunity_type = excluded.opportunity_type,
                     evidence_spans_json = excluded.evidence_spans_json,
                     verified_evidence_json = excluded.verified_evidence_json,
                     evidence_quality = excluded.evidence_quality,
@@ -836,6 +890,16 @@ class Database:
                     post_type,
                     first_handness,
                     buyer_authority,
+                    normalized_pain_type,
+                    normalized_expression_type,
+                    user_context_json_text,
+                    normalized_intensity_score,
+                    normalized_frequency_signal,
+                    normalized_urgency,
+                    normalized_current_workaround,
+                    normalized_wtp_score,
+                    normalized_incumbent_failure,
+                    normalized_opportunity_type,
                     json.dumps(normalized_evidence_spans, ensure_ascii=False),
                     json.dumps(normalized_verified_evidence, ensure_ascii=False),
                     normalized_evidence_quality,

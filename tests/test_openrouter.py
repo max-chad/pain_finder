@@ -188,6 +188,27 @@ def test_parse_primary_rejects_invalid_extended_schema_fields():
     assert result is None
 
 
+def test_parse_primary_accepts_wave5_taxonomy_values():
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+
+    result = client._parse_primary_result(
+        _primary_payload(
+            pain_type="integration_gap",
+            expression_type="feature_request",
+            current_workaround="spreadsheet",
+            incumbent_failure="explicit_competitor_failure",
+            opportunity_type="automation",
+        )
+    )
+
+    assert result is not None
+    assert result.pain_type == "integration_gap"
+    assert result.expression_type == "feature_request"
+    assert result.current_workaround == "spreadsheet"
+    assert result.incumbent_failure == "explicit_competitor_failure"
+    assert result.opportunity_type == "automation"
+
+
 def test_parse_primary_rejects_missing_required_evidence_review_fields():
     client = OpenRouterClient(api_key="test-key", model="test-model")
 
@@ -850,4 +871,3 @@ async def test_non_retryable_http_error_does_not_retry(respx_mock):
     assert result is None
     assert route.call_count == 1
     assert sleep_mock.await_count == 0
-

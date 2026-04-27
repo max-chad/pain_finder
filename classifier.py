@@ -351,10 +351,14 @@ class PainSignal:
     pain_type: str = "unknown"
     expression_type: str = "unknown"
     user_context: str = ""
+    user_context_json: dict[str, Any] = field(default_factory=dict)
     intensity: int = 0
+    intensity_score: float = 0.0
     frequency: int = 0
-    urgency: int = 0
+    frequency_signal: str = "single"
+    urgency: int | str = 0
     current_workaround: str = ""
+    wtp_score: float = 0.0
     incumbent_failure: str = ""
     evidence_spans: list[str] = field(default_factory=list)
     opportunity_type: str = "unknown"
@@ -791,6 +795,9 @@ class Classifier:
     def _signal_from_analysis(self, post: Post, result: AnalysisResult, mode: str) -> PainSignal:
         pain_level = max(0, min(10, int(result.pain_level)))
         willingness_to_pay = max(0, min(10, int(result.willingness_to_pay)))
+        intensity = max(0, min(10, int(result.intensity)))
+        frequency = max(0, min(10, int(result.frequency)))
+        urgency = max(0, min(10, int(result.urgency)))
         inferred_post_type = result.post_type or self._infer_post_type(post, category=result.category)
         if result.evidence_spans:
             evidence_spans = list(result.evidence_spans)
@@ -826,10 +833,14 @@ class Classifier:
             pain_type=result.pain_type,
             expression_type=result.expression_type,
             user_context=result.user_context,
-            intensity=max(0, min(10, int(result.intensity))),
-            frequency=max(0, min(10, int(result.frequency))),
-            urgency=max(0, min(10, int(result.urgency))),
+            user_context_json=self._user_context_payload(result),
+            intensity=intensity,
+            intensity_score=round(intensity / 10, 3) if intensity else round(pain_level / 10, 3),
+            frequency=frequency,
+            frequency_signal=self._frequency_signal(frequency),
+            urgency=urgency,
             current_workaround=result.current_workaround,
+            wtp_score=round(willingness_to_pay / 10, 3),
             incumbent_failure=result.incumbent_failure,
             evidence_spans=evidence_spans,
             opportunity_type=result.opportunity_type,
@@ -840,6 +851,25 @@ class Classifier:
             uncertainty_reason=uncertainty_reason,
             needs_human_review=needs_human_review,
         )
+
+    @staticmethod
+    def _user_context_payload(result: AnalysisResult) -> dict[str, Any]:
+        payload = result.raw_payload if isinstance(result.raw_payload, dict) else {}
+        raw_context = payload.get("user_context_json")
+        if isinstance(raw_context, dict):
+            return {str(key): value for key, value in raw_context.items() if str(key).strip()}
+        user_context = str(result.user_context or "").strip()
+        return {"description": user_context} if user_context else {}
+
+    @staticmethod
+    def _frequency_signal(frequency: int) -> str:
+        if frequency >= 8:
+            return "trend"
+        if frequency >= 6:
+            return "repeated_cross_thread"
+        if frequency >= 3:
+            return "thread_consensus"
+        return "single"
 
     async def classify(self, post: Post) -> PainSignal | None:
         keyword_score = self.keyword_score(post)

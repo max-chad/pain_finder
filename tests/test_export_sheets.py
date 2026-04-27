@@ -82,6 +82,67 @@ async def test_export_service_writes_verified_evidence_fields_to_csv(tmp_path):
     assert "stock sync lags" in exported_rows[0]["verified_evidence_json"]
 
 
+async def test_export_service_writes_wave5_taxonomy_and_score_fields_to_csv(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-04-26T00:00:00",
+            "subreddit": "shopify",
+            "source": "reddit",
+            "post_id": "wave5-export",
+            "title": "Inventory sync blocks fulfillment",
+            "summary": "Inventory reconciliation blocks fulfillment.",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "E-commerce",
+            "competitor_tags": '["netsuite"]',
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "",
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.88,
+            "needs_human_review": 0,
+            "verified_evidence_json": '[{"quote":"reconcile inventory in spreadsheets","match_type":"exact"}]',
+            "pain_type": "integration_gap",
+            "expression_type": "feature_request",
+            "user_context_json": '{"role":"ops_lead","industry":"ecommerce"}',
+            "intensity_score": 0.82,
+            "frequency_signal": "thread_consensus",
+            "urgency": "active_blocker",
+            "current_workaround": "spreadsheet",
+            "wtp_score": 0.91,
+            "incumbent_failure": "explicit_competitor_failure",
+            "opportunity_type": "automation",
+            "opportunity_score": 71.2,
+            "score_components_json": '{"weights":{"intensity":0.18},"raw_score":71.2}',
+            "url": "https://reddit.com/wave5-export",
+        }
+    ]
+
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+    result = await service.export(subreddit="shopify")
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        exported_rows = list(csv.DictReader(handle))
+
+    row = exported_rows[0]
+    assert row["pain_type"] == "integration_gap"
+    assert row["expression_type"] == "feature_request"
+    assert row["user_context_json"] == '{"role":"ops_lead","industry":"ecommerce"}'
+    assert row["intensity_score"] == "0.82"
+    assert row["frequency_signal"] == "thread_consensus"
+    assert row["urgency"] == "active_blocker"
+    assert row["current_workaround"] == "spreadsheet"
+    assert row["wtp_score"] == "0.91"
+    assert row["incumbent_failure"] == "explicit_competitor_failure"
+    assert row["opportunity_type"] == "automation"
+    assert row["opportunity_score"] == "71.2"
+    assert '"raw_score":71.2' in row["score_components_json"]
+
+
 async def test_export_service_sanitizes_spreadsheet_formula_prefixes(tmp_path):
     db = AsyncMock()
     db.list_export_rows.return_value = [
