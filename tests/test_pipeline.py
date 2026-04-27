@@ -902,6 +902,115 @@ async def test_evidence_first_promotion_demotes_unverified_high_wtp_signals(db, 
     assert [item["post_id"] for item in digest["needs_review_items"]] == ["unsupported"]
 
 
+async def test_generate_digest_includes_bounded_rejected_noise_examples_with_reasons(db, tmp_path):
+    async def insert_row(
+        post_id: str,
+        *,
+        title: str,
+        reason: str,
+        triage_status: str = "new",
+        category: str = "question",
+        pain_type: str = "generic_question",
+        niche_category: str = "Ops",
+        confidence: float = 0.2,
+        solved_penalty: float = 0.0,
+        comment_shill_risk: float = 0.0,
+        opportunity_score: float = 80.0,
+    ) -> None:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url=f"https://example.com/{post_id}",
+            title=title,
+            body="Rejected candidate fixture body.",
+            category=category,
+            summary=title,
+            severity="low",
+            is_monetizable=False,
+            pain_level=4,
+            willingness_to_pay=4,
+            niche_category=niche_category,
+            source="reddit",
+            opportunity_bucket="current_opportunity",
+            post_type="advice_thread",
+            first_handness="unknown",
+            buyer_authority="unknown",
+            pain_type=pain_type,
+            evidence_quality="no_quote",
+            evidence_match_rate=0.0,
+            confidence=confidence,
+            needs_human_review=True,
+            solved_penalty=solved_penalty,
+            comment_shill_risk=comment_shill_risk,
+            opportunity_score=opportunity_score,
+            triage_status=triage_status,
+            score_components={"promotion_eligible": False, "evidence_rejection_reason": reason},
+        )
+
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="eligible",
+        url="https://example.com/eligible",
+        title="Verified invoice reconciliation pain",
+        body="As founder, invoice reconciliation breaks payroll every week.",
+        category="complaint",
+        summary="Invoice reconciliation breaks payroll.",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="FinOps",
+        source="reddit",
+        opportunity_bucket="current_opportunity",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        pain_type="generic_question",
+        verified_evidence=[{"quote": "invoice reconciliation breaks payroll", "source_type": "body", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        confidence=0.9,
+        opportunity_score=82.0,
+        score_components={"promotion_eligible": True, "evidence_rejection_reason": ""},
+    )
+    await insert_row("generic", title="Generic CRM automation question", reason="generic_question")
+    await insert_row("consumer", title="Consumer app rant", reason="consumer_rant", niche_category="B2C-noise")
+    await insert_row("low-context", title="Too little context to evaluate", reason="low_context")
+    await insert_row("no-evidence", title="High score but no exact quote", reason="no_verified_exact_quote")
+    await insert_row("solved", title="Solved issue after switching tools", reason="solved_issue", solved_penalty=0.35)
+    await insert_row("shill", title="Looks like vendor promotion", reason="shill_risk", comment_shill_risk=0.9)
+    await insert_row("duplicate", title="Duplicate of existing invoice thread", reason="duplicate", triage_status="merged")
+    for index in range(20):
+        await insert_row(f"overflow-{index}", title=f"Overflow rejected item {index}", reason="no_verified_exact_quote", opportunity_score=40 - index)
+
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    digest = await pipeline.generate_digest(subreddit="python", hours=24)
+
+    assert [item["post_id"] for item in digest["top_items"]] == ["eligible"]
+    rejected = digest["rejected_noise_items"]
+    assert len(rejected) == 12
+    assert "eligible" not in {item["post_id"] for item in rejected}
+    assert {item["rejection_reason"] for item in rejected} >= {
+        "generic_question",
+        "consumer_rant",
+        "low_context",
+        "no_evidence",
+        "solved_issue",
+        "shill_risk",
+        "duplicate",
+    }
+    assert {item["post_id"] for item in rejected} >= {"duplicate", "generic", "consumer", "low-context"}
+    assert all(item["rejection_reason_label"] for item in rejected)
+    assert digest["rejected_noise_counts"]["duplicate"] == 1
+    assert digest["rejected_noise_counts"]["no_evidence"] >= 1
+
+
 def test_wave5_score_components_include_weights_and_raw_score_increases_with_wtp_workaround_failure(tmp_path):
     pipeline = AnalysisPipeline(
         scraper=AsyncMock(),

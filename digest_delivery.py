@@ -9,6 +9,14 @@ from typing import Any
 
 from docx import Document
 
+from rejected_noise import (
+    DISPLAY_REJECTED_NOISE_LIMIT,
+    FETCH_REJECTED_NOISE_LIMIT,
+    bounded_rejected_noise_rows,
+    rejection_reason_counts,
+    rejection_reason_label,
+)
+
 PROMOTION_BUYER_AUTHORITY_MIN_SCORE = 0.82
 BUYER_AUTHORITY_SCORES = {
     "intern": 0.35,
@@ -47,6 +55,12 @@ class DailyDigestDocumentService:
         filtered_rows = [row for row in rows if self._include_row(row, min_wtp=min_wtp)]
         if not filtered_rows:
             return DigestDocumentResult(docx_path=None, total_items=0, group_count=0, group_sizes={})
+        rejected_noise_rows = await self._recent_rejected_noise_candidates(hours=hours)
+        bounded_rejected_noise = bounded_rejected_noise_rows(
+            rejected_noise_rows,
+            limit=DISPLAY_REJECTED_NOISE_LIMIT,
+        )
+        rejected_noise_counts = rejection_reason_counts(rejected_noise_rows)
 
         promotion_rows = [row for row in filtered_rows if self._promotion_eligible(row)]
         weak_rows = [row for row in filtered_rows if not self._promotion_eligible(row)]
@@ -76,7 +90,8 @@ class DailyDigestDocumentService:
                 f"Current opportunities: {sum(len(items) for _, items in current_groups)}\n"
                 f"Evergreen pain index: {sum(len(items) for _, items in evergreen_groups)}\n"
                 f"Unknown age review queue: {sum(len(items) for _, items in unknown_groups)}\n"
-                f"Needs review / weak signals: {sum(len(items) for _, items in weak_groups)}"
+                f"Needs review / weak signals: {sum(len(items) for _, items in weak_groups)}\n"
+                f"Rejected/noise sample count: {len(bounded_rejected_noise)}"
             )
         )
 
@@ -119,6 +134,17 @@ class DailyDigestDocumentService:
         if weak_groups:
             document.add_heading("Needs Review / Weak signals", level=1)
             self._render_grouped_section(document, weak_groups, max_items_per_group=max_items_per_group)
+        if bounded_rejected_noise:
+            document.add_heading("Rejected/noise examples", level=1)
+            if rejected_noise_counts:
+                document.add_paragraph(
+                    "Reason counts: "
+                    + " | ".join(
+                        f"{rejection_reason_label(reason)} ({count})"
+                        for reason, count in rejected_noise_counts.items()
+                    )
+                )
+            self._render_rejected_noise_section(document, bounded_rejected_noise)
 
         os.makedirs(self.reports_dir, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -139,6 +165,37 @@ class DailyDigestDocumentService:
             group_count=len(all_groups),
             group_sizes={label: len(items) for label, items in all_groups},
         )
+
+    async def _recent_rejected_noise_candidates(self, *, hours: int) -> list[dict[str, Any]]:
+        if not hasattr(self.db, "get_recent_rejected_noise_candidates"):
+            return []
+        try:
+            rows = await self.db.get_recent_rejected_noise_candidates(
+                hours=hours,
+                limit=FETCH_REJECTED_NOISE_LIMIT,
+            )
+        except TypeError:
+            return []
+        return rows if isinstance(rows, list) else []
+
+    def _render_rejected_noise_section(self, document: Document, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            title = str(row.get("title") or "Untitled rejected candidate").strip() or "Untitled rejected candidate"
+            summary = str(row.get("summary") or "No summary available.").strip() or "No summary available."
+            source = str(row.get("source") or "unknown").strip() or "unknown"
+            subreddit = str(row.get("subreddit") or "n/a").strip() or "n/a"
+            reason_label = str(row.get("rejection_reason_label") or "").strip()
+            if not reason_label:
+                reason_label = rejection_reason_label(row.get("rejection_reason") or self._evidence_rejection_reason(row))
+            document.add_paragraph(title).runs[0].bold = True
+            metadata = document.add_paragraph(
+                f"Reason: {reason_label} | Score {self._row_opportunity_score(row):.1f} | Source {source} | Scope {subreddit}"
+            )
+            metadata.style = "Intense Quote"
+            document.add_paragraph(summary)
+            url = str(row.get("url") or "").strip()
+            if url:
+                document.add_paragraph(f"Link: {url}")
 
     @staticmethod
     def _include_row(row: dict[str, Any], *, min_wtp: int) -> bool:

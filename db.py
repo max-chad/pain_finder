@@ -7,6 +7,8 @@ from typing import Any
 
 import aiosqlite
 
+from rejected_noise import annotate_rejected_noise_rows, sort_rejected_noise_rows
+
 logger = logging.getLogger(__name__)
 
 PAIN_POINT_STATUSES = {"new", "favorite", "discarded", "merged"}
@@ -1849,6 +1851,29 @@ class Database:
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def get_recent_rejected_noise_candidates(
+        self,
+        *,
+        hours: int = 24,
+        subreddit: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [f"-{hours} hours"]
+        query = "SELECT * FROM pain_points WHERE datetime(created_at) >= datetime('now', ?)"
+        if subreddit:
+            query += " AND subreddit = ?"
+            params.append(subreddit)
+        scan_limit = max(int(limit), int(limit) * 5, 50)
+        query += (
+            " ORDER BY opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, "
+            "source_created_ts DESC, created_at DESC LIMIT ?"
+        )
+        params.append(scan_limit)
+        async with self._conn.execute(query, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+        annotated = annotate_rejected_noise_rows([dict(row) for row in rows])
+        return sort_rejected_noise_rows(annotated)[: max(0, int(limit))]
 
     async def get_latest_analysis_run(self, subreddit: str | None = None) -> dict[str, Any] | None:
         if subreddit:

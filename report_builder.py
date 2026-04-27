@@ -9,6 +9,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from digest_delivery import DailyDigestDocumentService
+from rejected_noise import (
+    DISPLAY_REJECTED_NOISE_LIMIT,
+    FETCH_REJECTED_NOISE_LIMIT,
+    bounded_rejected_noise_rows,
+    rejection_reason_counts,
+    rejection_reason_label,
+)
 
 
 @dataclass
@@ -18,6 +25,7 @@ class ResearchReportResult:
     top_opportunity_count: int
     cluster_count: int
     weak_signal_count: int
+    rejected_noise_count: int
     coverage_run_count: int
 
 
@@ -36,6 +44,12 @@ class ResearchReportBuilder:
     async def build_report(self, *, hours: int = 24, limit: int = 1000) -> ResearchReportResult:
         rows = await self.db.get_recent_pain_points(hours=hours, limit=limit)
         coverage_runs = await self._list_source_coverage_runs()
+        rejected_noise_rows = await self._recent_rejected_noise_candidates(hours=hours)
+        bounded_rejected_noise = bounded_rejected_noise_rows(
+            rejected_noise_rows,
+            limit=DISPLAY_REJECTED_NOISE_LIMIT,
+        )
+        rejected_noise_counts = rejection_reason_counts(rejected_noise_rows)
         promoted_rows = [row for row in rows if self._promotion_eligible(row)]
         weak_rows = [row for row in rows if not self._promotion_eligible(row)]
         promoted_rows_by_id = {str(row.get("post_id")): row for row in promoted_rows if row.get("post_id")}
@@ -62,6 +76,8 @@ class ResearchReportBuilder:
             high_wtp_rows=high_wtp_rows,
             feature_request_rows=feature_request_rows,
             competitor_groups=competitor_groups,
+            rejected_noise_rows=bounded_rejected_noise,
+            rejected_noise_counts=rejected_noise_counts,
             coverage_runs=coverage_runs,
         )
         os.makedirs(self.reports_dir, exist_ok=True)
@@ -77,6 +93,7 @@ class ResearchReportBuilder:
             top_opportunity_count=len(top_opportunities),
             cluster_count=len(renderable_clusters),
             weak_signal_count=len(weak_rows),
+            rejected_noise_count=len(bounded_rejected_noise),
             coverage_run_count=len(coverage_runs),
         )
 
@@ -88,6 +105,18 @@ class ResearchReportBuilder:
         except TypeError:
             return []
         return [dict(run) for run in runs if isinstance(run, dict)]
+
+    async def _recent_rejected_noise_candidates(self, *, hours: int) -> list[dict[str, Any]]:
+        if not hasattr(self.db, "get_recent_rejected_noise_candidates"):
+            return []
+        try:
+            rows = await self.db.get_recent_rejected_noise_candidates(
+                hours=hours,
+                limit=FETCH_REJECTED_NOISE_LIMIT,
+            )
+        except TypeError:
+            return []
+        return rows if isinstance(rows, list) else []
 
     def _render_html(
         self,
@@ -101,6 +130,8 @@ class ResearchReportBuilder:
         high_wtp_rows: list[dict[str, Any]],
         feature_request_rows: list[dict[str, Any]],
         competitor_groups: list[tuple[str, list[dict[str, Any]]]],
+        rejected_noise_rows: list[dict[str, Any]],
+        rejected_noise_counts: dict[str, int],
         coverage_runs: list[dict[str, Any]],
     ) -> str:
         generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -127,7 +158,7 @@ class ResearchReportBuilder:
             self._render_unmet_feature_requests(feature_request_rows),
             self._render_high_wtp(high_wtp_rows),
             self._render_weak_signals(weak_rows),
-            self._render_rejected_noise(weak_rows),
+            self._render_rejected_noise(rejected_noise_rows, rejected_noise_counts=rejected_noise_counts),
             self._render_coverage(coverage_runs, rows=rows, promoted_rows=promoted_rows, weak_rows=weak_rows),
             "</main>",
             "</body>",
@@ -245,16 +276,26 @@ class ResearchReportBuilder:
             include_rejection=True,
         )
 
-    def _render_rejected_noise(self, rows: list[dict[str, Any]]) -> str:
-        bounded = [row for row in self._sort_rows(rows) if self._evidence_rejection_reason(row)][:12]
-        return self._render_row_section(
+    def _render_rejected_noise(self, rows: list[dict[str, Any]], *, rejected_noise_counts: dict[str, int]) -> str:
+        counts_html = ""
+        if rejected_noise_counts:
+            counts_html = "<p><strong>Reason counts:</strong> " + " | ".join(
+                f"{self._e(rejection_reason_label(reason))} ({int(count)})"
+                for reason, count in rejected_noise_counts.items()
+            ) + "</p>"
+        section = self._render_row_section(
             "rejected-noise",
             "Rejected/noise examples",
-            bounded,
+            rows[:DISPLAY_REJECTED_NOISE_LIMIT],
             empty="No rejected/noise examples in this window.",
             badge="rejected",
             include_rejection=True,
+            rejection_prefix="Reason",
+            normalize_rejection=True,
         )
+        if not counts_html:
+            return section
+        return section.replace("</h2>", "</h2>" + counts_html, 1)
 
     def _render_coverage(
         self,
@@ -289,14 +330,31 @@ class ResearchReportBuilder:
         empty: str,
         badge: str,
         include_rejection: bool = False,
+        rejection_prefix: str = "Evidence rejection",
+        normalize_rejection: bool = False,
     ) -> str:
         if not rows:
             return f'<section id="{self._e(section_id)}"><h2>{self._e(title)}</h2><p class="empty">{self._e(empty)}</p></section>'
         return f'<section id="{self._e(section_id)}"><h2>{self._e(title)}</h2>' + "".join(
-            self._render_row_card(row, badge=badge, include_rejection=include_rejection) for row in rows
+            self._render_row_card(
+                row,
+                badge=badge,
+                include_rejection=include_rejection,
+                rejection_prefix=rejection_prefix,
+                normalize_rejection=normalize_rejection,
+            )
+            for row in rows
         ) + "</section>"
 
-    def _render_row_card(self, row: dict[str, Any], *, badge: str, include_rejection: bool = False) -> str:
+    def _render_row_card(
+        self,
+        row: dict[str, Any],
+        *,
+        badge: str,
+        include_rejection: bool = False,
+        rejection_prefix: str = "Evidence rejection",
+        normalize_rejection: bool = False,
+    ) -> str:
         title = self._text(row.get("title"), "Untitled pain signal")
         summary = self._text(row.get("summary") or row.get("deep_dive_summary"), "No summary available.")
         metrics = (
@@ -307,8 +365,12 @@ class ResearchReportBuilder:
         )
         quotes = self._row_quotes(row)
         quote_html = "".join(f"<li>{self._e(quote)}</li>" for quote in quotes[:3])
-        rejection = self._evidence_rejection_reason(row) if include_rejection else ""
-        rejection_html = f"<p><strong>Evidence rejection: {self._e(rejection)}</strong></p>" if rejection else ""
+        rejection = ""
+        if include_rejection:
+            rejection = str(row.get("rejection_reason") or self._evidence_rejection_reason(row)).strip()
+            if normalize_rejection:
+                rejection = rejection_reason_label(rejection)
+        rejection_html = f"<p><strong>{self._e(rejection_prefix)}: {self._e(rejection)}</strong></p>" if rejection else ""
         link = self._safe_href(row.get("url"))
         link_html = f'<p><a href="{self._e(link)}">Source link</a></p>' if link else ""
         attrs = self._row_filter_attrs(row)

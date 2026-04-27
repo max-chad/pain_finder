@@ -251,3 +251,85 @@ async def test_research_report_does_not_fetch_or_render_clusters_for_all_weak_ro
     assert "Evidence rejection: no_verified_exact_quote" in html
     assert "Top opportunities" in html
     assert "No verified opportunities in this window." in html
+
+
+async def test_research_report_renders_bounded_rejected_noise_examples_with_normalized_reasons(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "eligible",
+            "title": "Verified invoice reconciliation pain",
+            "summary": "Founder has exact evidence for weekly reconciliation breakage.",
+            "pain_level": 8,
+            "willingness_to_pay": 8,
+            "opportunity_score": 82.0,
+            "niche_category": "FinOps",
+            "source": "reddit",
+            "subreddit": "finance",
+            "url": "https://example.com/eligible",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "verified_evidence_json": '[{"quote":"invoice reconciliation breaks payroll","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.9,
+            "score_components_json": '{"promotion_eligible": true, "evidence_rejection_reason": ""}',
+        }
+    ]
+    db.get_latest_canonical_clusters.return_value = []
+    db.list_source_coverage_runs.return_value = []
+    rejected_rows = [
+        ("generic", "Generic CRM automation question", "generic_question"),
+        ("consumer", "Consumer app rant", "consumer_rant"),
+        ("low-context", "Too little context to evaluate", "low_context"),
+        ("no-evidence", "High score but no exact quote", "no_verified_exact_quote"),
+        ("solved", "Solved issue after switching tools", "solved_issue"),
+        ("shill", "Looks like vendor promotion", "shill_risk"),
+        ("duplicate", "Duplicate of existing invoice thread", "duplicate"),
+        *[(f"overflow-{index}", f"Overflow rejected item {index}", "no_verified_exact_quote") for index in range(6)],
+    ]
+    db.get_recent_rejected_noise_candidates.return_value = [
+        {
+            "post_id": post_id,
+            "title": title,
+            "summary": title,
+            "pain_level": 4,
+            "willingness_to_pay": 0,
+            "opportunity_score": 70 - index,
+            "niche_category": "Rejected",
+            "source": "reddit",
+            "subreddit": "finance",
+            "url": f"https://example.com/{post_id}",
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0,
+            "confidence": 0.2,
+            "score_components_json": f'{{"promotion_eligible": false, "evidence_rejection_reason": "{reason}"}}',
+        }
+        for index, (post_id, title, reason) in enumerate(rejected_rows)
+    ]
+
+    builder = ResearchReportBuilder(db=db, reports_dir=str(tmp_path))
+    result = await builder.build_report(hours=24)
+
+    db.get_recent_rejected_noise_candidates.assert_awaited_once_with(hours=24, limit=50)
+    html = result.html_path and open(result.html_path, encoding="utf-8").read()
+    assert result.top_opportunity_count == 1
+    assert result.weak_signal_count == 0
+    assert result.rejected_noise_count == 12
+    assert "Rejected/noise examples" in html
+    for label in [
+        "generic question",
+        "consumer rant",
+        "low context",
+        "no evidence",
+        "solved issue",
+        "shill risk",
+        "duplicate",
+    ]:
+        assert f"Reason: {label}" in html
+    assert "Duplicate of existing invoice thread" in html
+    assert "Overflow rejected item 5" not in html
+    assert html.index("Verified invoice reconciliation pain") < html.index("Rejected/noise examples")

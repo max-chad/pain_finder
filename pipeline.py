@@ -21,6 +21,12 @@ from classifier import (
 )
 from db import Database
 from openrouter import DeepDiveResult
+from rejected_noise import (
+    DISPLAY_REJECTED_NOISE_LIMIT,
+    FETCH_REJECTED_NOISE_LIMIT,
+    bounded_rejected_noise_rows,
+    rejection_reason_counts,
+)
 from scraper import Post, RedditScraper
 
 if TYPE_CHECKING:
@@ -535,6 +541,12 @@ class AnalysisPipeline:
     async def generate_digest(self, *, subreddit: str | None = None, hours: int = 24) -> dict[str, Any]:
         rows = await self.db.get_recent_pain_points(hours=hours, subreddit=subreddit)
         source_coverage_runs = await self.db.list_source_coverage_runs(scope=subreddit, limit=5)
+        rejected_noise_candidates = await self._recent_rejected_noise_candidates(hours=hours, subreddit=subreddit)
+        rejected_noise_items = bounded_rejected_noise_rows(
+            rejected_noise_candidates,
+            limit=DISPLAY_REJECTED_NOISE_LIMIT,
+        )
+        rejected_noise_counts = rejection_reason_counts(rejected_noise_candidates)
         if not rows:
             return {
                 "hours": hours,
@@ -542,6 +554,8 @@ class AnalysisPipeline:
                 "total": 0,
                 "top_items": [],
                 "needs_review_items": [],
+                "rejected_noise_items": rejected_noise_items,
+                "rejected_noise_counts": rejected_noise_counts,
                 "top_clusters": [],
                 "niche_counts": {},
                 "source_counts": {},
@@ -618,12 +632,38 @@ class AnalysisPipeline:
             "total": len(rows),
             "top_items": top_rows[:5],
             "needs_review_items": needs_review_rows[:5],
+            "rejected_noise_items": rejected_noise_items,
+            "rejected_noise_counts": rejected_noise_counts,
             "top_clusters": top_clusters,
             "niche_counts": niche_counts,
             "source_counts": source_counts,
             "source_coverage_runs": source_coverage_runs,
             "recurring_blockers": recurring_blockers,
         }
+
+    async def _recent_rejected_noise_candidates(
+        self,
+        *,
+        hours: int,
+        subreddit: str | None,
+    ) -> list[dict[str, Any]]:
+        if not hasattr(self.db, "get_recent_rejected_noise_candidates"):
+            return []
+        try:
+            if subreddit:
+                rows = await self.db.get_recent_rejected_noise_candidates(
+                    hours=hours,
+                    subreddit=subreddit,
+                    limit=FETCH_REJECTED_NOISE_LIMIT,
+                )
+            else:
+                rows = await self.db.get_recent_rejected_noise_candidates(
+                    hours=hours,
+                    limit=FETCH_REJECTED_NOISE_LIMIT,
+                )
+        except TypeError:
+            return []
+        return rows if isinstance(rows, list) else []
 
     async def _write_report(self, *, run_label: str, payload: list[dict[str, Any]]) -> str:
         os.makedirs(self.reports_dir, exist_ok=True)
