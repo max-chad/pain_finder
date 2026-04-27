@@ -223,6 +223,120 @@ async def test_daily_digest_document_renders_rich_cluster_cards_as_primary_surfa
     assert "Link: https://reddit.com/p1" in xml
 
 
+async def test_daily_digest_document_renders_competitor_failure_radar_from_verified_rows_and_clusters(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "radar-1",
+            "title": "HubSpot renewal pricing and lock-in hurt RevOps",
+            "summary": "RevOps wants to switch after the renewal doubled.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 93.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot"]',
+            "source": "reddit",
+            "url": "https://reddit.com/r/salesops/comments/radar-1",
+            "subreddit": "salesops",
+            "pain_type": "pricing_pain",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "head_of_ops",
+            "buyer_authority_score": 0.94,
+            "verified_evidence_json": '[{"quote":"HubSpot renewal doubled and we cannot export workflows","match_type":"exact","url":"https://reddit.com/r/salesops/comments/radar-1"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.91,
+            "current_workaround": "exporting CSVs for offline review",
+            "incumbent_failure": "HubSpot renewal pricing doubled and contract lock-in blocks switching",
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+        {
+            "post_id": "radar-2",
+            "title": "HubSpot missing approvals keeps stalling",
+            "summary": "Ops teams route approvals through Airtable because HubSpot support keeps stalling.",
+            "pain_level": 8,
+            "willingness_to_pay": 8,
+            "opportunity_score": 86.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot", "airtable"]',
+            "comment_tool_mentions_json": '["airtable"]',
+            "source": "hn",
+            "url": "https://news.ycombinator.com/item?id=radar-2",
+            "subreddit": "hn",
+            "pain_type": "missing_feature",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "manager",
+            "buyer_authority_score": 0.82,
+            "verified_evidence_json": '[{"quote":"HubSpot is missing approval routing so we use Airtable","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.87,
+            "current_workaround": "Airtable approval workaround",
+            "incumbent_failure": "HubSpot is missing approval routing and support keeps stalling",
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+        {
+            "post_id": "radar-weak",
+            "title": "Unsupported high-score HubSpot complaint",
+            "summary": "No exact evidence backs this competitor complaint.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 99.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot"]',
+            "source": "reddit",
+            "url": "https://reddit.com/r/salesops/comments/radar-weak",
+            "subreddit": "salesops",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "buyer_authority_score": 1.0,
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0.0,
+            "confidence": 0.2,
+            "current_workaround": "unknown",
+            "incumbent_failure": "HubSpot support is allegedly awful",
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "crm-billing-sync-failures",
+            "label": "CRM billing and sync failures",
+            "summary": "Verified HubSpot complaints recur around renewal pricing, missing approvals, and switching friction.",
+            "estimated_monetization_signal": "high",
+            "post_ids": ["radar-1", "radar-2", "radar-weak"],
+            "incumbents": ["hubspot", "airtable"],
+            "representative_examples": [
+                {"post_id": "radar-1", "verified_quotes": ["HubSpot renewal doubled and we cannot export workflows"]},
+                {"post_id": "radar-2", "verified_quotes": ["HubSpot is missing approval routing so we use Airtable"]},
+                {"post_id": "radar-weak", "verified_quotes": ["unsupported weak quote"]},
+            ],
+        }
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert xml.index("Competitor failures") < xml.index("<w:t>Current opportunities</w:t>")
+    assert "hubspot (2 verified mentions)" in xml
+    assert "Failure signals: Pricing pain (1) | Missing feature (1) | Switching/lock-in/churn (1) | Reliability/support failure (1) | Workaround (2) | Alternative-tool mentions (1)" in xml
+    assert "Verified evidence: HubSpot renewal doubled and we cannot export workflows" in xml
+    assert "Verified evidence: HubSpot is missing approval routing so we use Airtable" in xml
+    assert "Cluster: CRM billing and sync failures" in xml
+    assert "unsupported weak quote" not in xml
+    assert "Unsupported high-score HubSpot complaint" in xml
+
+
 async def test_daily_digest_document_filters_mixed_cluster_cards_to_promoted_evidence(tmp_path):
     db = AsyncMock()
     db.get_recent_pain_points.return_value = [

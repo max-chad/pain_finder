@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 
+from competitor_radar import failure_signals_for_row, is_radar_promotion_candidate
 from feedback import build_feedback_label_review_row, empty_feedback_summary, normalize_feedback_value
 from rejected_noise import annotate_rejected_noise_rows, sort_rejected_noise_rows
 
@@ -1484,6 +1485,31 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def list_competitor_failure_candidates(self, *, hours: int = 24, limit: int = 100) -> list[dict[str, Any]]:
+        scan_limit = max(int(limit), int(limit) * 5, 50)
+        async with self._conn.execute(
+            """
+            SELECT p.*
+            FROM pain_points p
+            WHERE datetime(p.created_at) >= datetime('now', ?)
+              AND p.triage_status NOT IN ('discarded', 'merged')
+              AND EXISTS (
+                  SELECT 1
+                  FROM pain_point_competitors c
+                  WHERE c.post_id = p.post_id
+              )
+            ORDER BY p.opportunity_score DESC, p.willingness_to_pay DESC, p.pain_level DESC, p.created_at DESC
+            LIMIT ?
+            """,
+            (f"-{hours} hours", scan_limit),
+        ) as cursor:
+            rows = [dict(row) for row in await cursor.fetchall()]
+        return [
+            row
+            for row in rows
+            if is_radar_promotion_candidate(row) and failure_signals_for_row(row)
+        ][: max(0, int(limit))]
 
     async def update_triage_status(self, post_id: str, status: str) -> bool:
         if status not in PAIN_POINT_STATUSES:

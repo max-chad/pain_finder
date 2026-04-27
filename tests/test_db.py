@@ -932,6 +932,103 @@ async def test_competitor_tags_are_normalized_and_queryable(db):
     assert any(item["tag"] == "shopify" for item in top_tags)
 
 
+async def test_list_competitor_failure_candidates_requires_promotion_eligible_exact_evidence(db):
+    await db.insert_pain_point(
+        subreddit="salesops",
+        post_id="reddit:radar-good",
+        url="https://reddit.com/r/salesops/comments/radar-good",
+        title="HubSpot renewal pricing and lock-in hurt RevOps",
+        body="HubSpot renewal doubled and we cannot export workflows without rebuilding them.",
+        category="complaint",
+        summary="HubSpot pricing and workflow lock-in are pushing RevOps toward alternatives.",
+        severity="high",
+        willingness_to_pay=9,
+        pain_level=9,
+        opportunity_score=91.0,
+        competitor_tags=["HubSpot"],
+        current_workaround="exporting CSVs to Airtable",
+        incumbent_failure="HubSpot pricing doubled and contract lock-in blocks switching",
+        verified_evidence=[{"quote": "HubSpot renewal doubled and we cannot export workflows", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        first_handness="first_hand",
+        buyer_authority="head_of_ops",
+        buyer_authority_score=0.94,
+        confidence=0.9,
+    )
+    await db.insert_pain_point(
+        subreddit="salesops",
+        post_id="reddit:radar-weak",
+        url="https://reddit.com/r/salesops/comments/radar-weak",
+        title="High score but no quote for HubSpot",
+        body="unsupported",
+        category="complaint",
+        summary="Looks important, but no verified quote backs it.",
+        severity="high",
+        willingness_to_pay=10,
+        pain_level=10,
+        opportunity_score=99.0,
+        competitor_tags=["HubSpot"],
+        incumbent_failure="HubSpot support is bad",
+        verified_evidence=[],
+        evidence_quality="no_quote",
+        evidence_match_rate=0.0,
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        buyer_authority_score=1.0,
+        score_components={"promotion_eligible": True},
+    )
+    await db.insert_pain_point(
+        subreddit="salesops",
+        post_id="reddit:radar-low-authority",
+        url="https://reddit.com/r/salesops/comments/radar-low-authority",
+        title="Exact quote but no buyer signal",
+        body="Salesforce support fails every renewal.",
+        category="complaint",
+        summary="Unsupported by first-hand or buyer authority.",
+        severity="medium",
+        willingness_to_pay=9,
+        pain_level=8,
+        opportunity_score=85.0,
+        competitor_tags=["Salesforce"],
+        incumbent_failure="Salesforce support fails every renewal",
+        verified_evidence=[{"quote": "Salesforce support fails every renewal", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        first_handness="unknown",
+        buyer_authority="unknown",
+        buyer_authority_score=0.2,
+    )
+    await db.insert_pain_point(
+        subreddit="salesops",
+        post_id="reddit:radar-rejected",
+        url="https://reddit.com/r/salesops/comments/radar-rejected",
+        title="Exact quote but rejected as solved",
+        body="HubSpot support failed but the team already switched.",
+        category="complaint",
+        summary="Rejected rows must not enter the primary competitor radar.",
+        severity="high",
+        willingness_to_pay=10,
+        pain_level=10,
+        opportunity_score=97.0,
+        competitor_tags=["HubSpot"],
+        incumbent_failure="HubSpot support failed before switching",
+        verified_evidence=[{"quote": "HubSpot support failed but the team already switched", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        buyer_authority_score=1.0,
+        score_components={"promotion_eligible": False, "evidence_rejection_reason": "solved_issue"},
+    )
+
+    candidates = await db.list_competitor_failure_candidates(hours=24, limit=10)
+
+    assert [row["post_id"] for row in candidates] == ["reddit:radar-good"]
+    assert candidates[0]["competitor_tags"] == '["hubspot"]'
+    assert "HubSpot renewal doubled" in candidates[0]["verified_evidence_json"]
+
+
 async def test_macro_tables_persist_and_query(db):
     await db.insert_pain_point(
         subreddit="python",

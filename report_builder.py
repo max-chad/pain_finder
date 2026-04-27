@@ -3,11 +3,11 @@ from __future__ import annotations
 import html
 import json
 import os
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from competitor_radar import CompetitorFailureGroup, build_competitor_failure_radar, cluster_anchor
 from digest_delivery import DailyDigestDocumentService
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
@@ -64,7 +64,11 @@ class ResearchReportBuilder:
         top_opportunities = self._sort_rows(promoted_rows)[:20]
         high_wtp_rows = [row for row in top_opportunities if self._coerce_float(row.get("willingness_to_pay")) >= 8]
         feature_request_rows = [row for row in top_opportunities if self._is_feature_request(row)]
-        competitor_groups = self._competitor_failure_groups(top_opportunities)
+        competitor_groups = build_competitor_failure_radar(
+            promoted_rows,
+            renderable_clusters,
+            is_promotion_eligible=self._promotion_eligible,
+        )
 
         html_body = self._render_html(
             hours=hours,
@@ -129,7 +133,7 @@ class ResearchReportBuilder:
         top_opportunities: list[dict[str, Any]],
         high_wtp_rows: list[dict[str, Any]],
         feature_request_rows: list[dict[str, Any]],
-        competitor_groups: list[tuple[str, list[dict[str, Any]]]],
+        competitor_groups: list[CompetitorFailureGroup],
         rejected_noise_rows: list[dict[str, Any]],
         rejected_noise_counts: dict[str, int],
         coverage_runs: list[dict[str, Any]],
@@ -209,7 +213,7 @@ class ResearchReportBuilder:
             posts_freq = self._coerce_float(cluster.get("pain_mentions_per_1000_posts"))
             comments_freq = self._coerce_float(cluster.get("pain_mentions_per_1000_comments"))
             cards.append(
-                "<article class=\"card cluster-card\">"
+                f"<article id=\"{self._e(cluster_anchor(label))}\" class=\"card cluster-card\">"
                 f"<h3>#{rank} {self._e(label)}</h3>"
                 f"<p class=\"metric\">Opportunity score {score:.1f} · Confidence {confidence:.2f} · Stability {stability:.2f}</p>"
                 f"<p><strong>Why it matters:</strong> {self._e(summary)}</p>"
@@ -231,19 +235,24 @@ class ResearchReportBuilder:
             self._render_row_card(row, badge="verified") for row in rows[:20]
         ) + "</section>"
 
-    def _render_competitor_failures(self, groups: list[tuple[str, list[dict[str, Any]]]]) -> str:
+    def _render_competitor_failures(self, groups: list[CompetitorFailureGroup]) -> str:
         if not groups:
             return '<section id="competitor-failures"><h2>Competitor failures</h2><p class="empty">No verified competitor/tool failure clusters in this window.</p></section>'
         cards = []
-        for tool, rows in groups[:12]:
-            failures = self._unique(row.get("incumbent_failure") for row in rows)
-            quotes = [quote for row in rows for quote in self._row_quotes(row)]
+        for group in groups[:12]:
+            signals = " | ".join(self._e(value) for value in group.rendered_signal_counts()) or "not captured"
+            cluster_links = "".join(
+                f'<li><a href="#{self._e(link.anchor)}">Cluster: {self._e(link.label)}</a></li>'
+                for link in group.clusters[:4]
+            )
+            clusters_html = f"<ul>{cluster_links}</ul>" if cluster_links else ""
             cards.append(
                 "<article class=\"card\">"
-                f"<h3>{self._e(tool)}</h3>"
-                f"<p>{len(rows)} verified mention(s)</p>"
-                f"<p><strong>Failure pattern:</strong> {self._e('; '.join(failures[:3]) or 'not captured')}</p>"
-                f"<ul class=\"quotes\">{''.join(f'<li>{self._e(quote)}</li>' for quote in quotes[:2])}</ul>"
+                f"<h3>{self._e(group.tool)}</h3>"
+                f"<p>{group.mention_count} verified mentions</p>"
+                f"<p><strong>Failure signals:</strong> {signals}</p>"
+                f"{clusters_html}"
+                f"<ul class=\"quotes\">{''.join(f'<li>{self._e(quote)}</li>' for quote in group.quotes[:3])}</ul>"
                 "</article>"
             )
         return '<section id="competitor-failures"><h2>Competitor failures</h2>' + "".join(cards) + "</section>"
@@ -450,15 +459,6 @@ class ResearchReportBuilder:
             "evidence-quality": row.get("evidence_quality"),
         }
         return " ".join(f'data-{name}=\"{self._e(value)}\"' for name, value in attrs.items())
-
-    def _competitor_failure_groups(self, rows: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in rows:
-            if not str(row.get("incumbent_failure") or "").strip():
-                continue
-            for tag in self._tags(row.get("competitor_tags")):
-                grouped[tag].append(row)
-        return sorted(grouped.items(), key=lambda item: (len(item[1]), self._avg([self._coerce_float(row.get("opportunity_score")) for row in item[1]])), reverse=True)
 
     @staticmethod
     def _promotion_eligible(row: dict[str, Any]) -> bool:

@@ -9,6 +9,7 @@ from statistics import mean, median
 from typing import Any
 
 from budget import BudgetCapReachedError
+from competitor_radar import failure_signals_for_row
 from db import Database
 from embedder import _stable_hash_embed
 from openrouter import MacroClusterLabel, OpenRouterClient
@@ -511,6 +512,8 @@ class MacroTrendClusterer:
                     "verified_quotes": cls._verified_quotes(row)[:3],
                     "current_workaround": str(row.get("current_workaround") or "").strip(),
                     "incumbent_failure": str(row.get("incumbent_failure") or "").strip(),
+                    "competitor_tags": cls._parse_tags(row.get("competitor_tags")),
+                    "failure_signals": failure_signals_for_row(row),
                     "user_context": user_context,
                     "pain_level": int(row.get("pain_level") or 0),
                     "willingness_to_pay": int(row.get("willingness_to_pay") or 0),

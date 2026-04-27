@@ -204,6 +204,123 @@ async def test_research_report_renders_required_static_sections_from_fixture_dat
     assert "Source method: public_json" in html
 
 
+async def test_research_report_renders_competitor_failure_radar_from_verified_rows_and_clusters(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "radar-1",
+            "title": "HubSpot renewal pricing and lock-in hurt RevOps",
+            "summary": "RevOps wants to switch after the renewal doubled.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 93.0,
+            "niche_category": "RevOps",
+            "source": "reddit",
+            "subreddit": "salesops",
+            "url": "https://reddit.com/r/salesops/comments/radar-1",
+            "pain_type": "pricing_pain",
+            "opportunity_bucket": "current_opportunity",
+            "first_handness": "first_hand",
+            "buyer_authority": "head_of_ops",
+            "buyer_authority_score": 0.94,
+            "confidence": 0.91,
+            "current_workaround": "exporting CSVs for offline review",
+            "incumbent_failure": "HubSpot renewal pricing doubled and contract lock-in blocks switching",
+            "competitor_tags": '["hubspot"]',
+            "verified_evidence_json": '[{"quote":"HubSpot renewal doubled and we cannot export workflows","match_type":"exact","url":"https://reddit.com/r/salesops/comments/radar-1"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+        {
+            "post_id": "radar-2",
+            "title": "HubSpot missing approvals keeps stalling",
+            "summary": "Ops teams route approvals through Airtable because HubSpot support keeps stalling.",
+            "pain_level": 8,
+            "willingness_to_pay": 8,
+            "opportunity_score": 86.0,
+            "niche_category": "RevOps",
+            "source": "hn",
+            "subreddit": "hn",
+            "url": "https://news.ycombinator.com/item?id=radar-2",
+            "pain_type": "missing_feature",
+            "opportunity_bucket": "current_opportunity",
+            "first_handness": "first_hand",
+            "buyer_authority": "manager",
+            "buyer_authority_score": 0.82,
+            "confidence": 0.87,
+            "current_workaround": "Airtable approval workaround",
+            "incumbent_failure": "HubSpot is missing approval routing and support keeps stalling",
+            "competitor_tags": '["hubspot", "airtable"]',
+            "comment_tool_mentions_json": '["airtable"]',
+            "verified_evidence_json": '[{"quote":"HubSpot is missing approval routing so we use Airtable","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+        {
+            "post_id": "radar-weak",
+            "title": "Unsupported high-score HubSpot complaint",
+            "summary": "No exact evidence backs this competitor complaint.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 99.0,
+            "niche_category": "RevOps",
+            "source": "reddit",
+            "subreddit": "salesops",
+            "opportunity_bucket": "current_opportunity",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "buyer_authority_score": 1.0,
+            "current_workaround": "unknown",
+            "incumbent_failure": "HubSpot support is allegedly awful",
+            "competitor_tags": '["hubspot"]',
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0.0,
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "crm-billing-sync-failures",
+            "label": "CRM billing and sync failures",
+            "summary": "Verified HubSpot complaints recur around renewal pricing, missing approvals, and switching friction.",
+            "avg_opportunity_score": 91.0,
+            "post_ids": ["radar-1", "radar-2", "radar-weak"],
+            "incumbents": ["hubspot", "airtable"],
+            "representative_examples": [
+                {"post_id": "radar-1", "verified_quotes": ["HubSpot renewal doubled and we cannot export workflows"]},
+                {"post_id": "radar-2", "verified_quotes": ["HubSpot is missing approval routing so we use Airtable"]},
+                {"post_id": "radar-weak", "verified_quotes": ["unsupported weak quote"]},
+            ],
+        }
+    ]
+    db.list_source_coverage_runs.return_value = []
+
+    builder = ResearchReportBuilder(db=db, reports_dir=str(tmp_path))
+    result = await builder.build_report(hours=24)
+
+    assert result.top_opportunity_count == 2
+    assert result.weak_signal_count == 1
+    html = result.html_path and open(result.html_path, encoding="utf-8").read()
+    assert "Competitor failures" in html
+    assert "hubspot" in html
+    assert "2 verified mentions" in html
+    assert "Pricing pain (1)" in html
+    assert "Missing feature (1)" in html
+    assert "Switching/lock-in/churn (1)" in html
+    assert "Reliability/support failure (1)" in html
+    assert "Workaround (2)" in html
+    assert "Alternative-tool mentions (1)" in html
+    assert "HubSpot renewal doubled and we cannot export workflows" in html
+    assert "HubSpot is missing approval routing so we use Airtable" in html
+    assert 'href="#cluster-crm-billing-and-sync-failures"' in html
+    assert "Cluster: CRM billing and sync failures" in html
+    assert "unsupported weak quote" not in html
+    assert "Unsupported high-score HubSpot complaint" in html
+
+
 async def test_research_report_does_not_fetch_or_render_clusters_for_all_weak_rows(tmp_path):
     db = AsyncMock()
     db.get_recent_pain_points.return_value = [

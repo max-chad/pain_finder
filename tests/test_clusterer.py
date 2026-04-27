@@ -494,3 +494,51 @@ async def test_run_persists_cluster_quality_and_representative_examples(db):
     assert stored[0]["representative_examples"][0]["incumbent_failure"] == "Stripe deposits do not match QuickBooks payouts"
     assert stored[0]["representative_examples"][0]["user_context"] == {"persona": "finance ops lead", "workflow": "weekly payout close"}
     assert stored[0]["normalized_frequency"]["unique_authors_count"] == 2
+
+
+def test_representative_examples_preserve_competitor_failure_metadata():
+    examples = MacroTrendClusterer._representative_examples(
+        [
+            {
+                "post_id": "reddit:r1",
+                "title": "HubSpot renewal pricing and workflow lock-in",
+                "summary": "RevOps wants to switch after the renewal doubled.",
+                "willingness_to_pay": 9,
+                "opportunity_score": 93.0,
+                "competitor_tags": json.dumps(["hubspot", "airtable"]),
+                "verified_evidence_json": json.dumps(
+                    [{"quote": "HubSpot renewal doubled and we cannot export workflows", "match_type": "exact"}]
+                ),
+                "evidence_quality": "exact_quote",
+                "current_workaround": "exporting CSVs to Airtable",
+                "incumbent_failure": "HubSpot renewal pricing doubled and contract lock-in blocks switching",
+                "pain_type": "pricing_pain",
+                "user_context_json": json.dumps({"persona": "RevOps lead"}),
+            },
+            {
+                "post_id": "reddit:r2",
+                "title": "HubSpot missing approvals forces workarounds",
+                "summary": "Ops teams route approvals through Airtable.",
+                "willingness_to_pay": 8,
+                "opportunity_score": 84.0,
+                "competitor_tags": json.dumps(["hubspot", "airtable"]),
+                "verified_evidence_json": json.dumps(
+                    [{"quote": "HubSpot is missing approval routing so we use Airtable", "match_type": "exact"}]
+                ),
+                "evidence_quality": "exact_quote",
+                "current_workaround": "Airtable approval workaround",
+                "incumbent_failure": "HubSpot is missing approval routing and support keeps stalling",
+                "pain_type": "missing_feature",
+                "user_context_json": json.dumps({"persona": "RevOps lead"}),
+            },
+        ]
+    )
+
+    representative = examples[0]
+    assert representative["competitor_tags"] == ["hubspot", "airtable"]
+    assert representative["failure_signals"] == [
+        "pricing_pain",
+        "lock_in_switching_churn",
+        "workaround",
+        "alternative_tool_mentions",
+    ]

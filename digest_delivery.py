@@ -9,6 +9,7 @@ from typing import Any
 
 from docx import Document
 
+from competitor_radar import CompetitorFailureGroup, build_competitor_failure_radar
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
     FETCH_REJECTED_NOISE_LIMIT,
@@ -71,6 +72,11 @@ class DailyDigestDocumentService:
             if promoted_post_ids
             else []
         )
+        competitor_failure_groups = build_competitor_failure_radar(
+            promotion_rows,
+            canonical_clusters,
+            is_promotion_eligible=self._promotion_eligible,
+        )
 
         current_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "current_opportunity"]
         evergreen_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "evergreen_pain"]
@@ -121,6 +127,11 @@ class DailyDigestDocumentService:
             document.add_heading("Top pain clusters", level=1)
             document.add_paragraph("Canonical pain clusters prioritized by opportunity score and verified evidence.")
             self._render_cluster_section(document, canonical_clusters, promoted_rows_by_id=promoted_rows_by_id)
+
+        if competitor_failure_groups:
+            document.add_heading("Competitor failures", level=1)
+            document.add_paragraph("Recurring verified complaints grouped by incumbent tool and failure signal.")
+            self._render_competitor_failure_radar(document, competitor_failure_groups)
 
         if current_groups:
             document.add_heading("Current opportunities", level=1)
@@ -327,6 +338,20 @@ class DailyDigestDocumentService:
                     if url:
                         document.add_paragraph(f"  Link: {url}")
             document.add_paragraph(f"Dominant incumbents: {incumbents_text}")
+
+    @staticmethod
+    def _render_competitor_failure_radar(
+        document: Document,
+        groups: list[CompetitorFailureGroup],
+    ) -> None:
+        for group in groups[:12]:
+            document.add_heading(f"{group.tool} ({group.mention_count} verified mentions)", level=2)
+            signal_text = " | ".join(group.rendered_signal_counts()) or "not captured"
+            document.add_paragraph(f"Failure signals: {signal_text}")
+            for link in group.clusters[:4]:
+                document.add_paragraph(f"Cluster: {link.label}")
+            for quote in group.quotes[:3]:
+                document.add_paragraph(f"Verified evidence: {quote}")
 
     @staticmethod
     def _cluster_examples(cluster: dict[str, Any]) -> list[dict[str, Any]]:
