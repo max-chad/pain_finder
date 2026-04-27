@@ -738,6 +738,233 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
     assert "Need better alerts" in digest["recurring_blockers"]
 
 
+async def test_generate_digest_adds_evidence_gated_research_actions_to_top_clusters(db, tmp_path):
+    await db.insert_pain_point(
+        subreddit="salesops",
+        post_id="action-supported",
+        url="https://example.com/action-supported",
+        title="Approval CSV handoffs keep breaking onboarding",
+        body="As RevOps owner, approval CSV handoffs break onboarding every week.",
+        category="complaint",
+        summary="Approval CSV handoffs break onboarding.",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="RevOps",
+        source="reddit",
+        opportunity_score=91.0,
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="head_of_ops",
+        current_workaround="manual CSV reconciliation before approval",
+        incumbent_failure="CRM sync misses approval status changes",
+        user_context_json={"persona": "RevOps manager", "workflow": "customer onboarding approvals"},
+        verified_evidence=[
+            VerifiedEvidence(
+                quote="approval CSV handoffs break onboarding every week",
+                source_type="body",
+                post_id="action-supported",
+                comment_id=None,
+                permalink="https://example.com/action-supported",
+                match_type="exact",
+                match_confidence=1.0,
+                created_utc=None,
+            )
+        ],
+        evidence_quality="exact_quote",
+        evidence_match_rate=1.0,
+        score_components={"promotion_eligible": True},
+    )
+    await db.insert_pain_point(
+        subreddit="salesops",
+        post_id="action-weak",
+        url="https://example.com/action-weak",
+        title="Unsupported high-score workflow idea",
+        body="Maybe teams need workflow automation.",
+        category="wish",
+        summary="No exact evidence backs this action.",
+        severity="high",
+        is_monetizable=True,
+        pain_level=10,
+        willingness_to_pay=10,
+        niche_category="RevOps",
+        source="reddit",
+        opportunity_score=99.0,
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        current_workaround="unsupported weak workaround should not render",
+        incumbent_failure="unsupported weak incumbent failure should not render",
+        verified_evidence=[],
+        evidence_quality="no_quote",
+        evidence_match_rate=0.0,
+        score_components={"promotion_eligible": True},
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+    await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="revops-approval-csv-handoffs",
+        cluster_key="action-supported",
+        label="RevOps approval CSV handoffs",
+        summary="RevOps teams lose onboarding time when approval CSV handoffs break.",
+        estimated_monetization_signal="high",
+        item_count=2,
+        aggregate_wtp=19.0,
+        fresh_post_count=2,
+        evergreen_post_count=0,
+        median_buyer_authority=0.9,
+        incumbents=["hubspot"],
+        avg_opportunity_score=95.0,
+        representative_examples=[
+            {
+                "post_id": "action-supported",
+                "title": "Approval CSV handoffs keep breaking onboarding",
+                "verified_quotes": ["approval CSV handoffs break onboarding every week"],
+                "current_workaround": "stale representative workaround should not render",
+                "incumbent_failure": "stale representative incumbent failure should not render",
+                "user_context": {"persona": "Stale persona", "workflow": "stale workflow"},
+            },
+            {
+                "post_id": "action-weak",
+                "title": "Unsupported high-score workflow idea",
+                "verified_quotes": ["unsupported weak quote should not feed action"],
+                "current_workaround": "unsupported weak workaround should not render",
+            },
+        ],
+        research_action={
+            "interview_questions": ["Ask only the unsupported weak row"],
+            "icp_hypothesis": "Unsupported weak persona",
+            "mvp_wedge": "Unsupported weak automation",
+            "messaging_angle": "Unsupported weak messaging",
+            "why_now": "Unsupported weak why now",
+            "risks_unknowns": ["Unsupported weak risk"],
+            "manual_validation_step": "Unsupported weak validation",
+            "evidence_post_ids": ["action-weak"],
+        },
+        members=[("action-supported", 0.95), ("action-weak", 0.8)],
+    )
+
+    digest = await pipeline.generate_digest(subreddit="salesops", hours=24)
+
+    action = digest["top_clusters"][0]["next_research_action"]
+    assert action["evidence_post_ids"] == ["action-supported"]
+    assert action["interview_questions"]
+    action_text = json.dumps(action, ensure_ascii=False)
+    cluster_text = json.dumps(digest["top_clusters"][0], ensure_ascii=False)
+    assert "manual CSV reconciliation before approval" in action_text
+    assert "Unsupported weak" not in action_text
+    assert "Unsupported weak" not in cluster_text
+    assert "stale representative" not in cluster_text
+    assert "Stale persona" not in cluster_text
+
+
+def test_attach_research_actions_sorts_digest_clusters_by_row_grounded_eligible_score():
+    promoted_rows_by_id = {
+        "low-eligible": {
+            "post_id": "low-eligible",
+            "title": "Verified low-score approval pain",
+            "summary": "Exact evidence exists, but the current row score is modest.",
+            "source": "reddit",
+            "url": "https://reddit.com/low-eligible",
+            "opportunity_score": 55.0,
+            "confidence": 0.72,
+            "pain_level": 6,
+            "willingness_to_pay": 7,
+            "buyer_authority": "manager",
+            "current_workaround": "manual CSV approval check",
+            "verified_evidence_json": '[{"quote":"approvals still require a manual CSV check","source_type":"body","match_type":"exact"}]',
+        },
+        "missing-representative": {
+            "post_id": "missing-representative",
+            "title": "Verified but not representative approval pain",
+            "summary": "The canonical cluster lists this promoted row even when representative examples omit it.",
+            "source": "hn",
+            "url": "https://news.ycombinator.com/item?id=missing-representative",
+            "opportunity_score": 65.0,
+            "confidence": 0.73,
+            "pain_level": 7,
+            "willingness_to_pay": 7,
+            "buyer_authority": "manager",
+            "current_workaround": "manual approval queue audit",
+            "verified_evidence_json": '[{"quote":"approval queue audits still happen manually","source_type":"body","match_type":"exact"}]',
+        },
+        "high-eligible": {
+            "post_id": "high-eligible",
+            "title": "Verified high-score invoice pain",
+            "summary": "Exact evidence supports a stronger currently monetizable pain.",
+            "source": "reddit",
+            "url": "https://reddit.com/high-eligible",
+            "opportunity_score": 92.0,
+            "confidence": 0.91,
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "buyer_authority": "founder_owner",
+            "current_workaround": "weekly invoice spreadsheet reconciliation",
+            "verified_evidence_json": '[{"quote":"invoice reconciliation blocks payroll every week","source_type":"body","match_type":"exact"}]',
+        },
+    }
+    clusters = [
+        {
+            "canonical_key": "weak-boosted-cluster",
+            "label": "Weak boosted cluster",
+            "avg_opportunity_score": 99.0,
+            "post_ids": ["low-eligible", "missing-representative", "weak-only"],
+            "representative_examples": [
+                {
+                    "post_id": "low-eligible",
+                    "title": "Verified low-score approval pain",
+                    "verified_quotes": ["approvals still require a manual CSV check"],
+                    "opportunity_score": 99.0,
+                    "confidence": 0.99,
+                },
+                {
+                    "post_id": "weak-only",
+                    "title": "Unsupported weak member",
+                    "verified_quotes": [],
+                },
+            ],
+        },
+        {
+            "canonical_key": "strong-eligible-cluster",
+            "label": "Strong eligible cluster",
+            "avg_opportunity_score": 70.0,
+            "post_ids": ["high-eligible"],
+            "representative_examples": [
+                {
+                    "post_id": "high-eligible",
+                    "title": "Verified high-score invoice pain",
+                    "verified_quotes": ["invoice reconciliation blocks payroll every week"],
+                }
+            ],
+        },
+    ]
+
+    enriched = AnalysisPipeline._attach_research_actions_to_clusters(clusters, promoted_rows_by_id=promoted_rows_by_id)
+
+    assert [cluster["label"] for cluster in enriched] == ["Strong eligible cluster", "Weak boosted cluster"]
+    assert enriched[0]["eligible_examples"][0]["opportunity_score"] == 92.0
+    assert enriched[1]["eligible_examples"][0]["opportunity_score"] == 55.0
+    assert [example["post_id"] for example in enriched[1]["eligible_examples"]] == [
+        "low-eligible",
+        "missing-representative",
+    ]
+    assert enriched[1]["avg_opportunity_score"] == pytest.approx(60.0)
+    assert enriched[1]["opportunity_score"] == pytest.approx(60.0)
+    assert set(enriched[1]["next_research_action"]["evidence_post_ids"]) == {
+        "low-eligible",
+        "missing-representative",
+    }
+    assert "Unsupported weak member" not in json.dumps(enriched, ensure_ascii=False)
+
+
 async def test_generate_digest_exposes_recent_source_coverage_and_frequency_metrics(db, tmp_path):
     await db.record_source_coverage_run(
         source="reddit",

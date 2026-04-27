@@ -1,6 +1,60 @@
 from unittest.mock import AsyncMock
 
+import pytest
+
 from report_builder import ResearchReportBuilder
+
+
+def test_renderable_clusters_use_all_promoted_post_ids_not_only_representatives(tmp_path):
+    builder = ResearchReportBuilder(db=AsyncMock(), reports_dir=str(tmp_path))
+    promoted_rows_by_id = {
+        "p1": {
+            "post_id": "p1",
+            "title": "Representative approval pain",
+            "source": "reddit",
+            "url": "https://reddit.com/p1",
+            "summary": "Representative row has exact evidence.",
+            "current_workaround": "manual CSV reconciliation",
+            "incumbent_failure": "CRM sync misses approvals",
+            "opportunity_score": 80.0,
+            "confidence": 0.8,
+            "buyer_authority": "head_of_ops",
+            "verified_evidence_json": '[{"quote":"CSV reconciliation blocks approvals","match_type":"exact"}]',
+        },
+        "p2": {
+            "post_id": "p2",
+            "title": "Promoted row omitted from representatives",
+            "source": "hn",
+            "url": "https://news.ycombinator.com/item?id=p2",
+            "summary": "This row must still drive cluster evidence.",
+            "current_workaround": "manual invoice queue audit",
+            "incumbent_failure": "ERP approvals are delayed",
+            "opportunity_score": 60.0,
+            "confidence": 0.7,
+            "buyer_authority": "manager",
+            "verified_evidence_json": '[{"quote":"invoice queue audits are still manual","match_type":"exact"}]',
+        },
+    }
+
+    renderable = builder._renderable_clusters(
+        [
+            {
+                "label": "Approval handoffs",
+                "avg_opportunity_score": 99.0,
+                "post_ids": ["p1", "p2", "weak"],
+                "representative_examples": [
+                    {"post_id": "p1", "verified_quotes": ["CSV reconciliation blocks approvals"]},
+                    {"post_id": "weak", "verified_quotes": ["unsupported weak quote"]},
+                ],
+            }
+        ],
+        promoted_rows_by_id=promoted_rows_by_id,
+    )
+
+    assert [example["post_id"] for example in renderable[0]["eligible_examples"]] == ["p1", "p2"]
+    assert renderable[0]["avg_opportunity_score"] == pytest.approx(70.0)
+    assert renderable[0]["opportunity_score"] == pytest.approx(70.0)
+    assert set(renderable[0]["next_research_action"]["evidence_post_ids"]) == {"p1", "p2"}
 
 
 async def test_research_report_renders_required_static_sections_from_fixture_data(tmp_path):
@@ -114,6 +168,16 @@ async def test_research_report_renders_required_static_sections_from_fixture_dat
                 "diagnostic_only": True,
                 "promotion_eligible_impact": "none",
             },
+            "next_research_action": {
+                "interview_questions": ["Ask only the unsupported weak row"],
+                "icp_hypothesis": "Unsupported weak persona",
+                "mvp_wedge": "Unsupported weak automation",
+                "messaging_angle": "Unsupported weak messaging",
+                "why_now": "Unsupported weak why now",
+                "risks_unknowns": ["Unsupported weak risk"],
+                "manual_validation_step": "Unsupported weak validation",
+                "evidence_post_ids": ["w1"],
+            },
             "unique_author_count": 3,
             "incumbents": ["hubspot", "salesforce"],
             "pain_mentions_per_1000_posts": 12.5,
@@ -126,9 +190,9 @@ async def test_research_report_renders_required_static_sections_from_fixture_dat
                     "source": "reddit",
                     "url": "https://reddit.com/r/salesops/comments/p1",
                     "verified_quotes": ["we still reconcile onboarding CSVs by hand before approvals"],
-                    "current_workaround": "manual CSV reconciliation before approval",
-                    "incumbent_failure": "HubSpot sync misses approval status changes",
-                    "user_context": {"persona": "RevOps manager", "workflow": "customer onboarding approvals"},
+                    "current_workaround": "stale representative workaround should not render",
+                    "incumbent_failure": "stale representative incumbent failure should not render",
+                    "user_context": {"persona": "Stale persona", "workflow": "stale workflow"},
                     "pain_level": 9,
                     "willingness_to_pay": 9,
                     "confidence": 0.88,
@@ -219,6 +283,15 @@ async def test_research_report_renders_required_static_sections_from_fixture_dat
     assert "Score breakdown" in html
     assert "source_diversity=0.50" in html
     assert "triangulation=0.62" in html
+    assert "Next research action" in html
+    assert "Interview questions" in html
+    assert "ICP hypothesis" in html
+    assert "MVP wedge" in html
+    assert "Manual validation" in html
+    assert "manual CSV reconciliation before approval" in html
+    assert "stale representative" not in html
+    assert "Stale persona" not in html
+    assert "Unsupported weak" not in html
 
 
 async def test_research_report_renders_competitor_failure_radar_from_verified_rows_and_clusters(tmp_path):

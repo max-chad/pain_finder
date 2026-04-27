@@ -10,6 +10,7 @@ from typing import Any
 from buyer_intelligence import build_buyer_wtp_intelligence
 from competitor_radar import CompetitorFailureGroup, build_competitor_failure_radar, cluster_anchor
 from digest_delivery import DailyDigestDocumentService
+from research_actions import build_next_research_action, normalize_research_action
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
     FETCH_REJECTED_NOISE_LIMIT,
@@ -55,8 +56,9 @@ class ResearchReportBuilder:
         weak_rows = [row for row in rows if not self._promotion_eligible(row)]
         promoted_rows_by_id = {str(row.get("post_id")): row for row in promoted_rows if row.get("post_id")}
         promoted_post_ids = list(promoted_rows_by_id)
+        cluster_fetch_limit = max(50, len(promoted_post_ids))
         clusters = (
-            await self.db.get_latest_canonical_clusters(limit=50, post_ids=promoted_post_ids)
+            await self.db.get_latest_canonical_clusters(limit=cluster_fetch_limit, post_ids=promoted_post_ids)
             if promoted_post_ids
             else []
         )
@@ -221,6 +223,12 @@ class ResearchReportBuilder:
                 f"<p><strong>Score breakdown:</strong> {self._e(score_breakdown)}</p>" if score_breakdown else ""
             )
             buyer_wtp_html = self._render_buyer_wtp_intelligence(examples)
+            research_action_html = self._render_research_action(
+                build_next_research_action(
+                    cluster,
+                    examples,
+                )
+            )
             cards.append(
                 f"<article id=\"{self._e(cluster_anchor(label))}\" class=\"card cluster-card\">"
                 f"<h3>#{rank} {self._e(label)}</h3>"
@@ -232,6 +240,7 @@ class ResearchReportBuilder:
                 f"<p><strong>Affected users/personas:</strong> {personas}</p>"
                 f"<p><strong>Current workarounds:</strong> {workarounds}</p>"
                 f"{buyer_wtp_html}"
+                f"{research_action_html}"
                 f"<p><strong>Competitors/tools mentioned:</strong> {incumbents}</p>"
                 f"<p><strong>Incumbent failure:</strong> {failures}</p>"
                 f"<ul class=\"quotes\">{quote_items}</ul>"
@@ -266,6 +275,24 @@ class ResearchReportBuilder:
             sections.append(f"<p><strong>Uncertainty</strong></p><ul>{uncertainty_items}</ul>")
         sections.append("</div>")
         return "".join(sections)
+
+    def _render_research_action(self, action: dict[str, Any]) -> str:
+        action = normalize_research_action(action)
+        if not action:
+            return ""
+        question_items = "".join(f"<li>{self._e(question)}</li>" for question in action["interview_questions"][:5])
+        risk_items = "".join(f"<li>{self._e(risk)}</li>" for risk in action["risks_unknowns"][:5])
+        return (
+            "<div class=\"research-action\"><p><strong>Next research action</strong></p>"
+            f"<p><strong>ICP hypothesis:</strong> {self._e(action['icp_hypothesis'])}</p>"
+            f"<p><strong>MVP wedge:</strong> {self._e(action['mvp_wedge'])}</p>"
+            f"<p><strong>Messaging angle:</strong> {self._e(action['messaging_angle'])}</p>"
+            f"<p><strong>Why now:</strong> {self._e(action['why_now'])}</p>"
+            f"<p><strong>Interview questions</strong></p><ul>{question_items}</ul>"
+            f"<p><strong>Manual validation:</strong> {self._e(action['manual_validation_step'])}</p>"
+            f"<p><strong>Risks / unknowns</strong></p><ul>{risk_items}</ul>"
+            "</div>"
+        )
 
     def _render_top_opportunities(self, rows: list[dict[str, Any]]) -> str:
         if not rows:
@@ -444,36 +471,54 @@ class ResearchReportBuilder:
     ) -> list[dict[str, Any]]:
         renderable: list[dict[str, Any]] = []
         for cluster in clusters:
-            post_ids = {str(item) for item in cluster.get("post_ids") or [] if str(item).strip()}
             raw_examples = [item for item in cluster.get("representative_examples") or [] if isinstance(item, dict)]
-            eligible_examples = []
-            for example in raw_examples:
-                post_id = str(example.get("post_id") or "")
-                row = promoted_rows_by_id.get(post_id)
-                if row is None:
-                    continue
-                merged = self._row_as_example(row)
-                for key, value in example.items():
-                    if key in {"verified_quotes", "exact_verified_quotes", "verified_evidence"} and merged.get(
-                        "exact_verified_quotes"
-                    ):
-                        continue
-                    if value not in (None, "", [], {}):
-                        merged[key] = value
-                merged["post_id"] = post_id
-                eligible_examples.append(merged)
-            if not eligible_examples:
-                eligible_examples = [
-                    self._row_as_example(promoted_rows_by_id[post_id])
-                    for post_id in post_ids
-                    if post_id in promoted_rows_by_id
-                ]
+            post_ids = self._cluster_post_ids(cluster, raw_examples)
+            eligible_examples = [
+                self._row_as_example(promoted_rows_by_id[post_id])
+                for post_id in post_ids
+                if post_id in promoted_rows_by_id
+            ]
             if not eligible_examples:
                 continue
             copy = dict(cluster)
+            eligible_score = self._cluster_score(cluster, eligible_examples)
+            eligible_post_ids = [
+                str(example.get("post_id") or "").strip()
+                for example in eligible_examples
+                if str(example.get("post_id") or "").strip()
+            ]
+            copy["post_ids"] = eligible_post_ids
+            copy["item_count"] = len(eligible_post_ids) or len(eligible_examples)
+            copy["avg_opportunity_score"] = eligible_score
+            copy["opportunity_score"] = eligible_score
             copy["eligible_examples"] = eligible_examples
+            copy["representative_examples"] = eligible_examples
+            copy["representative_examples_json"] = json.dumps(eligible_examples, ensure_ascii=False)
+            action = build_next_research_action(
+                copy,
+                eligible_examples,
+            )
+            copy["next_research_action"] = action
+            copy["research_action"] = action
+            copy["research_action_json"] = json.dumps(action, ensure_ascii=False)
             renderable.append(copy)
         return sorted(renderable, key=lambda item: self._cluster_score(item, item.get("eligible_examples") or []), reverse=True)
+
+    @staticmethod
+    def _cluster_post_ids(cluster: dict[str, Any], examples: list[dict[str, Any]]) -> list[str]:
+        raw_post_ids = cluster.get("post_ids") or []
+        if isinstance(raw_post_ids, str):
+            raw_post_ids = [item for item in raw_post_ids.split(",") if item]
+        if not isinstance(raw_post_ids, list):
+            raw_post_ids = []
+        seen: set[str] = set()
+        post_ids: list[str] = []
+        for raw in [*raw_post_ids, *(example.get("post_id") for example in examples)]:
+            post_id = str(raw or "").strip()
+            if post_id and post_id not in seen:
+                seen.add(post_id)
+                post_ids.append(post_id)
+        return post_ids
 
     def _row_as_example(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -488,6 +533,7 @@ class ResearchReportBuilder:
             "incumbent_failure": row.get("incumbent_failure"),
             "pain_level": row.get("pain_level"),
             "willingness_to_pay": row.get("willingness_to_pay"),
+            "opportunity_score": row.get("opportunity_score"),
             "confidence": row.get("confidence"),
             "buyer_authority": row.get("buyer_authority"),
             "buyer_authority_score": DailyDigestDocumentService._buyer_authority_score(row),
@@ -540,11 +586,17 @@ class ResearchReportBuilder:
         return self._unique(quotes)
 
     def _cluster_score(self, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        values = [
+            self._coerce_float(example.get("opportunity_score"))
+            for example in examples
+            if example.get("opportunity_score") not in (None, "", [], {})
+        ]
+        if values:
+            return self._avg(values)
         direct = self._coerce_float(cluster.get("avg_opportunity_score") or cluster.get("opportunity_score"))
         if direct:
             return direct
-        values = [self._coerce_float(example.get("opportunity_score")) for example in examples]
-        return self._avg(values)
+        return 0.0
 
     def _cluster_score_breakdown(self, cluster: dict[str, Any]) -> str:
         components = cluster.get("score_components")

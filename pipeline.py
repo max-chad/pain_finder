@@ -21,6 +21,7 @@ from classifier import (
 )
 from db import Database, normalize_source_family
 from openrouter import DeepDiveResult
+from research_actions import build_next_research_action
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
     FETCH_REJECTED_NOISE_LIMIT,
@@ -563,9 +564,6 @@ class AnalysisPipeline:
                 "recurring_blockers": [],
             }
 
-        row_post_ids = [str(row.get("post_id")) for row in rows if row.get("post_id")]
-        top_clusters = await self.db.get_latest_canonical_clusters(limit=5, post_ids=row_post_ids)
-
         scored_rows = []
         niche_counts: dict[str, int] = {}
         source_counts: dict[str, int] = {}
@@ -622,6 +620,18 @@ class AnalysisPipeline:
 
         top_rows = [row for row in scored_rows if row.get("promotion_eligible")]
         needs_review_rows = [row for row in scored_rows if not row.get("promotion_eligible")]
+        promoted_rows_by_id = {str(row.get("post_id")): row for row in top_rows if row.get("post_id")}
+        promoted_post_ids = list(promoted_rows_by_id)
+        cluster_fetch_limit = max(20, len(promoted_post_ids))
+        top_clusters = (
+            await self.db.get_latest_canonical_clusters(limit=cluster_fetch_limit, post_ids=promoted_post_ids)
+            if promoted_post_ids
+            else []
+        )
+        top_clusters = self._attach_research_actions_to_clusters(
+            top_clusters,
+            promoted_rows_by_id=promoted_rows_by_id,
+        )
 
         recurring_blockers = [
             item[0]
@@ -665,6 +675,130 @@ class AnalysisPipeline:
         except TypeError:
             return []
         return rows if isinstance(rows, list) else []
+
+    @classmethod
+    def _attach_research_actions_to_clusters(
+        cls,
+        clusters: list[dict[str, Any]],
+        *,
+        promoted_rows_by_id: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for cluster in clusters:
+            raw_examples = [item for item in cluster.get("representative_examples") or [] if isinstance(item, dict)]
+            post_ids = cls._cluster_post_ids(cluster, raw_examples)
+            eligible_examples: list[dict[str, Any]] = [
+                cls._row_research_example(promoted_rows_by_id[post_id])
+                for post_id in post_ids
+                if post_id in promoted_rows_by_id
+            ]
+            if not eligible_examples:
+                continue
+            copy = dict(cluster)
+            eligible_score = cls._cluster_eligible_opportunity_score(cluster, eligible_examples)
+            eligible_post_ids = [
+                str(example.get("post_id") or "").strip()
+                for example in eligible_examples
+                if str(example.get("post_id") or "").strip()
+            ]
+            copy["post_ids"] = eligible_post_ids
+            copy["item_count"] = len(eligible_post_ids) or len(eligible_examples)
+            copy["avg_opportunity_score"] = eligible_score
+            copy["opportunity_score"] = eligible_score
+            copy["eligible_examples"] = eligible_examples
+            copy["representative_examples"] = eligible_examples
+            copy["representative_examples_json"] = json.dumps(eligible_examples, ensure_ascii=False)
+            action = build_next_research_action(
+                copy,
+                eligible_examples,
+            )
+            copy["next_research_action"] = action
+            copy["research_action"] = action
+            copy["research_action_json"] = json.dumps(action, ensure_ascii=False)
+            enriched.append(copy)
+        return sorted(
+            enriched,
+            key=lambda item: cls._cluster_eligible_opportunity_score(item, item.get("eligible_examples") or []),
+            reverse=True,
+        )[:20]
+
+    @classmethod
+    def _cluster_eligible_opportunity_score(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        values = [
+            value
+            for value in (cls._float_or_none(example.get("opportunity_score")) for example in examples)
+            if value is not None
+        ]
+        if values:
+            return sum(values) / len(values)
+        return cls._float_or_none(cluster.get("avg_opportunity_score") or cluster.get("opportunity_score")) or 0.0
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _cluster_post_ids(cluster: dict[str, Any], examples: list[dict[str, Any]]) -> list[str]:
+        raw_post_ids = cluster.get("post_ids") or []
+        if isinstance(raw_post_ids, str):
+            raw_post_ids = [item for item in raw_post_ids.split(",") if item]
+        if not isinstance(raw_post_ids, list):
+            raw_post_ids = []
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in [*raw_post_ids, *(example.get("post_id") for example in examples)]:
+            post_id = str(raw or "").strip()
+            if post_id and post_id not in seen:
+                seen.add(post_id)
+                out.append(post_id)
+        return out
+
+    @classmethod
+    def _row_research_example(cls, row: dict[str, Any]) -> dict[str, Any]:
+        context = row.get("user_context")
+        if not isinstance(context, dict):
+            context = cls._json_object(row.get("user_context_json") or row.get("user_context"))
+        exact_quotes = [
+            str(item.get("quote") or "").strip()
+            for item in cls._verified_evidence_from_row(row)
+            if str(item.get("match_type") or "").strip().lower() == "exact" and str(item.get("quote") or "").strip()
+        ]
+        return {
+            "post_id": str(row.get("post_id") or "").strip(),
+            "title": str(row.get("title") or "").strip(),
+            "summary": str(row.get("summary") or "").strip(),
+            "source": str(row.get("source") or "").strip(),
+            "url": str(row.get("url") or "").strip(),
+            "verified_quotes": exact_quotes,
+            "exact_verified_quotes": exact_quotes,
+            "current_workaround": str(row.get("current_workaround") or "").strip(),
+            "incumbent_failure": str(row.get("incumbent_failure") or "").strip(),
+            "user_context": context,
+            "buyer_authority": str(row.get("buyer_authority") or "unknown").strip() or "unknown",
+            "buyer_authority_score": row.get("buyer_authority_score") or 0.0,
+            "willingness_to_pay": int(row.get("willingness_to_pay") or 0),
+            "pain_level": int(row.get("pain_level") or 0),
+            "opportunity_score": row.get("opportunity_score") or 0.0,
+            "confidence": row.get("confidence") or 0.0,
+            "evidence_quality": str(row.get("evidence_quality") or "").strip(),
+            "uncertainty_reason": str(row.get("uncertainty_reason") or "").strip(),
+            "score_components": cls._score_components_from_row(row),
+        }
+
+    @staticmethod
+    def _json_object(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
 
     async def _write_report(self, *, run_label: str, payload: list[dict[str, Any]]) -> str:
         os.makedirs(self.reports_dir, exist_ok=True)

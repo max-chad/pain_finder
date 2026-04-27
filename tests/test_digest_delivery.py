@@ -150,6 +150,11 @@ async def test_daily_digest_document_renders_rich_cluster_cards_as_primary_surfa
             "first_handness": "first_hand",
             "buyer_authority": "head_of_ops",
             "buyer_authority_score": 0.94,
+            "current_workaround": "manual CSV reconciliation before approval",
+            "incumbent_failure": "CRM sync misses approval status changes",
+            "user_context_json": '{"persona":"RevOps manager","workflow":"customer onboarding approvals"}',
+            "intensity_score": 0.9,
+            "urgency": "high",
             "verified_evidence_json": '[{"quote":"we still reconcile onboarding CSVs by hand before approvals","source_type":"body","match_type":"exact","url":"https://reddit.com/p1"}]',
             "evidence_quality": "exact_quote",
             "evidence_match_rate": 1.0,
@@ -177,6 +182,16 @@ async def test_daily_digest_document_renders_rich_cluster_cards_as_primary_surfa
             "pain_mentions_per_1000_posts": 12.5,
             "pain_mentions_per_1000_comments": 3.2,
             "normalized_frequency": {"pain_mentions_per_1000_posts": 12.5, "unique_authors_count": 3},
+            "next_research_action": {
+                "interview_questions": ["Ask only the unsupported weak row"],
+                "icp_hypothesis": "Unsupported weak persona",
+                "mvp_wedge": "Unsupported weak automation",
+                "messaging_angle": "Unsupported weak messaging",
+                "why_now": "Unsupported weak why now",
+                "risks_unknowns": ["Unsupported weak risk"],
+                "manual_validation_step": "Unsupported weak validation",
+                "evidence_post_ids": ["weak-only"],
+            },
             "representative_examples": [
                 {
                     "post_id": "p1",
@@ -185,9 +200,9 @@ async def test_daily_digest_document_renders_rich_cluster_cards_as_primary_surfa
                     "source": "reddit",
                     "url": "https://reddit.com/p1",
                     "verified_quotes": ["we still reconcile onboarding CSVs by hand before approvals"],
-                    "current_workaround": "manual CSV reconciliation before approval",
-                    "incumbent_failure": "CRM sync misses approval status changes",
-                    "user_context": {"persona": "RevOps manager", "workflow": "customer onboarding approvals"},
+                    "current_workaround": "stale representative workaround should not render",
+                    "incumbent_failure": "stale representative incumbent failure should not render",
+                    "user_context": {"persona": "Stale persona", "workflow": "stale workflow"},
                     "pain_level": 9,
                     "willingness_to_pay": 9,
                     "intensity_score": 0.9,
@@ -217,10 +232,157 @@ async def test_daily_digest_document_renders_rich_cluster_cards_as_primary_surfa
     assert "Current workarounds: manual CSV reconciliation before approval" in xml
     assert "Competitors/tools mentioned: hubspot, salesforce" in xml
     assert "Suggested wedge: Replace manual CSV reconciliation before approval with an auditable workflow focused on RevOps manager." in xml
+    assert "Next research action" in xml
+    assert "Interview questions:" in xml
+    assert "ICP hypothesis:" in xml
+    assert "MVP wedge:" in xml
+    assert "Manual validation:" in xml
+    assert "manual CSV reconciliation before approval" in xml
+    assert "stale representative" not in xml
+    assert "Stale persona" not in xml
+    assert "Unsupported weak" not in xml
     assert "Risks: Validate that CRM sync misses approval status changes is painful across more than 2 independent sources." in xml
     assert "Score breakdown: factors intensity=0.18, frequency=0.14, wtp=0.14; penalties noise=0.00" in xml
     assert "Coverage/confidence: Stability 0.91 | Verified quotes 4 | Sources 2 | Authors 3 | Frequency 12.5/1k posts, 3.2/1k comments" in xml
     assert "Link: https://reddit.com/p1" in xml
+
+
+async def test_daily_digest_document_orders_clusters_by_eligible_scores_not_stale_cluster_averages(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "low-eligible",
+            "title": "Verified low-score approval pain",
+            "summary": "Exact evidence exists, but current opportunity score is modest.",
+            "pain_level": 6,
+            "willingness_to_pay": 7,
+            "opportunity_score": 55.0,
+            "niche_category": "RevOps",
+            "source": "reddit",
+            "url": "https://reddit.com/low-eligible",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "manager",
+            "verified_evidence_json": '[{"quote":"approvals still require a manual CSV check","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.72,
+            "current_workaround": "manual CSV approval check",
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+        {
+            "post_id": "high-eligible",
+            "title": "Verified high-score invoice pain",
+            "summary": "Exact evidence supports a stronger currently monetizable pain.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 92.0,
+            "niche_category": "FinOps",
+            "source": "reddit",
+            "url": "https://reddit.com/high-eligible",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "verified_evidence_json": '[{"quote":"invoice reconciliation blocks payroll every week","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.91,
+            "current_workaround": "weekly invoice spreadsheet reconciliation",
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "weak-boosted-cluster",
+            "label": "Weak boosted cluster",
+            "summary": "A weak historical member inflated the stored cluster score.",
+            "avg_opportunity_score": 99.0,
+            "post_ids": ["low-eligible", "weak-only"],
+            "representative_examples": [
+                {
+                    "post_id": "low-eligible",
+                    "title": "Verified low-score approval pain",
+                    "verified_quotes": ["approvals still require a manual CSV check"],
+                    "source": "reddit",
+                    "url": "https://reddit.com/low-eligible",
+                    "opportunity_score": 99.0,
+                    "confidence": 0.99,
+                },
+                {
+                    "post_id": "weak-only",
+                    "title": "Unsupported weak member",
+                    "verified_quotes": [],
+                    "source": "reddit",
+                },
+            ],
+        },
+        {
+            "canonical_key": "strong-eligible-cluster",
+            "label": "Strong eligible cluster",
+            "summary": "The eligible row itself has the strongest current opportunity score.",
+            "avg_opportunity_score": 70.0,
+            "post_ids": ["high-eligible"],
+            "representative_examples": [
+                {
+                    "post_id": "high-eligible",
+                    "title": "Verified high-score invoice pain",
+                    "verified_quotes": ["invoice reconciliation blocks payroll every week"],
+                    "source": "reddit",
+                    "url": "https://reddit.com/high-eligible",
+                }
+            ],
+        },
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    db.get_latest_canonical_clusters.assert_awaited_once_with(limit=20, post_ids=["low-eligible", "high-eligible"])
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert xml.index("#1 Strong eligible cluster") < xml.index("#2 Weak boosted cluster")
+    assert "Opportunity score 92.0" in xml
+    assert "Opportunity score 55.0" in xml
+    assert "Opportunity score 99.0" not in xml
+    assert "Unsupported weak member" not in xml[: xml.index("Current opportunities")]
+
+
+async def test_daily_digest_document_fetches_all_promoted_cluster_candidates_before_top20_cutoff(tmp_path):
+    db = AsyncMock()
+    post_ids = [f"eligible-{index}" for index in range(25)]
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": post_id,
+            "title": f"Verified pain {index}",
+            "summary": "Exact evidence supports the pain before cluster ranking.",
+            "pain_level": 8,
+            "willingness_to_pay": 8,
+            "opportunity_score": 80 - index * 0.1,
+            "niche_category": "Ops",
+            "source": "reddit",
+            "url": f"https://reddit.com/{post_id}",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "manager",
+            "verified_evidence_json": '[{"quote":"manual reconciliation blocks the approval flow","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.8,
+            "score_components_json": '{"promotion_eligible": true}',
+        }
+        for index, post_id in enumerate(post_ids)
+    ]
+    db.get_latest_canonical_clusters.return_value = []
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    assert result.docx_path is not None
+    db.get_latest_canonical_clusters.assert_awaited_once_with(limit=len(post_ids), post_ids=post_ids)
 
 
 async def test_daily_digest_document_renders_competitor_failure_radar_from_verified_rows_and_clusters(tmp_path):

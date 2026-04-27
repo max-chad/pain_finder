@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import httpx
 import respx
 
-from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient
+from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient, ResearchActionResult
 
 
 def _primary_payload(**overrides):
@@ -260,6 +260,91 @@ async def test_deep_dive_analysis_returns_structured_result(respx_mock):
     result = await client.analyze_deep_dive(title="T", thread_text="Thread")
     assert isinstance(result, DeepDiveResult)
     assert result.actionable_summary.startswith("Build")
+
+
+async def test_generate_research_action_returns_structured_cluster_action(respx_mock):
+    payload = {
+        "interview_questions": [
+            "How often do approval CSV handoffs break?",
+            "What happens when CRM sync misses an approval status?",
+            "What would make a concierge fix worth trying this week?",
+        ],
+        "icp_hypothesis": "RevOps managers at mid-market B2B teams owning onboarding approvals.",
+        "mvp_wedge": "Concierge CSV-to-approval reconciliation for HubSpot/Salesforce handoffs.",
+        "messaging_angle": "Stop reconciling onboarding CSVs by hand before approvals.",
+        "why_now": "Fresh verified complaints plus multi-source coverage suggest active workflow breakage.",
+        "risks_unknowns": [
+            "Confirm this is budgeted pain rather than one-off cleanup.",
+            "Validate CRM-specific integration constraints before building automation.",
+        ],
+        "manual_validation_step": "Interview 5 RevOps owners and manually reconcile one real handoff before writing code.",
+        "evidence_post_ids": ["action-supported"],
+    }
+    captured_requests = []
+
+    def capture(request):
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(payload)}}]},
+        )
+
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=capture)
+    client = OpenRouterClient(api_key="key", model="test-model", cluster_model="cluster-model")
+
+    result = await client.generate_research_action(
+        context="cluster context with verified exact quotes",
+        cluster_key="revops-csv-approvals",
+        eligible_post_ids=["action-supported"],
+    )
+
+    assert isinstance(result, ResearchActionResult)
+    assert result.interview_questions[0].startswith("How often")
+    assert result.icp_hypothesis.startswith("RevOps managers")
+    assert result.mvp_wedge.startswith("Concierge CSV")
+    assert result.manual_validation_step.startswith("Interview 5")
+    assert result.evidence_post_ids == ["action-supported"]
+    request_body = json.loads(captured_requests[0].content)
+    assert request_body["model"] == "cluster-model"
+    assert "action-supported" in request_body["messages"][-1]["content"]
+
+
+def test_parse_research_action_rejects_incomplete_payload():
+    client = OpenRouterClient(api_key="key", model="test-model")
+
+    result = client._parse_research_action_result(
+        {
+            "interview_questions": ["Who owns this workflow?"],
+            "icp_hypothesis": "Ops managers",
+            "mvp_wedge": "Concierge workflow",
+            "messaging_angle": "Stop manual work",
+            "why_now": "Fresh pain",
+            "risks_unknowns": ["Unknown budget"],
+        }
+    )
+
+    assert result is None
+
+
+def test_parse_research_action_rejects_unanchored_or_malformed_evidence_payload():
+    client = OpenRouterClient(api_key="key", model="test-model")
+    payload = {
+        "interview_questions": ["Who owns this workflow?", "How often does it break?"],
+        "icp_hypothesis": "Ops managers",
+        "mvp_wedge": "Concierge workflow",
+        "messaging_angle": "Stop manual reconciliation",
+        "why_now": "Fresh exact quotes",
+        "risks_unknowns": ["Unknown budget"],
+        "manual_validation_step": "Manually solve one case",
+        "evidence_post_ids": ["weak-row"],
+    }
+
+    assert client._parse_research_action_result(payload, eligible_post_ids=["eligible-row"]) is None
+
+    malformed = dict(payload)
+    malformed["evidence_post_ids"] = ["eligible-row"]
+    malformed["icp_hypothesis"] = {"not": "a string"}
+    assert client._parse_research_action_result(malformed, eligible_post_ids=["eligible-row"]) is None
 
 
 async def test_analyze_handles_malformed_json(respx_mock):

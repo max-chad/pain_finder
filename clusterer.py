@@ -9,10 +9,11 @@ from statistics import mean, median
 from typing import Any
 
 from budget import BudgetCapReachedError
-from competitor_radar import failure_signals_for_row
+from competitor_radar import failure_signals_for_row, is_radar_promotion_candidate
 from db import Database, normalize_source_family
 from embedder import _stable_hash_embed
 from openrouter import MacroClusterLabel, OpenRouterClient
+from research_actions import build_next_research_action
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class MacroTrendCluster:
     unique_author_count: int = 0
     normalized_frequency: dict[str, Any] = field(default_factory=dict)
     score_components: dict[str, Any] = field(default_factory=dict)
+    research_action: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -205,6 +207,18 @@ class MacroTrendClusterer:
                     incumbents=incumbents,
                 )
             )
+            research_examples = self._representative_examples(
+                [row for row in members if self._research_action_candidate(row)]
+            )
+            research_action = build_next_research_action(
+                {
+                    "label": resolved_label,
+                    "summary": resolved_summary,
+                    "independent_source_count": independent_source_count,
+                    "verified_quote_count": verified_quote_count,
+                },
+                research_examples,
+            )
 
             member_rows = []
             for index in cluster_indices:
@@ -238,6 +252,7 @@ class MacroTrendClusterer:
                 unique_author_count=unique_author_count,
                 normalized_frequency=normalized_frequency,
                 score_components=score_components,
+                research_action=research_action,
                 pain_mentions_per_1000_posts=frequency_metrics["pain_mentions_per_1000_posts"],
                 pain_mentions_per_1000_comments=frequency_metrics["pain_mentions_per_1000_comments"],
                 unique_authors_count=frequency_metrics["unique_authors_count"],
@@ -281,6 +296,7 @@ class MacroTrendClusterer:
                     unique_author_count=unique_author_count,
                     normalized_frequency=normalized_frequency,
                     score_components=score_components,
+                    research_action=research_action,
                 )
             )
 
@@ -528,6 +544,14 @@ class MacroTrendClusterer:
             f"{len(members)} related pain posts grouped into one recurring problem. "
             f"Fresh={fresh_post_count}, evergreen={evergreen_post_count}, incumbents={incumbent_text}."
         )
+
+    @classmethod
+    def _research_action_candidate(cls, row: dict[str, Any]) -> bool:
+        components = cls._parse_json_object(row.get("score_components_json"))
+        reason = str(components.get("evidence_rejection_reason") or row.get("evidence_rejection_reason") or "").strip()
+        if reason:
+            return False
+        return is_radar_promotion_candidate(row)
 
     @classmethod
     def _representative_examples(cls, members: list[dict[str, Any]]) -> list[dict[str, Any]]:

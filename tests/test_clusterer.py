@@ -654,3 +654,24 @@ def test_representative_examples_preserve_competitor_failure_metadata():
         "workaround",
         "alternative_tool_mentions",
     ]
+
+
+def test_research_action_candidates_require_promotion_eligibility_not_only_exact_quotes():
+    row = {
+        "post_id": "weak-exact",
+        "verified_evidence_json": json.dumps(
+            [{"quote": "manual approvals still block onboarding", "match_type": "exact"}]
+        ),
+        "score_components_json": json.dumps({"promotion_eligible": False}),
+        "first_handness": "second_hand",
+        "buyer_authority": "unknown",
+        "buyer_authority_score": 0.1,
+    }
+
+    assert MacroTrendClusterer._research_action_candidate(row) is False
+
+    row["score_components_json"] = json.dumps({"promotion_eligible": True})
+    assert MacroTrendClusterer._research_action_candidate(row) is False
+
+    row["first_handness"] = "first_hand"
+    assert MacroTrendClusterer._research_action_candidate(row) is True

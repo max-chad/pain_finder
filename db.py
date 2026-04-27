@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS macro_trend_clusters (
     unique_author_count INTEGER DEFAULT 0,
     normalized_frequency_json TEXT DEFAULT '{}',
     score_components_json TEXT DEFAULT '{}',
+    research_action_json TEXT DEFAULT '{}',
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -500,6 +501,7 @@ MACRO_TREND_CLUSTER_COLUMNS = {
     "unique_author_count": "INTEGER DEFAULT 0",
     "normalized_frequency_json": "TEXT DEFAULT '{}'",
     "score_components_json": "TEXT DEFAULT '{}'",
+    "research_action_json": "TEXT DEFAULT '{}'",
 }
 
 COMMENT_COLUMNS = {
@@ -609,6 +611,12 @@ class Database:
             for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
                 await self._ensure_column("macro_trend_clusters", column_name, ddl)
             await self._mark_migration_applied(wave8_source_triangulation_migration)
+
+        wave8_research_action_migration = "2026_04_27_wave8_4_research_action_workflow"
+        if not await self._is_migration_applied(wave8_research_action_migration):
+            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+                await self._ensure_column("macro_trend_clusters", column_name, ddl)
+            await self._mark_migration_applied(wave8_research_action_migration)
 
         comment_availability_migration = "2026_04_26_comment_availability_flags"
         if not await self._is_migration_applied(comment_availability_migration):
@@ -1800,6 +1808,7 @@ class Database:
         unique_author_count: int = 0,
         normalized_frequency: dict[str, Any] | None = None,
         score_components: dict[str, Any] | None = None,
+        research_action: dict[str, Any] | None = None,
         pain_mentions_per_1000_posts: float = 0.0,
         pain_mentions_per_1000_comments: float = 0.0,
         unique_authors_count: int = 0,
@@ -1833,8 +1842,8 @@ class Database:
                 representative_examples_json, verified_quote_count, independent_source_count,
                 source_families_json, source_family_counts_json, source_diversity_score,
                 triangulation_score, cluster_quality_score, unique_author_count,
-                normalized_frequency_json, score_components_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                normalized_frequency_json, score_components_json, research_action_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1869,6 +1878,7 @@ class Database:
                 int(unique_author_count),
                 json.dumps(normalized_frequency_payload, ensure_ascii=False, default=str),
                 json.dumps(score_components or {}, ensure_ascii=False, default=str),
+                json.dumps(research_action or {}, ensure_ascii=False, default=str),
             ),
         ) as cursor:
             cluster_id = int(cursor.lastrowid)
@@ -1910,6 +1920,8 @@ class Database:
         row_dict["source_family_counts"] = source_family_counts if isinstance(source_family_counts, dict) else {}
         score_components = cls._decode_json_field(row_dict.get("score_components_json"), {})
         row_dict["score_components"] = score_components if isinstance(score_components, dict) else {}
+        research_action = cls._decode_json_field(row_dict.get("research_action_json"), {})
+        row_dict["research_action"] = research_action if isinstance(research_action, dict) else {}
         normalized_frequency = cls._decode_json_field(row_dict.get("normalized_frequency_json"), {})
         if not isinstance(normalized_frequency, dict) or not normalized_frequency:
             normalized_frequency = {

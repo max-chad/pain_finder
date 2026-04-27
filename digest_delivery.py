@@ -11,6 +11,7 @@ from docx import Document
 
 from buyer_intelligence import build_buyer_wtp_intelligence
 from competitor_radar import CompetitorFailureGroup, build_competitor_failure_radar
+from research_actions import build_next_research_action, normalize_research_action
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
     FETCH_REJECTED_NOISE_LIMIT,
@@ -68,8 +69,9 @@ class DailyDigestDocumentService:
         weak_rows = [row for row in filtered_rows if not self._promotion_eligible(row)]
         promoted_rows_by_id = {str(row.get("post_id")): row for row in promotion_rows if row.get("post_id")}
         promoted_post_ids = list(promoted_rows_by_id)
+        cluster_fetch_limit = max(20, len(promoted_post_ids))
         canonical_clusters = (
-            await self.db.get_latest_canonical_clusters(limit=20, post_ids=promoted_post_ids)
+            await self.db.get_latest_canonical_clusters(limit=cluster_fetch_limit, post_ids=promoted_post_ids)
             if promoted_post_ids
             else []
         )
@@ -246,9 +248,8 @@ class DailyDigestDocumentService:
         *,
         promoted_rows_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        for rank, cluster in enumerate(clusters[:20], start=1):
-            label = (str(cluster.get("label") or "Recurring pain cluster").strip() or "Recurring pain cluster")
-            summary = (str(cluster.get("summary") or "No summary available.").strip() or "No summary available.")
+        prepared_clusters: list[tuple[dict[str, Any], list[dict[str, Any]], list[str]]] = []
+        for cluster in clusters:
             raw_examples = self._cluster_examples(cluster)
             eligible_examples, eligible_post_ids = self._eligible_cluster_examples(
                 cluster,
@@ -258,6 +259,16 @@ class DailyDigestDocumentService:
             if promoted_rows_by_id is not None and not eligible_examples:
                 continue
             examples = eligible_examples if promoted_rows_by_id is not None else raw_examples
+            prepared_clusters.append((cluster, examples, eligible_post_ids))
+        if promoted_rows_by_id is not None:
+            prepared_clusters.sort(
+                key=lambda item: self._cluster_avg_opportunity_score(item[0], item[1]),
+                reverse=True,
+            )
+
+        for rank, (cluster, examples, eligible_post_ids) in enumerate(prepared_clusters[:20], start=1):
+            label = (str(cluster.get("label") or "Recurring pain cluster").strip() or "Recurring pain cluster")
+            summary = (str(cluster.get("summary") or "No summary available.").strip() or "No summary available.")
             eligible_count = len(eligible_post_ids) if promoted_rows_by_id is not None else int(
                 cluster.get("verified_quote_count") or len(examples) or cluster.get("item_count") or 0
             )
@@ -316,6 +327,13 @@ class DailyDigestDocumentService:
             if workarounds:
                 document.add_paragraph(f"Current workarounds: {'; '.join(workarounds[:4])}")
             self._render_buyer_wtp_intelligence(document, examples)
+            self._render_research_action(
+                document,
+                build_next_research_action(
+                    cluster,
+                    examples,
+                ),
+            )
             document.add_paragraph(f"Competitors/tools mentioned: {incumbents_text}")
             wedge = self._cluster_suggested_wedge(cluster, examples, personas=personas, workarounds=workarounds)
             if wedge:
@@ -370,6 +388,26 @@ class DailyDigestDocumentService:
                 document.add_paragraph(f"- {uncertainty}")
 
     @staticmethod
+    def _render_research_action(document: Document, action: dict[str, Any]) -> None:
+        action = normalize_research_action(action)
+        if not action:
+            return
+        header = document.add_paragraph("Next research action")
+        header.runs[0].bold = True
+        document.add_paragraph(f"ICP hypothesis: {action['icp_hypothesis']}")
+        document.add_paragraph(f"MVP wedge: {action['mvp_wedge']}")
+        document.add_paragraph(f"Messaging angle: {action['messaging_angle']}")
+        document.add_paragraph(f"Why now: {action['why_now']}")
+        document.add_paragraph("Interview questions:")
+        for question in action["interview_questions"][:5]:
+            document.add_paragraph(f"- {question}")
+        document.add_paragraph(f"Manual validation: {action['manual_validation_step']}")
+        if action["risks_unknowns"]:
+            document.add_paragraph("Risks / unknowns:")
+            for risk in action["risks_unknowns"][:5]:
+                document.add_paragraph(f"- {risk}")
+
+    @staticmethod
     def _render_competitor_failure_radar(
         document: Document,
         groups: list[CompetitorFailureGroup],
@@ -418,23 +456,10 @@ class DailyDigestDocumentService:
         eligible_post_ids = [post_id for post_id in cluster_post_ids if post_id in promoted_rows_by_id]
         if not eligible_post_ids:
             return [], []
-        examples_by_post_id = {
-            str(example.get("post_id") or "").strip(): example
-            for example in examples
-            if str(example.get("post_id") or "").strip()
-        }
         eligible_examples: list[dict[str, Any]] = []
         for post_id in eligible_post_ids:
             row_example = cls._row_cluster_example(promoted_rows_by_id[post_id])
-            existing_example = examples_by_post_id.get(post_id, {})
             merged = dict(row_example)
-            for key, value in existing_example.items():
-                if key in {"verified_quotes", "exact_verified_quotes", "verified_evidence"} and merged.get(
-                    "exact_verified_quotes"
-                ):
-                    continue
-                if value not in (None, "", [], {}):
-                    merged[key] = value
             merged["post_id"] = post_id
             eligible_examples.append(merged)
         return eligible_examples, eligible_post_ids
@@ -493,8 +518,11 @@ class DailyDigestDocumentService:
 
     @classmethod
     def _cluster_avg_opportunity_score(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
-        values = [cls._coerce_float(example.get("opportunity_score"), default=0.0) for example in examples]
-        values = [value for value in values if value]
+        values = [
+            cls._coerce_float(example.get("opportunity_score"), default=0.0)
+            for example in examples
+            if example.get("opportunity_score") not in (None, "", [], {})
+        ]
         if values:
             return sum(values) / len(values)
         return float(cluster.get("avg_opportunity_score") or 0.0)
@@ -562,12 +590,14 @@ class DailyDigestDocumentService:
 
     @classmethod
     def _cluster_buyer_authority(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        values = [cls._coerce_float(example.get("buyer_authority_score"), default=0.0) for example in examples]
+        values = [value for value in values if value]
+        if values:
+            return sum(values) / len(values)
         direct = cls._coerce_float(cluster.get("median_buyer_authority"), default=0.0)
         if direct:
             return direct
-        values = [cls._coerce_float(example.get("buyer_authority_score"), default=0.0) for example in examples]
-        values = [value for value in values if value]
-        return sum(values) / len(values) if values else 0.0
+        return 0.0
 
     @staticmethod
     def _cluster_text_values(examples: list[dict[str, Any]], key: str) -> list[str]:
