@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from buyer_intelligence import build_buyer_wtp_intelligence
 from competitor_radar import CompetitorFailureGroup, build_competitor_failure_radar, cluster_anchor
 from digest_delivery import DailyDigestDocumentService
 from rejected_noise import (
@@ -219,6 +220,7 @@ class ResearchReportBuilder:
             score_breakdown_html = (
                 f"<p><strong>Score breakdown:</strong> {self._e(score_breakdown)}</p>" if score_breakdown else ""
             )
+            buyer_wtp_html = self._render_buyer_wtp_intelligence(examples)
             cards.append(
                 f"<article id=\"{self._e(cluster_anchor(label))}\" class=\"card cluster-card\">"
                 f"<h3>#{rank} {self._e(label)}</h3>"
@@ -229,6 +231,7 @@ class ResearchReportBuilder:
                 f"{score_breakdown_html}"
                 f"<p><strong>Affected users/personas:</strong> {personas}</p>"
                 f"<p><strong>Current workarounds:</strong> {workarounds}</p>"
+                f"{buyer_wtp_html}"
                 f"<p><strong>Competitors/tools mentioned:</strong> {incumbents}</p>"
                 f"<p><strong>Incumbent failure:</strong> {failures}</p>"
                 f"<ul class=\"quotes\">{quote_items}</ul>"
@@ -236,6 +239,33 @@ class ResearchReportBuilder:
             )
         empty = "<p class=\"empty\">No verified trending clusters in this window.</p>" if not cards else ""
         return "<section id=\"trending-pains\"><h2>Trending pains</h2>" + empty + "".join(cards) + "</section>"
+
+    def _render_buyer_wtp_intelligence(self, examples: list[dict[str, Any]]) -> str:
+        intelligence = build_buyer_wtp_intelligence(examples)
+        if not intelligence.has_content:
+            return ""
+        sections = ["<div class=\"buyer-wtp\"><p><strong>Buyer/WTP intelligence</strong></p>"]
+        roles_text = intelligence.buyer_roles_text
+        if roles_text:
+            sections.append(f"<p><strong>Buyer roles: {self._e(roles_text)}</strong></p>")
+        if intelligence.avg_buyer_authority or intelligence.avg_wtp:
+            sections.append(
+                "<p><strong>"
+                f"Avg buyer authority {intelligence.avg_buyer_authority:.2f} · "
+                f"Avg WTP {intelligence.avg_wtp:.1f}/10"
+                "</strong></p>"
+            )
+        if intelligence.wtp_evidence_quotes:
+            quote_items = "".join(f"<li>{self._e(quote)}</li>" for quote in intelligence.wtp_evidence_quotes)
+            sections.append(f"<p><strong>WTP evidence</strong></p><ul class=\"quotes\">{quote_items}</ul>")
+        if intelligence.paid_workarounds:
+            workaround_items = "".join(f"<li>{self._e(value)}</li>" for value in intelligence.paid_workarounds)
+            sections.append(f"<p><strong>Paid workaround evidence</strong></p><ul>{workaround_items}</ul>")
+        if intelligence.uncertainties:
+            uncertainty_items = "".join(f"<li>{self._e(value)}</li>" for value in intelligence.uncertainties)
+            sections.append(f"<p><strong>Uncertainty</strong></p><ul>{uncertainty_items}</ul>")
+        sections.append("</div>")
+        return "".join(sections)
 
     def _render_top_opportunities(self, rows: list[dict[str, Any]]) -> str:
         if not rows:
@@ -416,11 +446,22 @@ class ResearchReportBuilder:
         for cluster in clusters:
             post_ids = {str(item) for item in cluster.get("post_ids") or [] if str(item).strip()}
             raw_examples = [item for item in cluster.get("representative_examples") or [] if isinstance(item, dict)]
-            eligible_examples = [
-                example
-                for example in raw_examples
-                if str(example.get("post_id") or "") in promoted_rows_by_id
-            ]
+            eligible_examples = []
+            for example in raw_examples:
+                post_id = str(example.get("post_id") or "")
+                row = promoted_rows_by_id.get(post_id)
+                if row is None:
+                    continue
+                merged = self._row_as_example(row)
+                for key, value in example.items():
+                    if key in {"verified_quotes", "exact_verified_quotes", "verified_evidence"} and merged.get(
+                        "exact_verified_quotes"
+                    ):
+                        continue
+                    if value not in (None, "", [], {}):
+                        merged[key] = value
+                merged["post_id"] = post_id
+                eligible_examples.append(merged)
             if not eligible_examples:
                 eligible_examples = [
                     self._row_as_example(promoted_rows_by_id[post_id])
@@ -442,11 +483,15 @@ class ResearchReportBuilder:
             "url": row.get("url"),
             "summary": row.get("summary"),
             "verified_quotes": self._row_quotes(row),
+            "exact_verified_quotes": self._row_quotes(row),
             "current_workaround": row.get("current_workaround"),
             "incumbent_failure": row.get("incumbent_failure"),
             "pain_level": row.get("pain_level"),
             "willingness_to_pay": row.get("willingness_to_pay"),
             "confidence": row.get("confidence"),
+            "buyer_authority": row.get("buyer_authority"),
+            "buyer_authority_score": DailyDigestDocumentService._buyer_authority_score(row),
+            "uncertainty_reason": row.get("uncertainty_reason"),
             "user_context": self._json_object(row.get("user_context") or row.get("user_context_json")),
         }
 
@@ -487,7 +532,7 @@ class ResearchReportBuilder:
     def _cluster_quotes(self, examples: list[dict[str, Any]]) -> list[str]:
         quotes: list[str] = []
         for example in examples:
-            raw = example.get("verified_quotes") or []
+            raw = example.get("exact_verified_quotes") or example.get("verified_quotes") or []
             if isinstance(raw, str):
                 raw = [raw]
             if isinstance(raw, list):

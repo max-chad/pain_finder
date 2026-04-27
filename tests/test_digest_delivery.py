@@ -337,6 +337,125 @@ async def test_daily_digest_document_renders_competitor_failure_radar_from_verif
     assert "Unsupported high-score HubSpot complaint" in xml
 
 
+async def test_daily_digest_cluster_cards_show_buyer_wtp_intelligence_for_verified_examples_only(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "buyer-ops",
+            "title": "Ops team pays to patch invoice approvals",
+            "summary": "Head of ops has budget for invoice approval fixes.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 91.0,
+            "niche_category": "FinOps",
+            "source": "reddit",
+            "subreddit": "financeops",
+            "url": "https://example.com/buyer-ops",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "head_of_ops",
+            "buyer_authority_score": 0.94,
+            "current_workaround": "paid Zapier subscription plus contractor spreadsheet cleanup",
+            "incumbent_failure": "ERP approval sync misses invoice status changes",
+            "verified_evidence_json": '[{"quote":"I own ops budget and would pay to stop invoice approvals breaking","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.91,
+            "uncertainty_reason": "budget is explicit but seat count is unknown",
+            "score_components_json": '{"promotion_eligible": true}',
+            "user_context_json": '{"role":"head_of_ops","persona":"Head of Ops"}',
+        },
+        {
+            "post_id": "buyer-founder",
+            "title": "Founder pays for billing reconciliation workaround",
+            "summary": "Founder runs a paid Airtable workaround for billing reconciliation.",
+            "pain_level": 8,
+            "willingness_to_pay": 8,
+            "opportunity_score": 87.0,
+            "niche_category": "FinOps",
+            "source": "hn",
+            "subreddit": "hn",
+            "url": "https://news.ycombinator.com/item?id=buyer-founder",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "buyer_authority_score": 1.0,
+            "current_workaround": "monthly Airtable license workaround for reconciliation",
+            "incumbent_failure": "Billing export drops paid invoices",
+            "verified_evidence_json": '[{"quote":"as founder I pay for Airtable because billing reconciliation still breaks","source_type":"body","match_type":"exact"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.86,
+            "score_components_json": '{"promotion_eligible": true}',
+            "user_context_json": '{"role":"founder_owner","persona":"Founder"}',
+        },
+        {
+            "post_id": "buyer-weak",
+            "title": "Unsupported noisy buyer claim",
+            "summary": "Looks like budget, but no exact evidence backs it.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 99.0,
+            "niche_category": "FinOps",
+            "source": "reddit",
+            "subreddit": "financeops",
+            "url": "https://example.com/buyer-weak",
+            "opportunity_bucket": "current_opportunity",
+            "first_handness": "first_hand",
+            "buyer_authority": "founder_owner",
+            "buyer_authority_score": 1.0,
+            "current_workaround": "unsupported paid Zapier claim",
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0.0,
+            "confidence": 0.2,
+            "score_components_json": '{"promotion_eligible": true}',
+        },
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "invoice-approval-budget",
+            "label": "Invoice approval budget pain",
+            "summary": "Verified buyers are paying for workarounds around invoice approval and billing reconciliation.",
+            "avg_opportunity_score": 92.0,
+            "post_ids": ["buyer-ops", "buyer-founder", "buyer-weak"],
+            "representative_examples": [
+                {
+                    "post_id": "buyer-ops",
+                    "verified_quotes": ["unsupported would pay paraphrase"],
+                    "exact_verified_quotes": ["unsupported would pay paraphrase"],
+                },
+                {"post_id": "buyer-founder", "verified_quotes": ["as founder I pay for Airtable because billing reconciliation still breaks"]},
+                {"post_id": "buyer-weak", "verified_quotes": ["unsupported buyer budget quote"]},
+            ],
+        }
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    cluster_xml = xml[: xml.index("<w:t>Current opportunities</w:t>")]
+    assert "Buyer/WTP intelligence" in cluster_xml
+    assert "Buyer roles: head_of_ops (1) | founder_owner (1)" in cluster_xml
+    assert "Avg buyer authority 0.97" in cluster_xml
+    assert "Avg WTP 8.5/10" in cluster_xml
+    assert "WTP evidence" in cluster_xml
+    assert "I own ops budget and would pay to stop invoice approvals breaking" in cluster_xml
+    assert "Paid workaround evidence" in cluster_xml
+    assert "paid Zapier subscription plus contractor spreadsheet cleanup" in cluster_xml
+    assert "monthly Airtable license workaround for reconciliation" in cluster_xml
+    assert "Uncertainty" in cluster_xml
+    assert "budget is explicit but seat count is unknown" in cluster_xml
+    assert "unsupported would pay paraphrase" not in cluster_xml
+    assert "unsupported buyer budget quote" not in cluster_xml
+    assert "unsupported paid Zapier claim" not in cluster_xml
+
+
 async def test_daily_digest_document_filters_mixed_cluster_cards_to_promoted_evidence(tmp_path):
     db = AsyncMock()
     db.get_recent_pain_points.return_value = [

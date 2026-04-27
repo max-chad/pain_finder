@@ -9,6 +9,7 @@ from typing import Any
 
 from docx import Document
 
+from buyer_intelligence import build_buyer_wtp_intelligence
 from competitor_radar import CompetitorFailureGroup, build_competitor_failure_radar
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
@@ -314,6 +315,7 @@ class DailyDigestDocumentService:
             workarounds = self._cluster_text_values(examples, "current_workaround")
             if workarounds:
                 document.add_paragraph(f"Current workarounds: {'; '.join(workarounds[:4])}")
+            self._render_buyer_wtp_intelligence(document, examples)
             document.add_paragraph(f"Competitors/tools mentioned: {incumbents_text}")
             wedge = self._cluster_suggested_wedge(cluster, examples, personas=personas, workarounds=workarounds)
             if wedge:
@@ -331,13 +333,41 @@ class DailyDigestDocumentService:
                     title = str(example.get("title") or "Untitled").strip() or "Untitled"
                     source = str(example.get("source") or "unknown").strip() or "unknown"
                     document.add_paragraph(f"- {title} ({source})")
-                    quotes = example.get("verified_quotes") or []
+                    quotes = example.get("exact_verified_quotes") or example.get("verified_quotes") or []
                     if quotes:
                         document.add_paragraph(f"  Evidence: {str(quotes[0])}")
                     url = str(example.get("url") or "").strip()
                     if url:
                         document.add_paragraph(f"  Link: {url}")
             document.add_paragraph(f"Dominant incumbents: {incumbents_text}")
+
+    @staticmethod
+    def _render_buyer_wtp_intelligence(document: Document, examples: list[dict[str, Any]]) -> None:
+        intelligence = build_buyer_wtp_intelligence(examples)
+        if not intelligence.has_content:
+            return
+        header = document.add_paragraph("Buyer/WTP intelligence")
+        header.runs[0].bold = True
+        roles_text = intelligence.buyer_roles_text
+        if roles_text:
+            document.add_paragraph(f"Buyer roles: {roles_text}")
+        if intelligence.avg_buyer_authority or intelligence.avg_wtp:
+            document.add_paragraph(
+                f"Avg buyer authority {intelligence.avg_buyer_authority:.2f} | "
+                f"Avg WTP {intelligence.avg_wtp:.1f}/10"
+            )
+        if intelligence.wtp_evidence_quotes:
+            document.add_paragraph("WTP evidence")
+            for quote in intelligence.wtp_evidence_quotes:
+                document.add_paragraph(f"- {quote}")
+        if intelligence.paid_workarounds:
+            document.add_paragraph("Paid workaround evidence")
+            for workaround in intelligence.paid_workarounds:
+                document.add_paragraph(f"- {workaround}")
+        if intelligence.uncertainties:
+            document.add_paragraph("Uncertainty")
+            for uncertainty in intelligence.uncertainties:
+                document.add_paragraph(f"- {uncertainty}")
 
     @staticmethod
     def _render_competitor_failure_radar(
@@ -399,6 +429,10 @@ class DailyDigestDocumentService:
             existing_example = examples_by_post_id.get(post_id, {})
             merged = dict(row_example)
             for key, value in existing_example.items():
+                if key in {"verified_quotes", "exact_verified_quotes", "verified_evidence"} and merged.get(
+                    "exact_verified_quotes"
+                ):
+                    continue
                 if value not in (None, "", [], {}):
                     merged[key] = value
             merged["post_id"] = post_id
@@ -410,13 +444,19 @@ class DailyDigestDocumentService:
         context = row.get("user_context")
         if not isinstance(context, dict):
             context = cls._json_object(row.get("user_context_json"))
+        exact_quotes = [
+            str(item.get("quote") or "").strip()
+            for item in cls._verified_evidence(row)
+            if str(item.get("match_type") or "").lower() == "exact" and str(item.get("quote") or "").strip()
+        ]
         return {
             "post_id": str(row.get("post_id") or ""),
             "title": str(row.get("title") or "Untitled").strip() or "Untitled",
             "summary": str(row.get("summary") or "").strip(),
             "source": str(row.get("source") or "").strip(),
             "url": str(row.get("url") or "").strip(),
-            "verified_quotes": [str(item.get("quote") or "").strip() for item in cls._verified_evidence(row)],
+            "verified_quotes": exact_quotes,
+            "exact_verified_quotes": exact_quotes,
             "current_workaround": str(row.get("current_workaround") or "").strip(),
             "incumbent_failure": str(row.get("incumbent_failure") or "").strip(),
             "user_context": context,
@@ -429,6 +469,7 @@ class DailyDigestDocumentService:
             "buyer_authority_score": cls._buyer_authority_score(row),
             "confidence": cls._coerce_float(row.get("confidence"), default=0.0),
             "evidence_quality": str(row.get("evidence_quality") or "").strip(),
+            "uncertainty_reason": str(row.get("uncertainty_reason") or "").strip(),
             "score_components": cls._score_components(row),
         }
 
@@ -569,6 +610,7 @@ class DailyDigestDocumentService:
         for example in examples:
             url = str(example.get("url") or "").strip()
             raw_quotes = example.get("verified_quotes") or []
+            raw_quotes = example.get("exact_verified_quotes") or raw_quotes
             if not isinstance(raw_quotes, list):
                 raw_quotes = [raw_quotes]
             for raw_quote in raw_quotes:
