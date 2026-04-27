@@ -496,6 +496,118 @@ async def test_run_persists_cluster_quality_and_representative_examples(db):
     assert stored[0]["normalized_frequency"]["unique_authors_count"] == 2
 
 
+async def test_run_scores_multi_source_triangulation_above_single_source_cluster(db):
+    await _seed_candidate(
+        db,
+        post_id="reddit:triangulated-1",
+        title="QuickBooks payout reconciliation breaks",
+        summary="Finance ops manually reconciles Stripe payouts against QuickBooks.",
+        wtp=9,
+        opportunity_score=70.0,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "Stripe payouts do not match QuickBooks deposits", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        author_hash="author-reddit",
+        source="reddit",
+    )
+    await _seed_candidate(
+        db,
+        post_id="hn:triangulated-2",
+        title="QuickBooks payout reconciliation fails",
+        summary="HN operators export Stripe CSVs for the same QuickBooks mismatch.",
+        wtp=9,
+        opportunity_score=70.0,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "QuickBooks never lines up with Stripe payouts", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        author_hash="author-hn",
+        source="hn",
+    )
+    await _seed_candidate(
+        db,
+        post_id="review:g2:quickbooks-sync:1",
+        title="QuickBooks Sync 1.0 star review",
+        summary="Review complains that Stripe payout reconciliation is still manual.",
+        wtp=9,
+        opportunity_score=70.0,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "Payout reconciliation is still manual", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        author_hash="author-review",
+        source="review:g2",
+    )
+    for index in range(3):
+        await _seed_candidate(
+            db,
+            post_id=f"reddit:single-{index}",
+            title="PagerDuty incident handoff breaks",
+            summary="SRE teams manually paste incident action items into Jira.",
+            wtp=9,
+            opportunity_score=70.0,
+            competitor_tags=["pagerduty", "jira"],
+            verified_evidence=[{"quote": "Incident action items are pasted into Jira manually", "match_type": "exact"}],
+            evidence_quality="exact_quote",
+            author_hash=f"author-single-{index}",
+            source="reddit",
+        )
+
+    class FamilyEmbedder:
+        async def embed_many(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0] if "quickbooks" in text.lower() else [0.0, 1.0] for text in texts]
+
+    clusterer = MacroTrendClusterer(
+        db=db,
+        openrouter=None,
+        embedder=FamilyEmbedder(),
+        min_cluster_size=2,
+        similarity_threshold=0.95,
+        min_wtp=7,
+    )
+
+    result = await clusterer.run(window_days=30)
+
+    clusters_by_member = {frozenset(cluster.post_ids): cluster for cluster in result.clusters}
+    triangulated = clusters_by_member[
+        frozenset({"reddit:triangulated-1", "hn:triangulated-2", "review:g2:quickbooks-sync:1"})
+    ]
+    single_source = clusters_by_member[
+        frozenset({"reddit:single-0", "reddit:single-1", "reddit:single-2"})
+    ]
+    assert triangulated.source_families == ["hn", "reddit", "review:g2"]
+    assert triangulated.independent_source_count == 3
+    assert triangulated.source_diversity_score > single_source.source_diversity_score
+    assert triangulated.triangulation_score > single_source.triangulation_score
+    assert triangulated.cluster_quality_score > single_source.cluster_quality_score
+    assert triangulated.score_components["factors"]["source_diversity"] == triangulated.source_diversity_score
+    assert triangulated.representative_examples[0]["source_family"] in {"reddit", "hn", "review:g2"}
+
+    stored = await db.get_macro_clusters(result.run_id)
+    stored_triangulated = next(
+        cluster
+        for cluster in stored
+        if set(cluster["post_ids"]) == {"reddit:triangulated-1", "hn:triangulated-2", "review:g2:quickbooks-sync:1"}
+    )
+    assert stored_triangulated["source_families"] == ["hn", "reddit", "review:g2"]
+    assert stored_triangulated["score_components"]["factors"]["source_diversity"] == pytest.approx(
+        stored_triangulated["source_diversity_score"]
+    )
+
+
+def test_cluster_verified_quotes_ignore_fuzzy_matches_for_quality_metadata():
+    quotes = MacroTrendClusterer._verified_quotes(
+        {
+            "verified_evidence_json": json.dumps(
+                [
+                    {"quote": "exact payout reconciliation quote", "match_type": "exact"},
+                    {"quote": "fuzzy paraphrase should not count", "match_type": "fuzzy"},
+                ]
+            )
+        }
+    )
+
+    assert quotes == ["exact payout reconciliation quote"]
+
+
 def test_representative_examples_preserve_competitor_failure_metadata():
     examples = MacroTrendClusterer._representative_examples(
         [

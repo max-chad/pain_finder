@@ -19,7 +19,7 @@ from classifier import (
     extract_comment_market_signals,
     first_handness_score,
 )
-from db import Database
+from db import Database, normalize_source_family
 from openrouter import DeepDiveResult
 from rejected_noise import (
     DISPLAY_REJECTED_NOISE_LIMIT,
@@ -589,6 +589,7 @@ class AnalysisPipeline:
             row_source = (row_copy.get("source") or "unknown").strip() or "unknown"
             row_scope = (row_copy.get("subreddit") or subreddit or "global").strip() or "global"
             row_post_id = str(row_copy.get("post_id") or "").strip()
+            row_copy["source_family"] = normalize_source_family(row_source, row_post_id)
             row_copy["normalized_frequency"] = await self.db.calculate_normalized_frequency(
                 source=row_source,
                 scope=row_scope,
@@ -830,6 +831,7 @@ class AnalysisPipeline:
                 "title": signal.post.title,
                 "url": signal.post.url,
                 "source": source,
+                "source_family": normalize_source_family(source or signal.post.source, signal.post.post_id),
                 "discovery_query": signal.post.discovery_query,
                 "category": signal.category,
                 "summary": signal.summary,

@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -69,6 +70,8 @@ class ReviewScraper:
                     score=max(0, int((2.5 - rating) * 10)),
                     top_comments=[],
                     source=f"review:{site}",
+                    source_created_at=row.get("source_created_at"),
+                    source_created_ts=row.get("source_created_ts"),
                 )
             )
         return posts
@@ -121,7 +124,15 @@ class ReviewScraper:
                 review_rating = node.get("reviewRating", {})
                 rating_value = float(review_rating.get("ratingValue") or 0)
                 review_text = str(node.get("reviewBody") or "").strip()
-                rows.append({"rating": rating_value, "text": review_text})
+                source_created_at, source_created_ts = self._source_created_fields(node.get("datePublished"))
+                rows.append(
+                    {
+                        "rating": rating_value,
+                        "text": review_text,
+                        "source_created_at": source_created_at,
+                        "source_created_ts": source_created_ts,
+                    }
+                )
         return rows
 
     def _parse_generic_review_cards(self, html: str) -> list[dict[str, Any]]:
@@ -139,9 +150,27 @@ class ReviewScraper:
             rating = self._extract_rating(node=node, text=text)
             if rating <= 0:
                 continue
-            rows.append({"rating": rating, "text": text})
+            source_created_at, source_created_ts = self._extract_source_created(node)
+            rows.append(
+                {
+                    "rating": rating,
+                    "text": text,
+                    "source_created_at": source_created_at,
+                    "source_created_ts": source_created_ts,
+                }
+            )
 
         return rows
+
+    def _extract_source_created(self, node) -> tuple[str | None, int | None]:
+        for candidate in [node, *node.find_all(["time", "meta"])]:
+            for attr in ("datetime", "content", "datepublished", "data-date", "title"):
+                value = candidate.get(attr)
+                if isinstance(value, str) and value.strip():
+                    parsed = self._source_created_fields(value)
+                    if parsed != (None, None):
+                        return parsed
+        return None, None
 
     def _extract_rating(self, *, node, text: str) -> float:
         for attr in ("aria-label", "title", "data-rating", "data-stars"):
@@ -175,3 +204,28 @@ class ReviewScraper:
         if value < 0 or value > 5:
             return 0.0
         return value
+
+    @staticmethod
+    def _source_created_fields(value: Any) -> tuple[str | None, int | None]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None, None
+        if raw.isdigit():
+            timestamp = int(raw)
+            if timestamp >= 10_000_000_000:
+                timestamp //= 1000
+            try:
+                return datetime.fromtimestamp(timestamp, UTC).isoformat(), timestamp
+            except (OSError, OverflowError, ValueError):
+                return None, None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None, None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.astimezone(UTC)
+        try:
+            return parsed.isoformat(), int(parsed.timestamp())
+        except (OSError, OverflowError, ValueError):
+            return None, None

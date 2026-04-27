@@ -7,7 +7,7 @@ def test_parse_appstore_reviews_from_ld_json():
     html = """
     <html><body>
       <script type="application/ld+json">
-      {"@type":"Review","reviewRating":{"ratingValue":"1"},"reviewBody":"Crashes every day"}
+      {"@type":"Review","reviewRating":{"ratingValue":"1"},"reviewBody":"Crashes every day","datePublished":"2024-04-20T08:15:00Z"}
       </script>
       <script type="application/ld+json">
       {"@type":"Review","reviewRating":{"ratingValue":"4"},"reviewBody":"Pretty good"}
@@ -20,6 +20,8 @@ def test_parse_appstore_reviews_from_ld_json():
     assert len(rows) == 2
     assert rows[0]["rating"] == 1.0
     assert "Crashes" in rows[0]["text"]
+    assert rows[0]["source_created_ts"] == 1713600900
+    assert rows[0]["source_created_at"] == "2024-04-20T08:15:00+00:00"
 
 
 def test_parse_generic_review_cards_extracts_ratings():
@@ -43,10 +45,23 @@ def test_parse_generic_review_cards_extracts_ratings():
     assert any("Missing critical export features." in row["text"] for row in rows)
 
 
+def test_source_created_fields_handles_millisecond_and_invalid_timestamps():
+    scraper = ReviewScraper()
+
+    assert scraper._source_created_fields("1713600900000") == ("2024-04-20T08:15:00+00:00", 1713600900)
+    assert scraper._source_created_fields("999999999999999999999999") == (None, None)
+
+
 async def test_fetch_negative_reviews_filters_to_1_and_2_star(monkeypatch):
     html = """
-    <article class="review-card" aria-label="1 star">Completely unusable for invoicing.</article>
-    <article class="review-card" aria-label="2 stars">No API retries and poor docs.</article>
+    <article class="review-card" aria-label="1 star">
+      <time datetime="2024-04-20T08:15:00Z"></time>
+      Completely unusable for invoicing.
+    </article>
+    <article class="review-card" aria-label="2 stars">
+      <time datetime="2024-04-21T09:30:00Z"></time>
+      No API retries and poor docs.
+    </article>
     <article class="review-card" aria-label="3 stars">Usable but rough.</article>
     """
     scraper = ReviewScraper()
@@ -59,6 +74,8 @@ async def test_fetch_negative_reviews_filters_to_1_and_2_star(monkeypatch):
     assert posts[0].post_id.startswith("review:g2:quickbooks-sync-tool:")
     assert all(post.source == "review:g2" for post in posts)
     assert all(post.subreddit == "reviews_g2" for post in posts)
+    assert posts[0].source_created_ts == 1713600900
+    assert posts[0].source_created_at == "2024-04-20T08:15:00+00:00"
 
 
 async def test_fetch_negative_reviews_handles_disabled_or_fetch_failure(monkeypatch):

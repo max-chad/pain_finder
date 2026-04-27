@@ -103,6 +103,17 @@ async def test_research_report_renders_required_static_sections_from_fixture_dat
             "cluster_stability_score": 0.91,
             "verified_quote_count": 2,
             "independent_source_count": 2,
+            "source_families": ["reddit", "hn"],
+            "source_family_counts": {"reddit": 1, "hn": 1},
+            "source_diversity_score": 0.5,
+            "triangulation_score": 0.62,
+            "cluster_quality_score": 0.81,
+            "score_components": {
+                "factors": {"stability": 0.91, "source_diversity": 0.5, "triangulation": 0.62},
+                "cluster_quality_score": 0.81,
+                "diagnostic_only": True,
+                "promotion_eligible_impact": "none",
+            },
             "unique_author_count": 3,
             "incumbents": ["hubspot", "salesforce"],
             "pain_mentions_per_1000_posts": 12.5,
@@ -202,6 +213,12 @@ async def test_research_report_renders_required_static_sections_from_fixture_dat
     assert "Evidence rejection: no_verified_exact_quote" in html
     assert "Fetched posts: 120" in html
     assert "Source method: public_json" in html
+    assert "Cluster quality 0.81" in html
+    assert "Source diversity 0.50" in html
+    assert "Triangulation 0.62" in html
+    assert "Score breakdown" in html
+    assert "source_diversity=0.50" in html
+    assert "triangulation=0.62" in html
 
 
 async def test_research_report_renders_competitor_failure_radar_from_verified_rows_and_clusters(tmp_path):

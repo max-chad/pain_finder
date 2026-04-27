@@ -16,6 +16,8 @@ async def test_fetch_posts_dedups_and_prefixes_ids(respx_mock):
                             "story_text": "Our billing sync is fragile",
                             "url": "",
                             "points": 15,
+                            "created_at_i": 1713600000,
+                            "created_at": "2024-04-20T08:00:00Z",
                         }
                     ]
                 },
@@ -30,6 +32,8 @@ async def test_fetch_posts_dedups_and_prefixes_ids(respx_mock):
                             "story_text": "Our billing sync is fragile",
                             "url": "",
                             "points": 15,
+                            "created_at_i": 1713600000,
+                            "created_at": "2024-04-20T08:00:00Z",
                         },
                         {
                             "objectID": "2",
@@ -37,6 +41,8 @@ async def test_fetch_posts_dedups_and_prefixes_ids(respx_mock):
                             "story_text": "We built our own monitor",
                             "url": "https://example.com/2",
                             "points": 8,
+                            "created_at_i": 1713600300,
+                            "created_at": "2024-04-20T08:05:00Z",
                         },
                     ]
                 },
@@ -56,6 +62,18 @@ async def test_fetch_posts_dedups_and_prefixes_ids(respx_mock):
     ids = {post.post_id for post in posts}
     assert ids == {"hn:1", "hn:2"}
     assert all(post.source == "hn" for post in posts)
+    first = next(post for post in posts if post.post_id == "hn:1")
+    assert first.source_created_ts == 1713600000
+    assert first.source_created_at == "2024-04-20T08:00:00+00:00"
+
+
+def test_source_created_fields_handles_unhashable_timestamp_with_created_at_fallback():
+    created_at, created_ts = HackerNewsScraper._source_created_fields(
+        {"created_at_i": ["not", "hashable"], "created_at": "2024-04-20T08:00:00Z"}
+    )
+
+    assert created_at == "2024-04-20T08:00:00+00:00"
+    assert created_ts == 1713600000
 
 
 async def test_fetch_posts_handles_http_errors_per_keyword(respx_mock):

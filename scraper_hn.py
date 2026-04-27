@@ -57,6 +57,7 @@ class HackerNewsScraper:
                         continue
                     url = (hit.get("url") or hit.get("story_url") or f"https://news.ycombinator.com/item?id={object_id}").strip()
                     score = int(hit.get("points") or 0)
+                    source_created_at, source_created_ts = self._source_created_fields(hit)
 
                     hits[post_id] = Post(
                         post_id=post_id,
@@ -68,6 +69,8 @@ class HackerNewsScraper:
                         permalink=f"https://news.ycombinator.com/item?id={object_id}",
                         top_comments=[],
                         source="hn",
+                        source_created_at=source_created_at,
+                        source_created_ts=source_created_ts,
                     )
                     if len(hits) >= max_posts:
                         break
@@ -75,3 +78,34 @@ class HackerNewsScraper:
                     break
 
         return list(hits.values())[:max_posts]
+
+    @staticmethod
+    def _source_created_fields(hit: dict) -> tuple[str | None, int | None]:
+        source_created_ts: int | None = None
+        raw_ts = hit.get("created_at_i")
+        if raw_ts not in (None, ""):
+            try:
+                source_created_ts = int(raw_ts)
+            except (TypeError, ValueError):
+                source_created_ts = None
+
+        raw_created_at = str(hit.get("created_at") or "").strip()
+        if raw_created_at:
+            normalized = raw_created_at.replace("Z", "+00:00")
+            try:
+                created_dt = datetime.fromisoformat(normalized)
+            except ValueError:
+                created_dt = None
+            if created_dt is not None:
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=UTC)
+                created_dt = created_dt.astimezone(UTC)
+                created_ts = int(created_dt.timestamp())
+                return created_dt.isoformat(), created_ts
+
+        if source_created_ts is not None:
+            try:
+                return datetime.fromtimestamp(source_created_ts, UTC).isoformat(), source_created_ts
+            except (OSError, OverflowError, ValueError):
+                return None, None
+        return None, None

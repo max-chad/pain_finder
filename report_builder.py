@@ -210,14 +210,23 @@ class ResearchReportBuilder:
             stability = self._coerce_float(cluster.get("cluster_stability_score"))
             sources = int(self._coerce_float(cluster.get("independent_source_count")))
             authors = int(self._coerce_float(cluster.get("unique_author_count") or cluster.get("unique_authors_count")))
+            source_diversity = self._coerce_float(cluster.get("source_diversity_score"))
+            triangulation = self._coerce_float(cluster.get("triangulation_score"))
+            cluster_quality = self._coerce_float(cluster.get("cluster_quality_score"))
             posts_freq = self._coerce_float(cluster.get("pain_mentions_per_1000_posts"))
             comments_freq = self._coerce_float(cluster.get("pain_mentions_per_1000_comments"))
+            score_breakdown = self._cluster_score_breakdown(cluster)
+            score_breakdown_html = (
+                f"<p><strong>Score breakdown:</strong> {self._e(score_breakdown)}</p>" if score_breakdown else ""
+            )
             cards.append(
                 f"<article id=\"{self._e(cluster_anchor(label))}\" class=\"card cluster-card\">"
                 f"<h3>#{rank} {self._e(label)}</h3>"
                 f"<p class=\"metric\">Opportunity score {score:.1f} · Confidence {confidence:.2f} · Stability {stability:.2f}</p>"
                 f"<p><strong>Why it matters:</strong> {self._e(summary)}</p>"
                 f"<p><strong>Coverage/confidence:</strong> Verified quotes {int(self._coerce_float(cluster.get('verified_quote_count')))} · Sources {sources} · Authors {authors} · Frequency {posts_freq:.1f}/1k posts, {comments_freq:.1f}/1k comments</p>"
+                f"<p><strong>Multi-source diagnostics:</strong> Cluster quality {cluster_quality:.2f} · Source diversity {source_diversity:.2f} · Triangulation {triangulation:.2f}</p>"
+                f"{score_breakdown_html}"
                 f"<p><strong>Affected users/personas:</strong> {personas}</p>"
                 f"<p><strong>Current workarounds:</strong> {workarounds}</p>"
                 f"<p><strong>Competitors/tools mentioned:</strong> {incumbents}</p>"
@@ -491,6 +500,25 @@ class ResearchReportBuilder:
             return direct
         values = [self._coerce_float(example.get("opportunity_score")) for example in examples]
         return self._avg(values)
+
+    def _cluster_score_breakdown(self, cluster: dict[str, Any]) -> str:
+        components = cluster.get("score_components")
+        if not isinstance(components, dict):
+            return ""
+        parts: list[str] = []
+        for section_name in ("factors", "penalties"):
+            values = components.get(section_name)
+            if not isinstance(values, dict) or not values:
+                continue
+            rendered_values = []
+            for key, value in values.items():
+                if isinstance(value, (int, float)):
+                    rendered_values.append(f"{key}={float(value):.2f}")
+                else:
+                    rendered_values.append(f"{key}={value}")
+            if rendered_values:
+                parts.append(f"{section_name} {', '.join(rendered_values)}")
+        return "; ".join(parts)
 
     def _cluster_personas(self, examples: list[dict[str, Any]]) -> list[str]:
         values: list[str] = []

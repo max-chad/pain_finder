@@ -17,6 +17,22 @@ PAIN_POINT_STATUSES = {"new", "favorite", "discarded", "merged"}
 DEEP_DIVE_STATUSES = {"not_requested", "queued", "running", "completed", "failed"}
 OPPORTUNITY_BUCKETS = {"current_opportunity", "evergreen_pain", "unknown_age"}
 
+
+def normalize_source_family(source: Any, post_id: Any = "") -> str:
+    raw_source = str(source or "").strip().lower()
+    raw_post_id = str(post_id or "").strip().lower()
+    for value in (raw_source, raw_post_id):
+        if value.startswith("review:"):
+            parts = value.split(":")
+            site = parts[1].strip() if len(parts) > 1 else ""
+            return f"review:{site or 'unknown'}"
+    if raw_source in {"hn", "hackernews", "hacker_news"} or raw_post_id.startswith("hn:"):
+        return "hn"
+    if raw_source in {"", "reddit"} or raw_post_id.startswith("reddit:") or (raw_post_id and ":" not in raw_post_id):
+        return "reddit"
+    return raw_source or "unknown"
+
+
 CREATE_PAIN_POINTS = """
 CREATE TABLE IF NOT EXISTS pain_points (
     id INTEGER PRIMARY KEY,
@@ -241,8 +257,14 @@ CREATE TABLE IF NOT EXISTS macro_trend_clusters (
     representative_examples_json TEXT DEFAULT '[]',
     verified_quote_count INTEGER DEFAULT 0,
     independent_source_count INTEGER DEFAULT 0,
+    source_families_json TEXT DEFAULT '[]',
+    source_family_counts_json TEXT DEFAULT '{}',
+    source_diversity_score REAL DEFAULT 0,
+    triangulation_score REAL DEFAULT 0,
+    cluster_quality_score REAL DEFAULT 0,
     unique_author_count INTEGER DEFAULT 0,
     normalized_frequency_json TEXT DEFAULT '{}',
+    score_components_json TEXT DEFAULT '{}',
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -470,8 +492,14 @@ MACRO_TREND_CLUSTER_COLUMNS = {
     "representative_examples_json": "TEXT DEFAULT '[]'",
     "verified_quote_count": "INTEGER DEFAULT 0",
     "independent_source_count": "INTEGER DEFAULT 0",
+    "source_families_json": "TEXT DEFAULT '[]'",
+    "source_family_counts_json": "TEXT DEFAULT '{}'",
+    "source_diversity_score": "REAL DEFAULT 0",
+    "triangulation_score": "REAL DEFAULT 0",
+    "cluster_quality_score": "REAL DEFAULT 0",
     "unique_author_count": "INTEGER DEFAULT 0",
     "normalized_frequency_json": "TEXT DEFAULT '{}'",
+    "score_components_json": "TEXT DEFAULT '{}'",
 }
 
 COMMENT_COLUMNS = {
@@ -575,6 +603,12 @@ class Database:
             for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
                 await self._ensure_column("macro_trend_clusters", column_name, ddl)
             await self._mark_migration_applied(wave6_cluster_foundations_migration)
+
+        wave8_source_triangulation_migration = "2026_04_27_wave8_2_source_triangulation"
+        if not await self._is_migration_applied(wave8_source_triangulation_migration):
+            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+                await self._ensure_column("macro_trend_clusters", column_name, ddl)
+            await self._mark_migration_applied(wave8_source_triangulation_migration)
 
         comment_availability_migration = "2026_04_26_comment_availability_flags"
         if not await self._is_migration_applied(comment_availability_migration):
@@ -1758,8 +1792,14 @@ class Database:
         representative_examples: list[dict[str, Any]] | None = None,
         verified_quote_count: int = 0,
         independent_source_count: int = 0,
+        source_families: list[str] | None = None,
+        source_family_counts: dict[str, int] | None = None,
+        source_diversity_score: float = 0.0,
+        triangulation_score: float = 0.0,
+        cluster_quality_score: float = 0.0,
         unique_author_count: int = 0,
         normalized_frequency: dict[str, Any] | None = None,
+        score_components: dict[str, Any] | None = None,
         pain_mentions_per_1000_posts: float = 0.0,
         pain_mentions_per_1000_comments: float = 0.0,
         unique_authors_count: int = 0,
@@ -1791,8 +1831,10 @@ class Database:
                 unique_authors_count, unique_threads_count, weekly_delta,
                 source_activity_baseline_json, latest_source_created_ts, cluster_stability_score,
                 representative_examples_json, verified_quote_count, independent_source_count,
-                unique_author_count, normalized_frequency_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_families_json, source_family_counts_json, source_diversity_score,
+                triangulation_score, cluster_quality_score, unique_author_count,
+                normalized_frequency_json, score_components_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1819,8 +1861,14 @@ class Database:
                 json.dumps(representative_examples or [], ensure_ascii=False, default=str),
                 int(verified_quote_count),
                 int(independent_source_count),
+                json.dumps(source_families or [], ensure_ascii=False),
+                json.dumps(source_family_counts or {}, ensure_ascii=False, sort_keys=True),
+                self._coerce_unit_float(source_diversity_score),
+                self._coerce_unit_float(triangulation_score),
+                self._coerce_unit_float(cluster_quality_score),
                 int(unique_author_count),
                 json.dumps(normalized_frequency_payload, ensure_ascii=False, default=str),
+                json.dumps(score_components or {}, ensure_ascii=False, default=str),
             ),
         ) as cursor:
             cluster_id = int(cursor.lastrowid)
@@ -1856,6 +1904,12 @@ class Database:
         row_dict["source_activity_baseline"] = baseline if isinstance(baseline, dict) else {}
         examples = cls._decode_json_field(row_dict.get("representative_examples_json"), [])
         row_dict["representative_examples"] = examples if isinstance(examples, list) else []
+        source_families = cls._decode_json_field(row_dict.get("source_families_json"), [])
+        row_dict["source_families"] = source_families if isinstance(source_families, list) else []
+        source_family_counts = cls._decode_json_field(row_dict.get("source_family_counts_json"), {})
+        row_dict["source_family_counts"] = source_family_counts if isinstance(source_family_counts, dict) else {}
+        score_components = cls._decode_json_field(row_dict.get("score_components_json"), {})
+        row_dict["score_components"] = score_components if isinstance(score_components, dict) else {}
         normalized_frequency = cls._decode_json_field(row_dict.get("normalized_frequency_json"), {})
         if not isinstance(normalized_frequency, dict) or not normalized_frequency:
             normalized_frequency = {
@@ -1871,6 +1925,9 @@ class Database:
         row_dict["cluster_stability_score"] = float(row_dict.get("cluster_stability_score") or 0.0)
         row_dict["verified_quote_count"] = int(row_dict.get("verified_quote_count") or 0)
         row_dict["independent_source_count"] = int(row_dict.get("independent_source_count") or 0)
+        row_dict["source_diversity_score"] = float(row_dict.get("source_diversity_score") or 0.0)
+        row_dict["triangulation_score"] = float(row_dict.get("triangulation_score") or 0.0)
+        row_dict["cluster_quality_score"] = float(row_dict.get("cluster_quality_score") or 0.0)
         return row_dict
 
     async def get_macro_clusters(self, run_id: int) -> list[dict[str, Any]]:

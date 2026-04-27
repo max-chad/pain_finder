@@ -1127,6 +1127,51 @@ async def test_macro_tables_persist_and_query(db):
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
 
 
+async def test_macro_cluster_persists_source_diversity_score_breakdown(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=3, cluster_count=1)
+
+    cluster_id = await db.save_macro_cluster(
+        run_id=run_id,
+        canonical_key="quickbooks-payout-reconciliation",
+        cluster_key="quickbooks-payout-reconciliation:v1",
+        label="QuickBooks payout reconciliation",
+        summary="Reddit, HN, and reviews all mention manual payout reconciliation.",
+        estimated_monetization_signal="high",
+        item_count=3,
+        aggregate_wtp=27.0,
+        avg_opportunity_score=70.0,
+        cluster_stability_score=0.82,
+        source_families=["hn", "reddit", "review:g2"],
+        source_family_counts={"reddit": 1, "hn": 1, "review:g2": 1},
+        source_diversity_score=1.0,
+        triangulation_score=1.0,
+        cluster_quality_score=0.92,
+        score_components={
+            "weights": {"stability": 0.35, "source_diversity": 0.3},
+            "factors": {"stability": 0.82, "source_diversity": 1.0, "triangulation": 1.0},
+            "cluster_quality_score": 0.92,
+        },
+        members=[
+            ("reddit:triangulated", 0.94),
+            ("hn:triangulated", 0.91),
+            ("review:g2:triangulated:1", 0.89),
+        ],
+    )
+
+    assert cluster_id > 0
+    clusters = await db.get_macro_clusters(run_id)
+    cluster = clusters[0]
+    assert cluster["source_families"] == ["hn", "reddit", "review:g2"]
+    assert cluster["source_family_counts"] == {"reddit": 1, "hn": 1, "review:g2": 1}
+    assert cluster["source_diversity_score"] == pytest.approx(1.0)
+    assert cluster["triangulation_score"] == pytest.approx(1.0)
+    assert cluster["cluster_quality_score"] == pytest.approx(0.92)
+    assert cluster["score_components"]["factors"]["source_diversity"] == 1.0
+
+    latest = await db.get_latest_canonical_clusters(limit=5)
+    assert latest[0]["score_components"]["cluster_quality_score"] == pytest.approx(0.92)
+
+
 async def test_get_latest_canonical_clusters_filters_before_limit(db):
     run_id = await db.create_macro_trend_run(window_days=30, candidate_count=4, cluster_count=2)
     await db.save_macro_cluster(

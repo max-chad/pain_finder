@@ -1262,6 +1262,55 @@ async def test_analyze_external_posts_records_source(db, tmp_path):
     assert stored["source"] == "hn"
 
 
+async def test_external_report_includes_source_family_without_promoting_weak_evidence(db, tmp_path):
+    post = Post(
+        post_id="review:g2:quickbooks-sync:1",
+        subreddit="reviews_g2",
+        title="QuickBooks Sync 1.0 star review",
+        body="Manual payout reconciliation is still painful.",
+        url="https://example.com/reviews",
+        score=15,
+        source="review:g2",
+    )
+    signal = PainSignal(
+        post=post,
+        category="complaint",
+        summary="Manual payout reconciliation remains painful.",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="FinOps",
+        analysis_mode="b2b",
+        post_type="first_person_pain",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        verified_evidence=[],
+        evidence_quality="no_quote",
+        evidence_match_rate=0.0,
+        confidence=0.9,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(return_value=[signal]), openrouter=None),
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[post], source="review:g2", run_scope="quickbooks-sync")
+
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    assert report_payload[0]["source_family"] == "review:g2"
+    assert report_payload[0]["promotion_eligible"] is False
+    assert report_payload[0]["score_components"]["evidence_rejection_reason"] == "no_verified_exact_quote"
+
+    digest = await pipeline.generate_digest(subreddit="reviews_g2", hours=24)
+    assert digest["top_items"] == []
+    assert [item["post_id"] for item in digest["needs_review_items"]] == ["review:g2:quickbooks-sync:1"]
+
+
 async def test_analyze_posts_respects_llm_pause_without_budget_guard(db, tmp_path):
     await db.pause_llm(reason="cap hit")
     pipeline = AnalysisPipeline(

@@ -10,7 +10,7 @@ from typing import Any
 
 from budget import BudgetCapReachedError
 from competitor_radar import failure_signals_for_row
-from db import Database
+from db import Database, normalize_source_family
 from embedder import _stable_hash_embed
 from openrouter import MacroClusterLabel, OpenRouterClient
 
@@ -74,8 +74,14 @@ class MacroTrendCluster:
     representative_examples: list[dict[str, Any]] = field(default_factory=list)
     verified_quote_count: int = 0
     independent_source_count: int = 0
+    source_families: list[str] = field(default_factory=list)
+    source_family_counts: dict[str, int] = field(default_factory=dict)
+    source_diversity_score: float = 0.0
+    triangulation_score: float = 0.0
+    cluster_quality_score: float = 0.0
     unique_author_count: int = 0
     normalized_frequency: dict[str, Any] = field(default_factory=dict)
+    score_components: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -153,9 +159,34 @@ class MacroTrendClusterer:
             )
             representative_examples = self._representative_examples(members)
             verified_quote_count = sum(len(self._verified_quotes(row)) for row in members)
-            independent_source_count = len({str(row.get("source") or "reddit").strip() or "reddit" for row in members})
+            source_family_counts = Counter(normalize_source_family(row.get("source"), row.get("post_id")) for row in members)
+            source_families = sorted(source_family_counts)
+            independent_source_count = len(source_families)
             unique_author_count = len({str(row.get("author_hash") or "").strip() for row in members if str(row.get("author_hash") or "").strip()})
             cluster_stability_score = self._cluster_stability_score([vectors[i] for i in cluster_indices])
+            source_diversity_score = self._source_diversity_score(source_family_counts)
+            triangulation_score = self._triangulation_score(
+                source_family_counts=source_family_counts,
+                verified_quote_count=verified_quote_count,
+                item_count=len(members),
+            )
+            cluster_quality_score = self._cluster_quality_score(
+                cluster_stability_score=cluster_stability_score,
+                triangulation_score=triangulation_score,
+                verified_quote_count=verified_quote_count,
+                unique_author_count=unique_author_count,
+                item_count=len(members),
+            )
+            score_components = self._cluster_score_components(
+                cluster_stability_score=cluster_stability_score,
+                source_diversity_score=source_diversity_score,
+                triangulation_score=triangulation_score,
+                verified_quote_count=verified_quote_count,
+                unique_author_count=unique_author_count,
+                item_count=len(members),
+                source_family_counts=source_family_counts,
+                cluster_quality_score=cluster_quality_score,
+            )
             normalized_frequency = dict(frequency_metrics)
             label = await self._label_cluster(
                 cluster_text=cluster_text,
@@ -199,8 +230,14 @@ class MacroTrendClusterer:
                 representative_examples=representative_examples,
                 verified_quote_count=verified_quote_count,
                 independent_source_count=independent_source_count,
+                source_families=source_families,
+                source_family_counts=dict(source_family_counts),
+                source_diversity_score=source_diversity_score,
+                triangulation_score=triangulation_score,
+                cluster_quality_score=cluster_quality_score,
                 unique_author_count=unique_author_count,
                 normalized_frequency=normalized_frequency,
+                score_components=score_components,
                 pain_mentions_per_1000_posts=frequency_metrics["pain_mentions_per_1000_posts"],
                 pain_mentions_per_1000_comments=frequency_metrics["pain_mentions_per_1000_comments"],
                 unique_authors_count=frequency_metrics["unique_authors_count"],
@@ -236,8 +273,14 @@ class MacroTrendClusterer:
                     representative_examples=representative_examples,
                     verified_quote_count=verified_quote_count,
                     independent_source_count=independent_source_count,
+                    source_families=source_families,
+                    source_family_counts=dict(source_family_counts),
+                    source_diversity_score=source_diversity_score,
+                    triangulation_score=triangulation_score,
+                    cluster_quality_score=cluster_quality_score,
                     unique_author_count=unique_author_count,
                     normalized_frequency=normalized_frequency,
+                    score_components=score_components,
                 )
             )
 
@@ -404,7 +447,7 @@ class MacroTrendClusterer:
                 if not isinstance(item, dict):
                     continue
                 match_type = str(item.get("match_type") or "").strip().lower()
-                if match_type not in {"exact", "fuzzy"}:
+                if match_type != "exact":
                     continue
                 quote = str(item.get("quote") or "").strip()
                 if quote:
@@ -508,6 +551,7 @@ class MacroTrendClusterer:
                     "title": str(row.get("title") or "Untitled").strip() or "Untitled",
                     "summary": str(row.get("summary") or "").strip(),
                     "source": str(row.get("source") or "").strip(),
+                    "source_family": normalize_source_family(row.get("source"), row.get("post_id")),
                     "url": str(row.get("url") or "").strip(),
                     "verified_quotes": cls._verified_quotes(row)[:3],
                     "current_workaround": str(row.get("current_workaround") or "").strip(),
@@ -528,6 +572,93 @@ class MacroTrendClusterer:
                 }
             )
         return examples
+
+    @staticmethod
+    def _source_diversity_score(source_family_counts: Counter[str]) -> float:
+        family_count = len(source_family_counts)
+        if family_count <= 1:
+            return 0.0
+        return round(min(1.0, (family_count - 1) / 2), 3)
+
+    @classmethod
+    def _triangulation_score(
+        cls,
+        *,
+        source_family_counts: Counter[str],
+        verified_quote_count: int,
+        item_count: int,
+    ) -> float:
+        if len(source_family_counts) <= 1 or item_count <= 0:
+            return 0.0
+        counts = list(source_family_counts.values())
+        balance_score = min(counts) / max(counts) if counts and max(counts) > 0 else 0.0
+        verified_quote_coverage = min(1.0, verified_quote_count / max(1, item_count))
+        score = (
+            cls._source_diversity_score(source_family_counts) * 0.75
+            + verified_quote_coverage * 0.15
+            + balance_score * 0.10
+        )
+        return round(max(0.0, min(1.0, score)), 3)
+
+    @staticmethod
+    def _cluster_quality_score(
+        *,
+        cluster_stability_score: float,
+        triangulation_score: float,
+        verified_quote_count: int,
+        unique_author_count: int,
+        item_count: int,
+    ) -> float:
+        verified_quote_coverage = min(1.0, verified_quote_count / max(1, item_count))
+        author_diversity = min(1.0, unique_author_count / max(1, item_count))
+        cluster_size_score = min(1.0, item_count / 5)
+        score = (
+            max(0.0, min(1.0, cluster_stability_score)) * 0.35
+            + max(0.0, min(1.0, triangulation_score)) * 0.25
+            + verified_quote_coverage * 0.20
+            + author_diversity * 0.10
+            + cluster_size_score * 0.10
+        )
+        return round(max(0.0, min(1.0, score)), 3)
+
+    @classmethod
+    def _cluster_score_components(
+        cls,
+        *,
+        cluster_stability_score: float,
+        source_diversity_score: float,
+        triangulation_score: float,
+        verified_quote_count: int,
+        unique_author_count: int,
+        item_count: int,
+        source_family_counts: Counter[str],
+        cluster_quality_score: float,
+    ) -> dict[str, Any]:
+        verified_quote_coverage = min(1.0, verified_quote_count / max(1, item_count))
+        author_diversity = min(1.0, unique_author_count / max(1, item_count))
+        cluster_size_score = min(1.0, item_count / 5)
+        return {
+            "weights": {
+                "stability": 0.35,
+                "triangulation": 0.25,
+                "verified_quote_coverage": 0.20,
+                "author_diversity": 0.10,
+                "cluster_size": 0.10,
+            },
+            "factors": {
+                "stability": round(max(0.0, min(1.0, cluster_stability_score)), 3),
+                "source_diversity": round(max(0.0, min(1.0, source_diversity_score)), 3),
+                "triangulation": round(max(0.0, min(1.0, triangulation_score)), 3),
+                "verified_quote_coverage": round(verified_quote_coverage, 3),
+                "author_diversity": round(author_diversity, 3),
+                "cluster_size": round(cluster_size_score, 3),
+            },
+            "source_families": sorted(source_family_counts),
+            "source_family_counts": dict(sorted(source_family_counts.items())),
+            "cluster_quality_score": cluster_quality_score,
+            "diagnostic_only": True,
+            "promotion_eligible_impact": "none",
+        }
 
     async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         if self.embedder is not None:
