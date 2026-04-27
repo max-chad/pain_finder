@@ -60,3 +60,23 @@ def test_readme_documents_self_research_workflow():
     ]
     for marker in required_markers:
         assert marker in text
+
+
+def test_eval_readme_documents_wave92_mvp_threshold_assessment():
+    text = Path("eval/README.md").read_text(encoding="utf-8")
+
+    required_markers = [
+        "## Wave 9.2 MVP threshold assessment",
+        "mvp_thresholds.json",
+        "not usable for MVP",
+        "expanded benchmark",
+        "explicit waiver",
+        "Pain precision",
+        ">= 0.75",
+        "Top-10 useful insight rate",
+        ">= 0.50",
+        "Cluster duplicate rate",
+        "<= 0.20",
+    ]
+    for marker in required_markers:
+        assert marker in text

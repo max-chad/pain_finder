@@ -294,8 +294,99 @@ def test_evaluate_predictions_computes_core_metrics(eval_harness_module, sample_
     assert metrics["clusters"]["purity"] == pytest.approx(1.0)
     assert metrics["clusters"]["duplicate_rate"] == pytest.approx(0.0)
     assert metrics["top_n_useful_rate"]["top_1"] == pytest.approx(1.0)
+    assert metrics["top_n_useful_rate"]["top_10"] == pytest.approx(0.5)
     assert metrics["cost_per_useful_insight"] == pytest.approx(0.2)
     assert metrics["latency_ms_per_prediction"] == pytest.approx(516.667)
+
+
+def test_assess_mvp_thresholds_blocks_small_seed_even_when_targets_pass(eval_harness_module):
+    metrics = {
+        "dataset_size": 60,
+        "pain": {"precision": 0.8, "recall": 0.7},
+        "monetizable": {"precision": 0.72},
+        "evidence": {"exact_match_rate": 0.98},
+        "top_n_useful_rate": {"top_10": 0.6},
+        "clusters": {"duplicate_rate": 0.1},
+    }
+
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics)
+
+    assert assessment["schema_version"] == "mvp_threshold_assessment_v1"
+    assert assessment["usable_for_mvp"] is False
+    assert assessment["overall_pass"] is False
+    assert assessment["release_decision"] == "not_ready_expanded_benchmark_required"
+    assert assessment["benchmark_gate"] == {
+        "dataset_size": 60,
+        "minimum_dataset_size": 100,
+        "waived": False,
+        "passed": False,
+    }
+    assert all(check["passed"] for check in assessment["checks"].values())
+
+
+def test_assess_mvp_thresholds_fails_closed_for_missing_top10_metric(eval_harness_module):
+    metrics = {
+        "dataset_size": 150,
+        "pain": {"precision": 0.9, "recall": 0.8},
+        "monetizable": {"precision": 0.75},
+        "evidence": {"exact_match_rate": 0.99},
+        "top_n_useful_rate": {"top_5": 0.8},
+        "clusters": {"duplicate_rate": 0.05},
+    }
+
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics)
+
+    assert assessment["benchmark_gate"]["passed"] is True
+    assert assessment["checks"]["top_10_useful_insight_rate"] == {
+        "metric_path": "top_n_useful_rate.top_10",
+        "operator": ">=",
+        "target": 0.5,
+        "observed": None,
+        "status": "not_evaluated",
+        "passed": False,
+    }
+    assert assessment["overall_pass"] is False
+    assert assessment["release_decision"] == "not_ready_thresholds_missing_or_failing"
+
+
+def test_assess_mvp_thresholds_does_not_allow_lower_minimum_without_waiver(eval_harness_module):
+    metrics = {
+        "dataset_size": 60,
+        "pain": {"precision": 0.8, "recall": 0.7},
+        "monetizable": {"precision": 0.72},
+        "evidence": {"exact_match_rate": 0.98},
+        "top_n_useful_rate": {"top_10": 0.6},
+        "clusters": {"duplicate_rate": 0.1},
+    }
+
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics, minimum_dataset_size=1)
+
+    assert assessment["benchmark_gate"] == {
+        "dataset_size": 60,
+        "minimum_dataset_size": 100,
+        "waived": False,
+        "passed": False,
+    }
+    assert assessment["overall_pass"] is False
+    assert assessment["release_decision"] == "not_ready_expanded_benchmark_required"
+
+
+def test_assess_mvp_thresholds_allows_explicit_benchmark_waiver(eval_harness_module):
+    metrics = {
+        "dataset_size": 60,
+        "pain": {"precision": 0.8, "recall": 0.7},
+        "monetizable": {"precision": 0.72},
+        "evidence": {"exact_match_rate": 0.98},
+        "top_n_useful_rate": {"top_10": 0.6},
+        "clusters": {"duplicate_rate": 0.1},
+    }
+
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics, minimum_dataset_size=1, waive_expanded_benchmark=True)
+
+    assert assessment["benchmark_gate"]["waived"] is True
+    assert assessment["benchmark_gate"]["passed"] is True
+    assert assessment["overall_pass"] is True
+    assert assessment["release_decision"] == "mvp_ready"
 
 
 def test_missing_predictions_do_not_create_usefulness_or_stale_leakage(eval_harness_module, sample_posts, sample_labels):
@@ -676,6 +767,7 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
                 "evidence_match_rate": 1.0,
                 "confidence": 0.9,
                 "needs_human_review": False,
+                "opportunity_score": 90.0,
             }
         ],
     )
@@ -702,20 +794,27 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
 
     metrics_path = output_dir / "metrics.json"
     written_predictions_path = output_dir / "predictions.jsonl"
+    mvp_thresholds_path = output_dir / "mvp_thresholds.json"
     assert metrics_path.exists()
     assert written_predictions_path.exists()
+    assert mvp_thresholds_path.exists()
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    threshold_assessment = json.loads(mvp_thresholds_path.read_text(encoding="utf-8"))
     assert metrics["dataset_size"] == 1
     assert metrics["pain"]["precision"] == pytest.approx(1.0)
     assert metrics["stale_leakage"]["count"] == 0
     assert metrics["evidence"]["coverage_rate"] == pytest.approx(1.0)
     assert metrics["evidence"]["exact_match_rate"] == pytest.approx(1.0)
+    assert threshold_assessment["usable_for_mvp"] is False
+    assert threshold_assessment["release_decision"] == "not_ready_expanded_benchmark_required"
+    assert threshold_assessment["checks"]["top_10_useful_insight_rate"]["observed"] == pytest.approx(1.0)
 
     stdout = capsys.readouterr().out
     assert "dataset_size=1" in stdout
     assert "pain_precision=1.000" in stdout
     assert "evidence_coverage=1.000" in stdout
+    assert "mvp_release_decision=not_ready_expanded_benchmark_required" in stdout
 
 
 def test_run_eval_offline_writes_baseline_artifacts(tmp_path, monkeypatch):
@@ -809,10 +908,16 @@ def test_run_eval_offline_writes_baseline_artifacts(tmp_path, monkeypatch):
     assert summary["reference_baseline"] == "current"
     assert summary["baselines"]["current"]["metrics_path"] == "current/metrics.json"
     assert summary["baselines"]["rules_only"]["predictions_path"] == "rules_only/predictions.jsonl"
+    assert summary["baselines"]["current"]["mvp_thresholds_path"] == "current/mvp_thresholds.json"
     assert summary["baselines"]["current"]["metrics"]["pain_recall"] == pytest.approx(1.0)
+    assert summary["baselines"]["current"]["metrics"]["top_10_useful_rate"] == pytest.approx(1.0)
+    assert summary["baselines"]["current"]["mvp_release_decision"] == "not_ready_expanded_benchmark_required"
     assert summary["comparisons"]["rules_only_vs_current"]["pain_recall_delta"] == pytest.approx(-1.0)
+    assert summary["baselines"]["rules_only"]["metrics"]["top_10_useful_rate"] is None
+    assert summary["comparisons"]["rules_only_vs_current"]["top_10_useful_rate_delta"] is None
     assert summary["comparisons"]["rules_only_vs_current"]["screening_false_negative_delta"] == 1
     assert summary["comparisons"]["rules_only_vs_current"]["evidence_exact_match_rate_delta"] == pytest.approx(-1.0)
+    assert (output_dir / "current" / "mvp_thresholds.json").exists()
 
 
 def test_checked_in_seed_labels_include_expanded_hard_negatives(eval_harness_module):

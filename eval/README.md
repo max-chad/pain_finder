@@ -115,7 +115,7 @@ Cluster/usefulness metrics:
 
 - `clusters.duplicate_rate`
 - `clusters.purity`
-- `top_n_useful_rate.top_1/top_3/top_5`
+- `top_n_useful_rate.top_1/top_3/top_5/top_10`
 - `cost_per_useful_insight`
 - `latency_ms_per_prediction`
 
@@ -194,6 +194,7 @@ Single-mode runs write:
 
 - `metrics.json`
 - `predictions.jsonl`
+- `mvp_thresholds.json`
 
 inside the `--output-dir` you pass.
 
@@ -201,7 +202,25 @@ Baseline-comparison runs write:
 
 - `<baseline>/metrics.json`
 - `<baseline>/predictions.jsonl`
+- `<baseline>/mvp_thresholds.json`
 - `baseline_summary.json`
+
+## Wave 9.2 MVP threshold assessment
+
+Every `run_eval.py` execution now writes a conservative `mvp_thresholds.json` assessment next to the metrics artifact. It measures the Wave 9.2 release gates, but fail-closes: a run is **not usable for MVP** unless all metric targets pass and the eval set is an expanded benchmark of at least 100 labeled rows, or an explicit waiver is supplied with `--waive-mvp-benchmark-size`.
+
+Targets checked in the artifact:
+
+| MVP metric | Target |
+| --- | ---: |
+| Pain precision | >= 0.75 |
+| Pain recall | >= 0.60 |
+| Evidence exact match | >= 0.95 |
+| Monetizable precision | >= 0.65 |
+| Top-10 useful insight rate | >= 0.50 |
+| Cluster duplicate rate | <= 0.20 |
+
+The threshold file includes `usable_for_mvp`, `release_decision`, per-metric `checks`, and a `benchmark_gate` showing dataset size, minimum size, and whether the expanded benchmark gate was explicitly waived. Missing metrics such as absent `top_n_useful_rate.top_10` are marked `not_evaluated`, not treated as passing.
 
 ## Labeling guidance
 

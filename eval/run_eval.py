@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from eval_harness import (  # noqa: E402
+    MVP_MIN_DATASET_SIZE,
+    assess_mvp_thresholds,
     evaluate_predictions,
     generate_live_predictions,
     labels_from_jsonl,
@@ -37,6 +39,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, help="Directory for metrics.json and predictions.jsonl artifacts")
     parser.add_argument("--reference-now-ts", type=int, help="Override evaluation reference timestamp")
     parser.add_argument("--current-opportunity-max-age-days", type=int, default=180)
+    parser.add_argument(
+        "--mvp-min-dataset-size",
+        type=int,
+        default=MVP_MIN_DATASET_SIZE,
+        help="Optional stricter expanded-benchmark size gate for mvp_thresholds.json; values below 100 do not lower the default gate.",
+    )
+    parser.add_argument(
+        "--waive-mvp-benchmark-size",
+        action="store_true",
+        help="Explicitly waive the expanded-benchmark size gate in mvp_thresholds.json.",
+    )
     parser.add_argument("--classifier-mode", help="Optional override for classifier mode when running live")
     parser.add_argument("--disable-dspy", action="store_true", help="Disable DSPy even if enabled in config when running live")
     args = parser.parse_args()
@@ -71,6 +84,7 @@ BASELINE_SUMMARY_FIELDS = (
     "hard_negative_false_positive_count",
     "evidence_coverage_rate",
     "evidence_exact_match_rate",
+    "top_10_useful_rate",
     "cluster_purity",
     "cost_per_useful_insight",
     "latency_ms_per_prediction",
@@ -84,6 +98,7 @@ def _baseline_metric_summary(metrics: dict[str, object]) -> dict[str, object]:
     hard_negatives = metrics["hard_negatives"]
     evidence = metrics["evidence"]
     clusters = metrics["clusters"]
+    top_n_useful_rate = metrics.get("top_n_useful_rate") or {}
     return {
         "pain_precision": pain["precision"],
         "pain_recall": pain["recall"],
@@ -97,6 +112,7 @@ def _baseline_metric_summary(metrics: dict[str, object]) -> dict[str, object]:
         "hard_negative_false_positive_count": hard_negatives["false_positive_count"],
         "evidence_coverage_rate": evidence["coverage_rate"],
         "evidence_exact_match_rate": evidence["exact_match_rate"],
+        "top_10_useful_rate": top_n_useful_rate.get("top_10"),
         "cluster_purity": clusters["purity"],
         "cost_per_useful_insight": metrics["cost_per_useful_insight"],
         "latency_ms_per_prediction": metrics["latency_ms_per_prediction"],
@@ -114,6 +130,16 @@ def _baseline_comparison(summary: dict[str, object], reference: dict[str, object
     comparison["screening_false_negative_delta"] = comparison["screening_false_negative_count_delta"]
     comparison["hard_negative_false_positive_delta"] = comparison["hard_negative_false_positive_count_delta"]
     return comparison
+
+
+def _write_mvp_thresholds(output_dir: Path, metrics: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    assessment = assess_mvp_thresholds(
+        metrics,
+        minimum_dataset_size=args.mvp_min_dataset_size,
+        waive_expanded_benchmark=args.waive_mvp_benchmark_size,
+    )
+    write_json(output_dir / "mvp_thresholds.json", assessment)
+    return assessment
 
 
 def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dspy: bool = False):
@@ -213,6 +239,7 @@ def main() -> int:
             )
             baseline_dir = output_dir / baseline_name
             write_json(baseline_dir / "metrics.json", metrics)
+            mvp_thresholds = _write_mvp_thresholds(baseline_dir, metrics, args)
             write_jsonl(baseline_dir / "predictions.jsonl", predictions)
             metrics_summary = _baseline_metric_summary(metrics)
             if reference_metrics is None:
@@ -227,6 +254,9 @@ def main() -> int:
             summary["baselines"][baseline_name] = {
                 "metrics_path": f"{baseline_name}/metrics.json",
                 "predictions_path": f"{baseline_name}/predictions.jsonl",
+                "mvp_thresholds_path": f"{baseline_name}/mvp_thresholds.json",
+                "mvp_release_decision": mvp_thresholds["release_decision"],
+                "mvp_usable": mvp_thresholds["usable_for_mvp"],
                 "metrics": metrics_summary,
                 **metrics_summary,
             }
@@ -248,18 +278,20 @@ def main() -> int:
     )
 
     write_json(output_dir / "metrics.json", metrics)
+    mvp_thresholds = _write_mvp_thresholds(output_dir, metrics, args)
     write_jsonl(output_dir / "predictions.jsonl", predictions)
 
     print(
         "dataset_size={dataset} pain_precision={pain_precision:.3f} monetizable_precision={monetizable_precision:.3f} "
         "stale_leakage_rate={stale_leakage:.3f} evidence_coverage={evidence_coverage:.3f} "
-        "evidence_exact_match={evidence_exact_match:.3f}".format(
+        "evidence_exact_match={evidence_exact_match:.3f} mvp_release_decision={mvp_release_decision}".format(
             dataset=metrics["dataset_size"],
             pain_precision=metrics["pain"]["precision"],
             monetizable_precision=metrics["monetizable"]["precision"],
             stale_leakage=metrics["stale_leakage"]["rate"],
             evidence_coverage=metrics["evidence"]["coverage_rate"],
             evidence_exact_match=metrics["evidence"]["exact_match_rate"],
+            mvp_release_decision=mvp_thresholds["release_decision"],
         )
     )
     return 0

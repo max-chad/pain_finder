@@ -78,6 +78,16 @@ VALID_HARD_NEGATIVE_TYPES = {
 VALID_EVIDENCE_RELEVANCE = {"relevant", "irrelevant", "not_applicable", "unknown"}
 VALID_SOURCE_LINK_VALIDITY = {"valid", "invalid", "not_applicable", "unknown"}
 
+MVP_MIN_DATASET_SIZE = 100
+MVP_TARGET_THRESHOLDS: dict[str, dict[str, Any]] = {
+    "pain_precision": {"metric_path": "pain.precision", "operator": ">=", "target": 0.75},
+    "pain_recall": {"metric_path": "pain.recall", "operator": ">=", "target": 0.60},
+    "evidence_exact_match_rate": {"metric_path": "evidence.exact_match_rate", "operator": ">=", "target": 0.95},
+    "monetizable_precision": {"metric_path": "monetizable.precision", "operator": ">=", "target": 0.65},
+    "top_10_useful_insight_rate": {"metric_path": "top_n_useful_rate.top_10", "operator": ">=", "target": 0.50},
+    "cluster_duplicate_rate": {"metric_path": "clusters.duplicate_rate", "operator": "<=", "target": 0.20},
+}
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -572,6 +582,81 @@ def _rate_payload(*, count: int, denominator: int) -> dict[str, Any]:
     }
 
 
+def _metric_path_value(metrics: dict[str, Any], metric_path: str) -> Any:
+    current: Any = metrics
+    for part in metric_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _threshold_check(metrics: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    observed_raw = _metric_path_value(metrics, str(spec["metric_path"]))
+    observed = None if observed_raw is None or observed_raw == "" else _safe_float(observed_raw)
+    operator = str(spec["operator"])
+    target = float(spec["target"])
+    passed = False
+    status = "not_evaluated"
+    if observed is not None:
+        if operator == ">=":
+            passed = observed >= target
+        elif operator == "<=":
+            passed = observed <= target
+        else:
+            raise ValueError(f"unsupported MVP threshold operator: {operator}")
+        status = "pass" if passed else "fail"
+    return {
+        "metric_path": str(spec["metric_path"]),
+        "operator": operator,
+        "target": target,
+        "observed": None if observed is None else round(observed, 3),
+        "status": status,
+        "passed": passed,
+    }
+
+
+def assess_mvp_thresholds(
+    metrics: dict[str, Any],
+    *,
+    minimum_dataset_size: int = MVP_MIN_DATASET_SIZE,
+    waive_expanded_benchmark: bool = False,
+) -> dict[str, Any]:
+    """Assess Wave 9.2 MVP gates without promoting unproven runs.
+
+    The assessment is deliberately conservative: metric targets are necessary
+    but not sufficient. A run is only usable for MVP if it also comes from an
+    expanded benchmark, unless a human explicitly waives that benchmark gate.
+    """
+
+    dataset_size = _safe_int(metrics.get("dataset_size"), default=0)
+    minimum_dataset_size = max(MVP_MIN_DATASET_SIZE, int(minimum_dataset_size))
+    benchmark_passed = bool(waive_expanded_benchmark or dataset_size >= minimum_dataset_size)
+    checks = {name: _threshold_check(metrics, spec) for name, spec in MVP_TARGET_THRESHOLDS.items()}
+    thresholds_passed = all(check["passed"] for check in checks.values())
+    overall_pass = bool(benchmark_passed and thresholds_passed)
+    if overall_pass:
+        release_decision = "mvp_ready"
+    elif not benchmark_passed:
+        release_decision = "not_ready_expanded_benchmark_required"
+    else:
+        release_decision = "not_ready_thresholds_missing_or_failing"
+    return {
+        "schema_version": "mvp_threshold_assessment_v1",
+        "targets": MVP_TARGET_THRESHOLDS,
+        "benchmark_gate": {
+            "dataset_size": dataset_size,
+            "minimum_dataset_size": minimum_dataset_size,
+            "waived": bool(waive_expanded_benchmark),
+            "passed": benchmark_passed,
+        },
+        "checks": checks,
+        "overall_pass": overall_pass,
+        "usable_for_mvp": overall_pass,
+        "release_decision": release_decision,
+    }
+
+
 def evaluate_predictions(
     *,
     posts: list[Post],
@@ -763,7 +848,7 @@ def evaluate_predictions(
         f"top_{n}": round(sum(1 for _, useful in feedback_rows[:n] if useful) / min(n, len(feedback_rows)), 3)
         if feedback_rows
         else None
-        for n in (1, 3, 5)
+        for n in (1, 3, 5, 10)
     }
     useful_insight_count = useful_prediction_count
 
