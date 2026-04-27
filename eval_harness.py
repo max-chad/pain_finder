@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from classifier import PainSignal
+from feedback import build_feedback_label_review_row
 from scraper import Post
 
 VALID_POST_TYPES = {
@@ -212,6 +213,30 @@ def write_jsonl(path: str | Path, rows: list[dict[str, Any]]) -> None:
     with destination.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def feedback_events_to_label_review_rows(
+    feedback_rows: list[dict[str, Any]],
+    *,
+    pain_points_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    pain_points_by_id = pain_points_by_id or {}
+    rows: list[dict[str, Any]] = []
+    for feedback_row in feedback_rows:
+        post_id = str(feedback_row.get("post_id") or "")
+        rows.append(build_feedback_label_review_row(feedback_row, pain_point=pain_points_by_id.get(post_id)))
+    return rows
+
+
+def write_feedback_label_review_jsonl(
+    path: str | Path,
+    feedback_rows: list[dict[str, Any]],
+    *,
+    pain_points_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    rows = feedback_events_to_label_review_rows(feedback_rows, pain_points_by_id=pain_points_by_id)
+    write_jsonl(path, rows)
+    return rows
 
 
 def posts_from_jsonl(path: str | Path) -> list[Post]:

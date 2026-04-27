@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Literal, TypedDict
 
 from classifier import PainSignal
 from export_sheets import ExportResult
+from feedback import FEEDBACK_VALUES, normalize_feedback_value
 
 if TYPE_CHECKING:
     from budget import BudgetStatus
@@ -176,6 +177,13 @@ def parse_scoped_callback_data(data: str, prefix: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def parse_feedback_callback_data(data: str) -> tuple[str, str]:
+    parts = data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "feedback":
+        raise ValueError("Malformed callback data")
+    return normalize_feedback_value(parts[1]), parts[2]
+
+
 def _signal_icon(signal: PainSignal) -> str:
     if signal.is_monetizable and signal.willingness_to_pay >= 8:
         return "[money]"
@@ -204,6 +212,14 @@ def format_report(subreddit: str, signals: list[PainSignal]) -> str:
         lines.append(f"Wishes ({len(wishes)}): {wishes[0].summary[:80]}...")
     lines.append("Use inline actions to favorite/discard/deep dive/gtm high-value posts.")
     return "\n".join(lines)
+
+
+def format_feedback_summary(counts: dict[str, int] | None, total: int | None = None) -> str:
+    counts = counts or {}
+    total_count = sum(int(counts.get(value, 0) or 0) for value in FEEDBACK_VALUES) if total is None else int(total or 0)
+    nonzero = [f"{value}={int(counts.get(value, 0) or 0)}" for value in FEEDBACK_VALUES if int(counts.get(value, 0) or 0)]
+    suffix = " " + " ".join(nonzero) if nonzero else ""
+    return f"Feedback: total={total_count}{suffix}"
 
 
 class PainFinderBot:
@@ -334,6 +350,16 @@ class PainFinderBot:
                     "\U0001f4e6 GTM",
                     callback_data=f"gtm:{signal.post.post_id}:{signal.post.source}",
                 ),
+            ],
+            [
+                InlineKeyboardButton("Useful", callback_data=f"feedback:useful:{signal.post.post_id}"),
+                InlineKeyboardButton("Not pain", callback_data=f"feedback:not_a_pain:{signal.post.post_id}"),
+                InlineKeyboardButton("Duplicate", callback_data=f"feedback:duplicate:{signal.post.post_id}"),
+            ],
+            [
+                InlineKeyboardButton("Too generic", callback_data=f"feedback:too_generic:{signal.post.post_id}"),
+                InlineKeyboardButton("Wrong segment", callback_data=f"feedback:wrong_segment:{signal.post.post_id}"),
+                InlineKeyboardButton("Bad evidence", callback_data=f"feedback:bad_evidence:{signal.post.post_id}"),
             ],
             [InlineKeyboardButton("\u2190 Back to list", callback_data=f"back:{token}")],
         ]
@@ -467,6 +493,7 @@ class PainFinderBot:
             f"Monitored subreddits: {summary['monitored']}",
             f"Favorited pain points: {summary['favorites']}",
             f"LLM paused: {'yes' if summary.get('llm_paused') else 'no'}",
+            format_feedback_summary(summary.get("feedback"), summary.get("feedback_total")),
         ]
         if latest_run:
             lines.append(
@@ -746,6 +773,23 @@ class PainFinderBot:
                     await query.answer("Post not found", show_alert=False)
                     return
                 await query.answer(f"Marked as {status}", show_alert=False)
+                return
+
+            if data.startswith("feedback:"):
+                try:
+                    feedback_value, post_id = parse_feedback_callback_data(data)
+                except ValueError:
+                    await query.answer("Unknown feedback", show_alert=False)
+                    return
+                feedback_id = await self.db.record_feedback(
+                    post_id=post_id,
+                    feedback_value=feedback_value,
+                    source="telegram",
+                )
+                if feedback_id is None:
+                    await query.answer("Post not found", show_alert=False)
+                    return
+                await query.answer(f"Feedback recorded: {feedback_value}", show_alert=False)
                 return
 
             if data.startswith("deepdive:"):

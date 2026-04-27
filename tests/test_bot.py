@@ -242,6 +242,34 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
     assert "Last run: r/python posts=100 pain=20 monetizable=5 skipped_existing=12 dedup_merged=3" in text
 
 
+async def test_cmd_status_includes_feedback_counts():
+    db = AsyncMock()
+    db.get_monitoring_summary.return_value = {
+        "monitored": 1,
+        "favorites": 0,
+        "llm_paused": False,
+        "feedback_total": 3,
+        "feedback": {
+            "useful": 2,
+            "not_a_pain": 0,
+            "duplicate": 0,
+            "too_generic": 0,
+            "wrong_segment": 0,
+            "bad_evidence": 1,
+        },
+    }
+    db.get_latest_analysis_run.return_value = None
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_status(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "Feedback: total=3 useful=2 bad_evidence=1" in text
+
+
 async def test_cmd_export_usage_for_too_many_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -548,6 +576,30 @@ async def test_callback_query_runs_gtm():
     query.message.reply_text.assert_awaited_once()
 
 
+async def test_callback_query_records_feedback():
+    db = AsyncMock()
+    db.record_feedback.return_value = 7
+
+    query = SimpleNamespace(
+        data="feedback:bad_evidence:reddit:abc123",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.record_feedback.assert_awaited_once_with(
+        post_id="reddit:abc123",
+        feedback_value="bad_evidence",
+        source="telegram",
+    )
+    query.answer.assert_awaited_once_with("Feedback recorded: bad_evidence", show_alert=False)
+
+
 async def test_cmd_monitor_usage_on_bad_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -663,6 +715,25 @@ def test_render_card_view_contains_post_details():
     assert any("Discard" in b for b in buttons_flat)
     assert any("Deep Dive" in b for b in buttons_flat)
     assert any("GTM" in b for b in buttons_flat)
+
+
+def test_render_card_view_includes_feedback_actions_with_short_callbacks():
+    bot = _make_bot()
+    signal = _make_signal("reddit:post123", "complaint", "Really annoying bug")
+    token = bot._create_session([signal], "r/python")
+    session = bot._sessions[token]
+
+    _text, keyboard = bot._render_card_view(token, session, 0)
+
+    feedback_callbacks = [
+        btn.callback_data
+        for row in keyboard.inline_keyboard
+        for btn in row
+        if btn.callback_data.startswith("feedback:")
+    ]
+    values = {callback.split(":", 2)[1] for callback in feedback_callbacks}
+    assert values == {"useful", "not_a_pain", "duplicate", "too_generic", "wrong_segment", "bad_evidence"}
+    assert all(len(callback.encode()) <= 64 for callback in feedback_callbacks)
 
 
 def test_sel_callback_data_format():

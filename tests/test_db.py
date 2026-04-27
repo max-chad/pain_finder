@@ -1176,6 +1176,115 @@ async def test_gtm_assets_persist(db):
     assert latest["model"] == "model-g"
 
 
+async def test_feedback_storage_summary_and_label_review_queue(db):
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="reddit:feedback1",
+        url="https://reddit.com/r/ops/comments/feedback1",
+        title="Manual invoice review takes too long",
+        body="We still review invoices by hand every week.",
+        category="complaint",
+        summary="Manual invoice review is slow.",
+        severity="high",
+        willingness_to_pay=9,
+        pain_level=8,
+        evidence_quality="exact_quote",
+        verified_evidence=[{"quote": "review invoices by hand", "match_type": "exact"}],
+    )
+
+    useful_id = await db.record_feedback(
+        post_id="reddit:feedback1",
+        feedback_value="useful",
+        source="telegram",
+        metadata={"message_id": "42"},
+    )
+    bad_evidence_id = await db.record_feedback(
+        post_id="reddit:feedback1",
+        feedback_value="bad_evidence",
+        source="telegram",
+    )
+
+    assert useful_id > 0
+    assert bad_evidence_id > useful_id
+    with pytest.raises(ValueError, match="Unsupported feedback"):
+        await db.record_feedback(post_id="reddit:feedback1", feedback_value="interesting", source="telegram")
+
+    feedback_rows = await db.list_feedback(post_id="reddit:feedback1")
+    assert [row["feedback_value"] for row in feedback_rows] == ["useful", "bad_evidence"]
+    assert json.loads(feedback_rows[0]["metadata_json"]) == {"message_id": "42"}
+
+    summary = await db.get_feedback_summary()
+    assert summary["useful"] == 1
+    assert summary["bad_evidence"] == 1
+    assert summary["not_a_pain"] == 0
+
+    monitoring_summary = await db.get_monitoring_summary()
+    assert monitoring_summary["feedback_total"] == 2
+    assert monitoring_summary["feedback"]["useful"] == 1
+    assert monitoring_summary["feedback"]["bad_evidence"] == 1
+
+    created_count = await db.enqueue_feedback_label_reviews()
+    assert created_count == 2
+    assert await db.enqueue_feedback_label_reviews() == 0
+
+    review_rows = await db.list_label_review_queue(limit=10)
+    assert [row["feedback_event_id"] for row in review_rows] == [useful_id, bad_evidence_id]
+    useful_payload = review_rows[0]["review_payload"]
+    bad_evidence_payload = review_rows[1]["review_payload"]
+    assert useful_payload["review_type"] == "feedback_label_review"
+    assert useful_payload["review_status"] == "pending"
+    assert useful_payload["post_id"] == "reddit:feedback1"
+    assert useful_payload["feedback_value"] == "useful"
+    assert useful_payload["label_suggestions"] == {"feedback_useful": True}
+    assert useful_payload["requires_human_review"] is True
+    assert useful_payload["promotion_eligible"] is False
+    assert useful_payload["source"]["evidence_quality"] == "exact_quote"
+    assert "is_monetizable" not in useful_payload
+    assert bad_evidence_payload["label_suggestions"] == {
+        "feedback_useful": False,
+        "evidence_relevance": "irrelevant",
+    }
+
+
+async def test_useful_feedback_does_not_promote_weak_or_rejected_rows_to_macro_candidates(db):
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="reddit:weak-feedback",
+        url="",
+        title="Weak no-quote row",
+        body="",
+        category="complaint",
+        summary="weak",
+        severity="low",
+        willingness_to_pay=0,
+        pain_level=0,
+        evidence_quality="no_quote",
+    )
+    await db.insert_pain_point(
+        subreddit="ops",
+        post_id="reddit:discarded-feedback",
+        url="",
+        title="Discarded row",
+        body="",
+        category="complaint",
+        summary="discarded",
+        severity="high",
+        willingness_to_pay=10,
+        pain_level=10,
+        evidence_quality="exact_quote",
+        triage_status="discarded",
+    )
+
+    await db.record_feedback(post_id="reddit:weak-feedback", feedback_value="useful", source="telegram")
+    await db.record_feedback(post_id="reddit:discarded-feedback", feedback_value="useful", source="telegram")
+
+    candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
+    candidate_ids = {row["post_id"] for row in candidates}
+
+    assert "reddit:weak-feedback" not in candidate_ids
+    assert "reddit:discarded-feedback" not in candidate_ids
+
+
 async def test_insert_pain_point_propagates_unexpected_db_errors(db):
     """Unexpected DB errors (e.g. disk full) must propagate, not be swallowed."""
     import aiosqlite

@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 
+from feedback import build_feedback_label_review_row, empty_feedback_summary, normalize_feedback_value
 from rejected_noise import annotate_rejected_noise_rows, sort_rejected_noise_rows
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,32 @@ CREATE TABLE IF NOT EXISTS gtm_assets (
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_FEEDBACK_EVENTS = """
+CREATE TABLE IF NOT EXISTS feedback_events (
+    id INTEGER PRIMARY KEY,
+    post_id TEXT NOT NULL,
+    feedback_value TEXT NOT NULL,
+    source TEXT DEFAULT 'manual',
+    actor_id TEXT,
+    note TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY(post_id) REFERENCES pain_points(post_id)
+)"""
+
+CREATE_LABEL_REVIEW_QUEUE = """
+CREATE TABLE IF NOT EXISTS label_review_queue (
+    id INTEGER PRIMARY KEY,
+    feedback_event_id INTEGER UNIQUE NOT NULL,
+    post_id TEXT NOT NULL,
+    review_status TEXT DEFAULT 'pending',
+    review_payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY(feedback_event_id) REFERENCES feedback_events(id),
+    FOREIGN KEY(post_id) REFERENCES pain_points(post_id)
+)"""
+
 CREATE_SCHEMA_MIGRATIONS = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
@@ -334,6 +361,9 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_stage ON llm_usage_events(candidate_stage, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_gtm_assets_post ON gtm_assets(post_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_events_post ON feedback_events(post_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_events_value ON feedback_events(feedback_value, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_label_review_queue_status ON label_review_queue(review_status, created_at DESC)",
 ]
 
 PAIN_POINT_COLUMNS = {
@@ -476,6 +506,8 @@ class Database:
         await self._conn.execute(CREATE_RUNTIME_FLAGS)
         await self._conn.execute(CREATE_LLM_RESPONSE_CACHE)
         await self._conn.execute(CREATE_GTM_ASSETS)
+        await self._conn.execute(CREATE_FEEDBACK_EVENTS)
+        await self._conn.execute(CREATE_LABEL_REVIEW_QUEUE)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
         await self._run_migrations()
@@ -548,6 +580,10 @@ class Database:
             for column_name, ddl in COMMENT_COLUMNS.items():
                 await self._ensure_column("comments", column_name, ddl)
             await self._mark_migration_applied(comment_availability_migration)
+
+        feedback_loop_migration = "2026_04_27_wave7_feedback_loop"
+        if not await self._is_migration_applied(feedback_loop_migration):
+            await self._mark_migration_applied(feedback_loop_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
         async with self._conn.execute("SELECT 1 FROM schema_migrations WHERE name = ? LIMIT 1", (name,)) as cursor:
@@ -2036,16 +2072,151 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def get_monitoring_summary(self) -> dict[str, int]:
+    async def record_feedback(
+        self,
+        *,
+        post_id: str,
+        feedback_value: str,
+        source: str = "manual",
+        actor_id: str | None = None,
+        note: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int | None:
+        normalized_value = normalize_feedback_value(feedback_value)
+        normalized_post_id = str(post_id or "").strip()
+        if not normalized_post_id:
+            raise ValueError("post_id is required")
+        async with self._conn.execute("SELECT 1 FROM pain_points WHERE post_id = ? LIMIT 1", (normalized_post_id,)) as cursor:
+            existing = await cursor.fetchone()
+        if existing is None:
+            return None
+        async with self._conn.execute(
+            """
+            INSERT INTO feedback_events (post_id, feedback_value, source, actor_id, note, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_post_id,
+                normalized_value,
+                str(source or "manual").strip()[:64] or "manual",
+                str(actor_id).strip()[:128] if actor_id is not None else None,
+                str(note).strip()[:500] if note is not None else None,
+                json.dumps(metadata or {}, ensure_ascii=False, default=str),
+            ),
+        ) as cursor:
+            await self._conn.commit()
+            return int(cursor.lastrowid)
+
+    async def list_feedback(self, *, post_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        where_sql = ""
+        if post_id is not None:
+            where_sql = "WHERE post_id = ?"
+            params.append(post_id)
+        async with self._conn.execute(
+            f"""
+            SELECT * FROM feedback_events
+            {where_sql}
+            ORDER BY id ASC
+            LIMIT ?
+            """,  # nosec B608
+            (*params, max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_feedback_summary(self) -> dict[str, int]:
+        summary = empty_feedback_summary()
+        async with self._conn.execute(
+            "SELECT feedback_value, COUNT(*) AS total FROM feedback_events GROUP BY feedback_value"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            value = row["feedback_value"]
+            if value in summary:
+                summary[value] = int(row["total"] or 0)
+        return summary
+
+    async def enqueue_feedback_label_reviews(self, *, limit: int = 500) -> int:
+        async with self._conn.execute(
+            """
+            SELECT f.*
+            FROM feedback_events f
+            LEFT JOIN label_review_queue q ON q.feedback_event_id = f.id
+            WHERE q.id IS NULL
+            ORDER BY f.id ASC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ) as cursor:
+            feedback_rows = [dict(row) for row in await cursor.fetchall()]
+        if not feedback_rows:
+            return 0
+        pain_points_by_id = await self.get_pain_points_by_ids([row["post_id"] for row in feedback_rows])
+        created_count = 0
+        for feedback_row in feedback_rows:
+            pain_point = pain_points_by_id.get(feedback_row["post_id"])
+            if pain_point is None:
+                continue
+            review_payload = build_feedback_label_review_row(feedback_row, pain_point=pain_point)
+            cursor = await self._conn.execute(
+                """
+                INSERT OR IGNORE INTO label_review_queue (
+                    feedback_event_id, post_id, review_status, review_payload_json
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    feedback_row["id"],
+                    feedback_row["post_id"],
+                    "pending",
+                    json.dumps(review_payload, ensure_ascii=False, default=str),
+                ),
+            )
+            created_count += max(0, cursor.rowcount)
+        await self._conn.commit()
+        return created_count
+
+    async def list_label_review_queue(
+        self,
+        *,
+        status: str | None = "pending",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        where_sql = ""
+        if status is not None:
+            where_sql = "WHERE review_status = ?"
+            params.append(status)
+        async with self._conn.execute(
+            f"""
+            SELECT * FROM label_review_queue
+            {where_sql}
+            ORDER BY id ASC
+            LIMIT ?
+            """,  # nosec B608
+            (*params, max(1, int(limit))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out = []
+        for row in rows:
+            row_dict = dict(row)
+            row_dict["review_payload"] = self._decode_json_field(row_dict.get("review_payload_json"), {})
+            out.append(row_dict)
+        return out
+
+    async def get_monitoring_summary(self) -> dict[str, Any]:
         async with self._conn.execute("SELECT COUNT(*) AS total FROM monitored_subreddits WHERE active = 1") as cursor:
             monitored_row = await cursor.fetchone()
         async with self._conn.execute("SELECT COUNT(*) AS total FROM pain_points WHERE triage_status = 'favorite'") as cursor:
             favorites_row = await cursor.fetchone()
         paused = await self.is_llm_paused()
+        feedback_summary = await self.get_feedback_summary()
         return {
             "monitored": int(monitored_row["total"] if monitored_row else 0),
             "favorites": int(favorites_row["total"] if favorites_row else 0),
             "llm_paused": int(paused),
+            "feedback_total": sum(feedback_summary.values()),
+            "feedback": feedback_summary,
         }
 
     async def add_monitored_subreddit(self, name: str, interval_hours: int) -> None:

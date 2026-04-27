@@ -421,6 +421,100 @@ def test_evaluate_predictions_does_not_count_fuzzy_only_evidence_as_exact(eval_h
     assert metrics["evidence"]["exact_match_rate"] == pytest.approx(0.0)
 
 
+def test_feedback_events_convert_to_label_review_rows_without_full_labels(eval_harness_module, tmp_path):
+    feedback_rows = [
+        {
+            "id": 10,
+            "post_id": "reddit:p1",
+            "feedback_value": "useful",
+            "source": "telegram",
+            "created_at": "2026-04-27T12:00:00+00:00",
+        },
+        {
+            "id": 11,
+            "post_id": "reddit:p2",
+            "feedback_value": "too_generic",
+            "source": "telegram",
+            "created_at": "2026-04-27T12:01:00+00:00",
+        },
+        {
+            "id": 12,
+            "post_id": "reddit:p3",
+            "feedback_value": "bad_evidence",
+            "source": "telegram",
+            "created_at": "2026-04-27T12:02:00+00:00",
+        },
+    ]
+    pain_points_by_id = {
+        "reddit:p1": {
+            "post_id": "reddit:p1",
+            "subreddit": "ops",
+            "title": "Manual invoices",
+            "body": "We still review invoices manually.",
+            "url": "https://reddit.com/p1",
+            "source": "reddit",
+            "triage_status": "new",
+            "evidence_quality": "exact_quote",
+            "verified_evidence_json": json.dumps([{"quote": "review invoices manually", "match_type": "exact"}]),
+            "opportunity_score": 88.0,
+        },
+        "reddit:p2": {
+            "post_id": "reddit:p2",
+            "subreddit": "ops",
+            "title": "What tool should I use?",
+            "body": "Looking for generic recommendations.",
+            "url": "https://reddit.com/p2",
+            "source": "reddit",
+            "triage_status": "discarded",
+            "evidence_quality": "no_quote",
+            "verified_evidence_json": "[]",
+            "opportunity_score": 0.0,
+        },
+    }
+
+    review_rows = eval_harness_module.feedback_events_to_label_review_rows(
+        feedback_rows,
+        pain_points_by_id=pain_points_by_id,
+    )
+
+    assert [row["feedback_event_id"] for row in review_rows] == [10, 11, 12]
+    assert review_rows[0]["review_type"] == "feedback_label_review"
+    assert review_rows[0]["review_status"] == "pending"
+    assert review_rows[0]["requires_human_review"] is True
+    assert review_rows[0]["promotion_eligible"] is False
+    assert review_rows[0]["label_suggestions"] == {"feedback_useful": True}
+    assert review_rows[0]["source"]["verified_evidence"][0]["quote"] == "review invoices manually"
+    assert "is_monetizable" not in review_rows[0]
+    assert review_rows[1]["label_suggestions"] == {
+        "feedback_useful": False,
+        "hard_negative_type": "generic_recommendation",
+    }
+    assert review_rows[1]["source"]["triage_status"] == "discarded"
+    assert review_rows[2]["label_suggestions"] == {
+        "feedback_useful": False,
+        "evidence_relevance": "irrelevant",
+    }
+    assert review_rows[2]["source"]["title"] == ""
+
+    output_path = tmp_path / "feedback-label-review.jsonl"
+    exported_rows = eval_harness_module.write_feedback_label_review_jsonl(
+        output_path,
+        feedback_rows,
+        pain_points_by_id=pain_points_by_id,
+    )
+    written_rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+    assert exported_rows == review_rows
+    assert written_rows == review_rows
+
+
+def test_feedback_events_reject_unknown_feedback_values(eval_harness_module):
+    with pytest.raises(ValueError, match="feedback_value"):
+        eval_harness_module.feedback_events_to_label_review_rows(
+            [{"id": 1, "post_id": "reddit:p1", "feedback_value": "interesting"}],
+            pain_points_by_id={},
+        )
+
+
 @pytest.mark.asyncio
 async def test_generate_live_predictions_tracks_prescreener_and_bucket(eval_harness_module):
     fresh_post = Post(
