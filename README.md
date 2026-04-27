@@ -35,7 +35,7 @@ niche -> verified pain clusters -> evidence -> opportunity score -> Next researc
 5. Use each cluster's `Next research action` block for interviews, ICP checks, MVP wedge hypotheses, messaging angles, and manual validation steps.
 6. Record feedback and feed useful/not-useful judgments back into eval/label-review data.
 
-MVP threshold status is deliberately conservative: the code writes `mvp_thresholds.json` and `run_manifest.json` from eval runs and supports pain precision/recall, evidence exact-match, monetizable precision, Top-10 usefulness, and cluster duplicate-rate gates, but the system is not ready for unattended production use until those targets are measured on a larger benchmark or explicitly waived.
+MVP threshold status is deliberately conservative: the code writes `mvp_thresholds.json` and `run_manifest.json` from eval runs and supports pain precision/recall, evidence exact-match, monetizable precision, Top-10 usefulness, and cluster duplicate-rate gates, but the system is not ready for unattended production use until those targets are measured on a larger benchmark or explicitly waived. The manifest includes a tamper-evident artifact inventory with `sha256` checksums for eval inputs/outputs; this is for audit traceability, not a production-readiness claim.
 
 ## Architecture
 
@@ -300,7 +300,7 @@ Metrics currently include:
 - Top-1/3/5/10 useful insight rate when feedback labels and scores are present
 - cluster duplicate rate / purity
 
-Each eval run also writes `mvp_thresholds.json`, a fail-closed Wave 9.2 assessment that marks the system not usable for MVP unless all target gates pass on an expanded benchmark or are explicitly waived. It also writes `run_manifest.json`, an audit-only traceability packet linking dataset/labels inputs, generated predictions/metrics/threshold artifacts, and the eval/audit gate scope without making a production-readiness claim.
+Each eval run also writes `mvp_thresholds.json`, a fail-closed Wave 9.2 assessment that marks the system not usable for MVP unless all target gates pass on an expanded benchmark or are explicitly waived. It also writes `run_manifest.json`, an audit-only traceability packet linking dataset/labels inputs, generated predictions/metrics/threshold artifacts, artifact inventory `sha256` checksums, and the eval/audit gate scope without making a production-readiness claim.
 
 For labeling rules and the seed-set caveats, see `eval/README.md`.
 

@@ -211,7 +211,7 @@ Baseline-comparison runs write:
 
 Every `run_eval.py` execution now writes a conservative `mvp_thresholds.json` assessment next to the metrics artifact. It measures the Wave 9.2 release gates, but fail-closes: a run is **not usable for MVP** unless all metric targets pass and the eval set is an expanded benchmark of at least 100 labeled rows, or an explicit waiver is supplied with `--waive-mvp-benchmark-size`.
 
-Each run also writes `run_manifest.json`, a traceability packet that links dataset/label inputs, prediction/metrics/threshold artifacts, baseline artifacts where applicable, dataset size, `reference_now_ts`, and the MVP threshold summary. Both `mvp_thresholds.json` and `run_manifest.json` carry `readiness_scope=eval_audit_gate_only` and `production_ready_claimed=false`; they are eval/audit gate artifacts, not production-readiness certification.
+Each run also writes `run_manifest.json`, a traceability packet that links dataset/label inputs, prediction/metrics/threshold artifacts, baseline artifacts where applicable, dataset size, `reference_now_ts`, and the MVP threshold summary. The manifest also carries a tamper-evident artifact inventory with `exists`, byte counts, JSONL line counts, and SHA-256 checksums for eval packet inputs/outputs. Both `mvp_thresholds.json` and `run_manifest.json` carry `readiness_scope=eval_audit_gate_only` and `production_ready_claimed=false`; they are eval/audit gate artifacts, not production-readiness certification.
 
 Targets checked in the artifact:
 

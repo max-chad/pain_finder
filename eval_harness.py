@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -686,6 +689,118 @@ def _mvp_threshold_manifest_summary(mvp_thresholds: dict[str, Any]) -> dict[str,
     }
 
 
+def _count_jsonl_rows(path: Path) -> int | None:
+    if path.suffix.lower() != ".jsonl":
+        return None
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _artifact_record(path: str | Path, *, display_path: str) -> dict[str, Any]:
+    path_obj = Path(path)
+    record: dict[str, Any] = {
+        "path": display_path,
+        "exists": path_obj.is_file(),
+        "sha256": None,
+        "byte_count": None,
+        "jsonl_line_count": None,
+    }
+    if not path_obj.is_file():
+        return record
+    content = path_obj.read_bytes()
+    record["sha256"] = hashlib.sha256(content).hexdigest()
+    record["byte_count"] = len(content)
+    record["jsonl_line_count"] = _count_jsonl_rows(path_obj)
+    return record
+
+
+def _artifact_inventory_status(groups: list[dict[str, Any]]) -> dict[str, Any]:
+    missing: list[str] = []
+    inventory_count = 0
+    for group in groups:
+        for name, record in group.items():
+            inventory_count += 1
+            if not record.get("exists"):
+                missing.append(str(name))
+    return {
+        "status": "complete" if not missing else "incomplete",
+        "missing_artifacts": missing,
+        "inventory_count": inventory_count,
+    }
+
+
+def _git_metadata() -> dict[str, Any]:
+    repo_dir = Path(__file__).resolve().parent
+
+    def run_git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    try:
+        head = run_git("rev-parse", "HEAD")
+        branch = run_git("rev-parse", "--abbrev-ref", "HEAD")
+        status = run_git("status", "--porcelain")
+    except (OSError, subprocess.CalledProcessError):
+        return {
+            "status_available": False,
+            "head": "",
+            "branch": "",
+            "dirty": None,
+        }
+    return {
+        "status_available": True,
+        "head": head,
+        "branch": branch,
+        "dirty": bool(status),
+    }
+
+
+def _build_artifact_inventory(
+    *,
+    dataset_path: str | Path,
+    labels_path: str | Path,
+    output_dir: str | Path,
+    artifacts: dict[str, str | Path],
+    baselines: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    output_dir_path = Path(output_dir)
+    inputs: dict[str, dict[str, Any]] = {
+        "dataset_path": _artifact_record(dataset_path, display_path=_manifest_path_value(dataset_path)),
+        "labels_path": _artifact_record(labels_path, display_path=_manifest_path_value(labels_path)),
+    }
+    outputs: dict[str, dict[str, Any]] = {}
+    for name, path in artifacts.items():
+        if name.startswith("input_"):
+            inputs[name] = _artifact_record(path, display_path=_manifest_path_value(path))
+        else:
+            outputs[name] = _artifact_record(path, display_path=_manifest_artifact_path(path, output_dir=output_dir_path))
+
+    baseline_outputs: dict[str, dict[str, dict[str, Any]]] = {}
+    if baselines is not None:
+        for baseline_name, baseline in baselines.items():
+            if not isinstance(baseline, dict):
+                continue
+            for path_key in ("metrics_path", "predictions_path", "mvp_thresholds_path"):
+                rel_path = baseline.get(path_key)
+                if not rel_path:
+                    continue
+                baseline_outputs.setdefault(str(baseline_name), {})[path_key] = _artifact_record(
+                    output_dir_path / str(rel_path),
+                    display_path=str(rel_path),
+                )
+
+    inventory: dict[str, Any] = {"inputs": inputs, "outputs": outputs}
+    groups: list[dict[str, Any]] = [inputs, outputs]
+    if baseline_outputs:
+        inventory["baseline_outputs"] = baseline_outputs
+        groups.extend(baseline_group for baseline_group in baseline_outputs.values())
+    return inventory, _artifact_inventory_status(groups)
+
+
 def build_eval_run_manifest(
     *,
     run_mode: str,
@@ -715,11 +830,20 @@ def build_eval_run_manifest(
             inputs[name] = _manifest_path_value(path)
         else:
             output_artifacts[name] = _manifest_artifact_path(path, output_dir=output_dir)
+    artifact_inventory, packet_integrity = _build_artifact_inventory(
+        dataset_path=dataset_path,
+        labels_path=labels_path,
+        output_dir=output_dir,
+        artifacts=artifacts,
+        baselines=baselines,
+    )
 
     manifest: dict[str, Any] = {
         "schema_version": "eval_run_manifest_v1",
         "readiness_scope": MVP_READINESS_SCOPE,
         "production_ready_claimed": MVP_PRODUCTION_READY_CLAIMED,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "git": _git_metadata(),
         "run_mode": str(run_mode),
         "inputs": inputs,
         "eval": {
@@ -727,6 +851,8 @@ def build_eval_run_manifest(
             "reference_now_ts": int(reference_now_ts),
         },
         "artifacts": output_artifacts,
+        "artifact_inventory": artifact_inventory,
+        "packet_integrity": packet_integrity,
         "mvp_thresholds": _mvp_threshold_manifest_summary(mvp_thresholds),
     }
     if baselines is not None:

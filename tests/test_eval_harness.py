@@ -1,3 +1,4 @@
+import hashlib
 import json
 import runpy
 import sys
@@ -11,6 +12,10 @@ from scraper import Post
 
 
 REFERENCE_NOW_TS = 1776816000  # 2026-04-21T00:00:00Z
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.fixture
@@ -459,6 +464,77 @@ def test_build_eval_run_manifest_links_inputs_artifacts_and_threshold_scope(eval
     }
 
 
+def test_build_eval_run_manifest_includes_artifact_inventory_hashes(eval_harness_module, tmp_path):
+    dataset_path = tmp_path / "seed_posts.jsonl"
+    labels_path = tmp_path / "labels.jsonl"
+    predictions_path = tmp_path / "input_predictions.jsonl"
+    output_dir = tmp_path / "eval-run"
+    output_dir.mkdir()
+    metrics_path = output_dir / "metrics.json"
+    written_predictions_path = output_dir / "predictions.jsonl"
+    mvp_thresholds_path = output_dir / "mvp_thresholds.json"
+
+    _write_jsonl(dataset_path, [{"post_id": "reddit:p1"}, {"post_id": "reddit:p2"}])
+    _write_jsonl(labels_path, [{"post_id": "reddit:p1", "is_pain": True}])
+    _write_jsonl(predictions_path, [{"post_id": "reddit:p1", "is_pain": True}])
+    metrics = {
+        "dataset_size": 2,
+        "pain": {"precision": 0.8, "recall": 0.7},
+        "monetizable": {"precision": 0.72},
+        "evidence": {"exact_match_rate": 0.98},
+        "top_n_useful_rate": {"top_10": 0.6},
+        "clusters": {"duplicate_rate": 0.1},
+    }
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    _write_jsonl(written_predictions_path, [{"post_id": "reddit:p1", "is_pain": True}])
+    assessment = eval_harness_module.assess_mvp_thresholds(metrics, waive_expanded_benchmark=True)
+    mvp_thresholds_path.write_text(json.dumps(assessment), encoding="utf-8")
+
+    manifest = eval_harness_module.build_eval_run_manifest(
+        run_mode="offline_predictions",
+        dataset_path=dataset_path,
+        labels_path=labels_path,
+        output_dir=output_dir,
+        reference_now_ts=REFERENCE_NOW_TS,
+        metrics=metrics,
+        mvp_thresholds=assessment,
+        artifacts={
+            "input_predictions_path": predictions_path,
+            "metrics_path": metrics_path,
+            "predictions_path": written_predictions_path,
+            "mvp_thresholds_path": mvp_thresholds_path,
+        },
+    )
+
+    inventory = manifest["artifact_inventory"]
+    assert manifest["generated_at_utc"].endswith("Z")
+    assert manifest["git"]["head"]
+    assert manifest["git"]["branch"]
+    assert manifest["git"]["dirty"] in {True, False}
+    assert manifest["packet_integrity"] == {
+        "status": "complete",
+        "missing_artifacts": [],
+        "inventory_count": 6,
+    }
+    assert inventory["inputs"]["dataset_path"] == {
+        "path": str(dataset_path),
+        "exists": True,
+        "sha256": _sha256(dataset_path),
+        "byte_count": dataset_path.stat().st_size,
+        "jsonl_line_count": 2,
+    }
+    assert inventory["inputs"]["labels_path"]["jsonl_line_count"] == 1
+    assert inventory["inputs"]["input_predictions_path"]["sha256"] == _sha256(predictions_path)
+    assert inventory["outputs"]["metrics_path"]["path"] == "metrics.json"
+    assert inventory["outputs"]["metrics_path"]["sha256"] == _sha256(metrics_path)
+    assert inventory["outputs"]["predictions_path"]["jsonl_line_count"] == 1
+    assert inventory["outputs"]["mvp_thresholds_path"]["sha256"] == _sha256(mvp_thresholds_path)
+    for group in ("inputs", "outputs"):
+        for record in inventory[group].values():
+            assert len(record["sha256"]) == 64
+            assert record["byte_count"] > 0
+
+
 def test_missing_predictions_do_not_create_usefulness_or_stale_leakage(eval_harness_module, sample_posts, sample_labels):
     metrics = eval_harness_module.evaluate_predictions(
         posts=sample_posts,
@@ -887,6 +963,14 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     assert manifest["run_mode"] == "offline_predictions"
     assert manifest["readiness_scope"] == "eval_audit_gate_only"
     assert manifest["production_ready_claimed"] is False
+    assert manifest["packet_integrity"]["status"] == "complete"
+    assert manifest["packet_integrity"]["missing_artifacts"] == []
+    assert manifest["artifact_inventory"]["inputs"]["dataset_path"]["sha256"] == _sha256(dataset_path)
+    assert manifest["artifact_inventory"]["inputs"]["labels_path"]["sha256"] == _sha256(labels_path)
+    assert manifest["artifact_inventory"]["inputs"]["input_predictions_path"]["sha256"] == _sha256(predictions_path)
+    assert manifest["artifact_inventory"]["outputs"]["metrics_path"]["sha256"] == _sha256(metrics_path)
+    assert manifest["artifact_inventory"]["outputs"]["predictions_path"]["sha256"] == _sha256(written_predictions_path)
+    assert manifest["artifact_inventory"]["outputs"]["mvp_thresholds_path"]["sha256"] == _sha256(mvp_thresholds_path)
     assert manifest["inputs"]["dataset_path"] == str(dataset_path)
     assert manifest["inputs"]["labels_path"] == str(labels_path)
     assert manifest["inputs"]["input_predictions_path"] == str(predictions_path)
@@ -1011,6 +1095,23 @@ def test_run_eval_offline_writes_baseline_artifacts(tmp_path, monkeypatch):
     assert manifest["readiness_scope"] == "eval_audit_gate_only"
     assert manifest["production_ready_claimed"] is False
     assert manifest["artifacts"]["baseline_summary_path"] == "baseline_summary.json"
+    assert manifest["packet_integrity"]["status"] == "complete"
+    assert manifest["packet_integrity"]["missing_artifacts"] == []
+    assert manifest["artifact_inventory"]["inputs"]["dataset_path"]["sha256"] == _sha256(dataset_path)
+    assert manifest["artifact_inventory"]["inputs"]["labels_path"]["sha256"] == _sha256(labels_path)
+    assert manifest["artifact_inventory"]["outputs"]["baseline_summary_path"]["sha256"] == _sha256(
+        output_dir / "baseline_summary.json"
+    )
+    assert manifest["artifact_inventory"]["baseline_outputs"]["current"]["metrics_path"]["sha256"] == _sha256(
+        output_dir / "current" / "metrics.json"
+    )
+    assert manifest["artifact_inventory"]["baseline_outputs"]["current"]["predictions_path"]["jsonl_line_count"] == 1
+    assert manifest["artifact_inventory"]["baseline_outputs"]["current"]["mvp_thresholds_path"]["sha256"] == _sha256(
+        output_dir / "current" / "mvp_thresholds.json"
+    )
+    assert manifest["artifact_inventory"]["baseline_outputs"]["rules_only"]["predictions_path"][
+        "sha256"
+    ] == _sha256(output_dir / "rules_only" / "predictions.jsonl")
     assert manifest["baselines"]["current"]["metrics_path"] == "current/metrics.json"
     assert manifest["baselines"]["current"]["predictions_path"] == "current/predictions.jsonl"
     assert manifest["baselines"]["current"]["mvp_thresholds_path"] == "current/mvp_thresholds.json"
