@@ -20,6 +20,23 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
 - Exports filtered data to CSV and optionally upserts to Google Sheets.
 - Can run in `APP_MODE=hermes`, which disables Telegram polling conflicts and publishes a once-daily grouped `.docx` digest back through the configured bot token/chat.
 
+## Self-research workflow
+
+The intended private workflow is evidence-backed B2B opportunity research, not a generic Reddit scraper:
+
+```text
+niche -> verified pain clusters -> evidence -> opportunity score -> Next research action
+```
+
+1. Ingest Reddit, Hacker News, and configured review sources with bounded source limits and budget guardrails.
+2. Run high-recall screening and LLM classification, but keep evidence-first promotion rules: weak/no-evidence rows stay in Needs Review or diagnostic surfaces.
+3. Promote only verified pain clusters with exact evidence, buyer/first-hand signals, confidence, source coverage, and score breakdowns.
+4. Review the grouped `.docx` digest, local static HTML report, and CSV/Sheets exports as analyst-facing surfaces.
+5. Use each cluster's `Next research action` block for interviews, ICP checks, MVP wedge hypotheses, messaging angles, and manual validation steps.
+6. Record feedback and feed useful/not-useful judgments back into eval/label-review data.
+
+MVP threshold status is deliberately conservative: the code supports pain precision/recall, evidence exact-match, monetizable precision, Top-N usefulness, and cluster duplicate-rate metrics, but the system is not ready for unattended production use until those targets are measured on a larger benchmark or explicitly waived.
+
 ## Architecture
 
 - `main.py`: wires services, scheduler jobs, Telegram app lifecycle.
