@@ -130,6 +130,258 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     assert "Forecasting still lives in spreadsheets" in xml
 
 
+async def test_daily_digest_document_renders_rich_cluster_cards_as_primary_surface(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "p1",
+            "title": "RevOps CSV handoff keeps breaking onboarding",
+            "summary": "Ops owners manually reconcile onboarding data before approvals.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 91.3,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot", "salesforce"]',
+            "source": "reddit",
+            "url": "https://reddit.com/p1",
+            "subreddit": "sales",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "head_of_ops",
+            "buyer_authority_score": 0.94,
+            "verified_evidence_json": '[{"quote":"we still reconcile onboarding CSVs by hand before approvals","source_type":"body","match_type":"exact","url":"https://reddit.com/p1"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.86,
+            "score_components_json": '{"factors":{"intensity":0.18,"frequency":0.14,"wtp":0.14},"penalties":{"noise":0.0}}',
+        }
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "revops-csv-approvals",
+            "label": "RevOps CSV approval handoffs",
+            "summary": "RevOps teams lose time reconciling onboarding CSV handoffs before approval workflows.",
+            "estimated_monetization_signal": "high",
+            "item_count": 4,
+            "fresh_post_count": 3,
+            "evergreen_post_count": 1,
+            "avg_opportunity_score": 91.3,
+            "aggregate_wtp": 35.0,
+            "median_buyer_authority": 0.94,
+            "incumbents": ["hubspot", "salesforce"],
+            "cluster_stability_score": 0.91,
+            "verified_quote_count": 4,
+            "independent_source_count": 2,
+            "unique_author_count": 3,
+            "pain_mentions_per_1000_posts": 12.5,
+            "pain_mentions_per_1000_comments": 3.2,
+            "normalized_frequency": {"pain_mentions_per_1000_posts": 12.5, "unique_authors_count": 3},
+            "representative_examples": [
+                {
+                    "post_id": "p1",
+                    "title": "RevOps CSV handoff keeps breaking onboarding",
+                    "summary": "Ops owners manually reconcile onboarding data before approvals.",
+                    "source": "reddit",
+                    "url": "https://reddit.com/p1",
+                    "verified_quotes": ["we still reconcile onboarding CSVs by hand before approvals"],
+                    "current_workaround": "manual CSV reconciliation before approval",
+                    "incumbent_failure": "CRM sync misses approval status changes",
+                    "user_context": {"persona": "RevOps manager", "workflow": "customer onboarding approvals"},
+                    "pain_level": 9,
+                    "willingness_to_pay": 9,
+                    "intensity_score": 0.9,
+                    "urgency": "high",
+                    "buyer_authority": "head_of_ops",
+                    "buyer_authority_score": 0.94,
+                    "confidence": 0.86,
+                    "score_components": {"factors": {"intensity": 0.18, "frequency": 0.14, "wtp": 0.14}, "penalties": {"noise": 0.0}},
+                }
+            ],
+        }
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    db.get_latest_canonical_clusters.assert_awaited_once_with(limit=20, post_ids=["p1"])
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert xml.index("Top pain clusters") < xml.index("<w:t>Current opportunities</w:t>")
+    assert "#1 RevOps CSV approval handoffs" in xml
+    assert "Opportunity score 91.3 | Confidence 0.86 | Intensity 9.0/10 | WTP 9.0/10 | Urgency high | Buyer authority 0.94" in xml
+    assert "Why it matters: high monetization signal across 1 eligible verified post; RevOps teams lose time reconciling onboarding CSV handoffs before approval workflows." in xml
+    assert "Verified evidence: we still reconcile onboarding CSVs by hand before approvals" in xml
+    assert "Affected users/personas: RevOps manager; customer onboarding approvals" in xml
+    assert "Current workarounds: manual CSV reconciliation before approval" in xml
+    assert "Competitors/tools mentioned: hubspot, salesforce" in xml
+    assert "Suggested wedge: Replace manual CSV reconciliation before approval with an auditable workflow focused on RevOps manager." in xml
+    assert "Risks: Validate that CRM sync misses approval status changes is painful across more than 2 independent sources." in xml
+    assert "Score breakdown: factors intensity=0.18, frequency=0.14, wtp=0.14; penalties noise=0.00" in xml
+    assert "Coverage/confidence: Stability 0.91 | Verified quotes 4 | Sources 2 | Authors 3 | Frequency 12.5/1k posts, 3.2/1k comments" in xml
+    assert "Link: https://reddit.com/p1" in xml
+
+
+async def test_daily_digest_document_filters_mixed_cluster_cards_to_promoted_evidence(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "good-1",
+            "title": "Verified RevOps workflow pain",
+            "summary": "RevOps managers reconcile CSV handoffs before approvals.",
+            "pain_level": 9,
+            "willingness_to_pay": 9,
+            "opportunity_score": 92.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["hubspot"]',
+            "source": "reddit",
+            "url": "https://reddit.com/good-1",
+            "subreddit": "sales",
+            "opportunity_bucket": "current_opportunity",
+            "post_type": "first_person_pain",
+            "first_handness": "first_hand",
+            "buyer_authority": "head_of_ops",
+            "buyer_authority_score": 0.94,
+            "verified_evidence_json": '[{"quote":"I reconcile CSV handoffs by hand before approvals","source_type":"body","match_type":"exact","url":"https://reddit.com/good-1"}]',
+            "evidence_quality": "exact_quote",
+            "evidence_match_rate": 1.0,
+            "confidence": 0.88,
+            "current_workaround": "manual CSV reconciliation before approval",
+            "incumbent_failure": "CRM approval sync misses status changes",
+            "user_context_json": '{"persona":"RevOps manager"}',
+            "score_components_json": '{"factors":{"intensity":0.18},"penalties":{"noise":0.0}}',
+        },
+        {
+            "post_id": "weak-1",
+            "title": "Unsupported high-WTP RevOps claim",
+            "summary": "Looks lucrative, but no exact source quote backs the claim.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 99.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["salesforce"]',
+            "source": "reddit",
+            "url": "https://reddit.com/weak-1",
+            "subreddit": "sales",
+            "opportunity_bucket": "current_opportunity",
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0,
+            "confidence": 0.1,
+            "score_components_json": '{"promotion_eligible":false,"evidence_rejection_reason":"no_verified_exact_quote"}',
+        },
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "mixed-revops-claim",
+            "label": "Mixed RevOps workflow cluster",
+            "summary": "Cluster contains one verified workflow pain and one unsupported claim.",
+            "estimated_monetization_signal": "high",
+            "item_count": 2,
+            "post_ids": ["good-1", "weak-1"],
+            "avg_opportunity_score": 95.5,
+            "aggregate_wtp": 19.0,
+            "incumbents": ["hubspot", "salesforce"],
+            "representative_examples": [
+                {
+                    "post_id": "weak-1",
+                    "title": "Unsupported high-WTP RevOps claim",
+                    "verified_quotes": [],
+                    "source": "reddit",
+                    "url": "https://reddit.com/weak-1",
+                },
+                {
+                    "post_id": "good-1",
+                    "title": "Verified RevOps workflow pain",
+                    "verified_quotes": ["I reconcile CSV handoffs by hand before approvals"],
+                    "source": "reddit",
+                    "url": "https://reddit.com/good-1",
+                    "current_workaround": "manual CSV reconciliation before approval",
+                    "user_context": {"persona": "RevOps manager"},
+                    "confidence": 0.88,
+                    "intensity_score": 0.9,
+                    "willingness_to_pay": 9,
+                    "buyer_authority_score": 0.94,
+                    "score_components": {"factors": {"intensity": 0.18}, "penalties": {"noise": 0.0}},
+                },
+            ],
+        }
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    db.get_latest_canonical_clusters.assert_awaited_once_with(limit=20, post_ids=["good-1"])
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert "Top pain clusters" in xml
+    assert "Mixed RevOps workflow cluster" in xml
+    assert "Why it matters: high monetization signal across 1 eligible verified post;" in xml
+    assert "Verified evidence: I reconcile CSV handoffs by hand before approvals" in xml
+    assert "- Verified RevOps workflow pain (reddit)" in xml
+    assert "Unsupported high-WTP RevOps claim (reddit)" not in xml[: xml.index("Needs Review / Weak signals")]
+    assert "Evidence rejection: no_verified_exact_quote" in xml
+
+
+async def test_daily_digest_document_does_not_promote_weak_rows_through_cluster_cards(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "weak-1",
+            "title": "Unsupported high-WTP RevOps claim",
+            "summary": "Looks lucrative, but no exact source quote backs the claim.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 94.0,
+            "niche_category": "RevOps",
+            "competitor_tags": '["salesforce"]',
+            "source": "reddit",
+            "url": "https://reddit.com/weak-1",
+            "subreddit": "sales",
+            "opportunity_bucket": "current_opportunity",
+            "verified_evidence_json": "[]",
+            "evidence_quality": "no_quote",
+            "evidence_match_rate": 0,
+            "confidence": 0.22,
+            "score_components_json": '{"promotion_eligible":false,"evidence_rejection_reason":"no_verified_exact_quote"}',
+        }
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "canonical_key": "unsupported-revops-claim",
+            "label": "Unsupported RevOps claim cluster",
+            "summary": "This should not be promoted as a top pain cluster without exact evidence.",
+            "avg_opportunity_score": 94.0,
+            "item_count": 1,
+            "verified_quote_count": 0,
+            "representative_examples": [
+                {
+                    "post_id": "weak-1",
+                    "title": "Unsupported high-WTP RevOps claim",
+                    "verified_quotes": [],
+                    "source": "reddit",
+                    "url": "https://reddit.com/weak-1",
+                }
+            ],
+        }
+    ]
+
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    db.get_latest_canonical_clusters.assert_not_awaited()
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert "Top pain clusters" not in xml
+    assert "Unsupported RevOps claim cluster" not in xml
+    assert "Needs Review / Weak signals" in xml
+    assert "Unsupported high-WTP RevOps claim" in xml
+    assert "Evidence rejection: no_verified_exact_quote" in xml
+
+
 async def test_daily_digest_document_service_returns_empty_result_without_rows(tmp_path):
     db = AsyncMock()
     db.get_recent_pain_points.return_value = []

@@ -444,6 +444,9 @@ async def test_run_persists_cluster_quality_and_representative_examples(db):
         competitor_tags=["quickbooks", "stripe"],
         verified_evidence=[{"quote": "QuickBooks payout reconciliation breaks every Friday", "match_type": "exact"}],
         evidence_quality="exact_quote",
+        current_workaround="manual CSV payout reconciliation",
+        incumbent_failure="Stripe deposits do not match QuickBooks payouts",
+        user_context_json={"persona": "finance ops lead", "workflow": "weekly payout close"},
         author_hash="author-a",
         source="reddit",
     )
@@ -470,7 +473,15 @@ async def test_run_persists_cluster_quality_and_representative_examples(db):
     assert cluster.verified_quote_count == 2
     assert cluster.independent_source_count == 2
     assert cluster.unique_author_count == 2
-    assert cluster.representative_examples[0]["post_id"] in {"reddit:v1", "hn:v2"}
+    representative = cluster.representative_examples[0]
+    assert representative["post_id"] in {"reddit:v1", "hn:v2"}
+    if representative["post_id"] == "reddit:v1":
+        assert representative["current_workaround"] == "manual CSV payout reconciliation"
+        assert representative["incumbent_failure"] == "Stripe deposits do not match QuickBooks payouts"
+        assert representative["user_context"] == {"persona": "finance ops lead", "workflow": "weekly payout close"}
+        assert representative["willingness_to_pay"] == 9
+        assert representative["opportunity_score"] == 88.0
+        assert representative["buyer_authority_score"] == 0.55
     assert cluster.normalized_frequency["unique_authors_count"] == 2
 
     stored = await db.get_macro_clusters(result.run_id)
@@ -479,4 +490,7 @@ async def test_run_persists_cluster_quality_and_representative_examples(db):
     assert stored[0]["independent_source_count"] == 2
     assert stored[0]["unique_author_count"] == 2
     assert stored[0]["representative_examples"][0]["post_id"] in {"reddit:v1", "hn:v2"}
+    assert stored[0]["representative_examples"][0]["current_workaround"] == "manual CSV payout reconciliation"
+    assert stored[0]["representative_examples"][0]["incumbent_failure"] == "Stripe deposits do not match QuickBooks payouts"
+    assert stored[0]["representative_examples"][0]["user_context"] == {"persona": "finance ops lead", "workflow": "weekly payout close"}
     assert stored[0]["normalized_frequency"]["unique_authors_count"] == 2

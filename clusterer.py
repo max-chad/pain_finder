@@ -499,6 +499,8 @@ class MacroTrendClusterer:
         )
         examples: list[dict[str, Any]] = []
         for row in ordered[:3]:
+            user_context = cls._parse_json_object(row.get("user_context_json"))
+            score_components = cls._parse_json_object(row.get("score_components_json"))
             examples.append(
                 {
                     "post_id": str(row.get("post_id") or ""),
@@ -507,6 +509,19 @@ class MacroTrendClusterer:
                     "source": str(row.get("source") or "").strip(),
                     "url": str(row.get("url") or "").strip(),
                     "verified_quotes": cls._verified_quotes(row)[:3],
+                    "current_workaround": str(row.get("current_workaround") or "").strip(),
+                    "incumbent_failure": str(row.get("incumbent_failure") or "").strip(),
+                    "user_context": user_context,
+                    "pain_level": int(row.get("pain_level") or 0),
+                    "willingness_to_pay": int(row.get("willingness_to_pay") or 0),
+                    "opportunity_score": float(row.get("opportunity_score") or 0.0),
+                    "intensity_score": float(row.get("intensity_score") or 0.0),
+                    "urgency": row.get("urgency") or "",
+                    "buyer_authority": str(row.get("buyer_authority") or "unknown").strip() or "unknown",
+                    "buyer_authority_score": float(row.get("buyer_authority_score") or 0.0),
+                    "confidence": float(row.get("confidence") or 0.0),
+                    "evidence_quality": str(row.get("evidence_quality") or "").strip(),
+                    "score_components": score_components,
                 }
             )
         return examples

@@ -48,11 +48,16 @@ class DailyDigestDocumentService:
         if not filtered_rows:
             return DigestDocumentResult(docx_path=None, total_items=0, group_count=0, group_sizes={})
 
-        filtered_post_ids = [str(row.get("post_id")) for row in filtered_rows if row.get("post_id")]
-        canonical_clusters = await self.db.get_latest_canonical_clusters(limit=6, post_ids=filtered_post_ids)
-
         promotion_rows = [row for row in filtered_rows if self._promotion_eligible(row)]
         weak_rows = [row for row in filtered_rows if not self._promotion_eligible(row)]
+        promoted_rows_by_id = {str(row.get("post_id")): row for row in promotion_rows if row.get("post_id")}
+        promoted_post_ids = list(promoted_rows_by_id)
+        canonical_clusters = (
+            await self.db.get_latest_canonical_clusters(limit=20, post_ids=promoted_post_ids)
+            if promoted_post_ids
+            else []
+        )
+
         current_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "current_opportunity"]
         evergreen_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "evergreen_pain"]
         unknown_rows = [row for row in promotion_rows if self._opportunity_bucket(row) == "unknown_age"]
@@ -98,8 +103,9 @@ class DailyDigestDocumentService:
             blockers_paragraph.add_run(" | ".join(blockers))
 
         if canonical_clusters:
-            document.add_heading("Canonical pain clusters", level=1)
-            self._render_cluster_section(document, canonical_clusters)
+            document.add_heading("Top pain clusters", level=1)
+            document.add_paragraph("Canonical pain clusters prioritized by opportunity score and verified evidence.")
+            self._render_cluster_section(document, canonical_clusters, promoted_rows_by_id=promoted_rows_by_id)
 
         if current_groups:
             document.add_heading("Current opportunities", level=1)
@@ -164,22 +170,47 @@ class DailyDigestDocumentService:
             return "evergreen_pain"
         return "unknown_age"
 
-    def _render_cluster_section(self, document: Document, clusters: list[dict[str, Any]]) -> None:
-        for cluster in clusters:
+    def _render_cluster_section(
+        self,
+        document: Document,
+        clusters: list[dict[str, Any]],
+        *,
+        promoted_rows_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        for rank, cluster in enumerate(clusters[:20], start=1):
             label = (str(cluster.get("label") or "Recurring pain cluster").strip() or "Recurring pain cluster")
             summary = (str(cluster.get("summary") or "No summary available.").strip() or "No summary available.")
-            avg_score = float(cluster.get("avg_opportunity_score") or 0.0)
+            raw_examples = self._cluster_examples(cluster)
+            eligible_examples, eligible_post_ids = self._eligible_cluster_examples(
+                cluster,
+                raw_examples,
+                promoted_rows_by_id=promoted_rows_by_id,
+            )
+            if promoted_rows_by_id is not None and not eligible_examples:
+                continue
+            examples = eligible_examples if promoted_rows_by_id is not None else raw_examples
+            eligible_count = len(eligible_post_ids) if promoted_rows_by_id is not None else int(
+                cluster.get("verified_quote_count") or len(examples) or cluster.get("item_count") or 0
+            )
+            avg_score = self._cluster_avg_opportunity_score(cluster, examples)
             fresh_post_count = int(cluster.get("fresh_post_count") or 0)
             evergreen_post_count = int(cluster.get("evergreen_post_count") or 0)
-            incumbents = cluster.get("incumbents") or []
-            incumbents_text = ", ".join(str(item) for item in incumbents[:4]) or "none"
+            item_count = eligible_count or int(cluster.get("item_count") or fresh_post_count + evergreen_post_count or len(examples))
+            incumbents = [str(item).strip() for item in cluster.get("incumbents") or [] if str(item).strip()]
+            incumbents_text = ", ".join(incumbents[:4]) or "none"
 
-            document.add_heading(label, level=2)
+            document.add_heading(f"#{rank} {label}", level=2)
             metrics = document.add_paragraph(
-                f"Avg opp {avg_score:.1f} | Fresh {fresh_post_count} | Evergreen {evergreen_post_count}"
+                f"Opportunity score {avg_score:.1f} | Confidence {self._cluster_confidence(cluster, examples):.2f} | "
+                f"Intensity {self._cluster_intensity(cluster, examples):.1f}/10 | "
+                f"WTP {self._cluster_wtp(cluster, examples, item_count=item_count):.1f}/10 | "
+                f"Urgency {self._cluster_urgency(cluster, examples)} | "
+                f"Buyer authority {self._cluster_buyer_authority(cluster, examples):.2f}"
             )
             metrics.style = "Intense Quote"
-            document.add_paragraph(summary)
+            signal = str(cluster.get("estimated_monetization_signal") or "unknown").strip().lower() or "unknown"
+            count_label = self._eligible_verified_post_count_label(item_count)
+            document.add_paragraph(f"Why it matters: {signal} monetization signal across {count_label}; {summary}")
             posts_frequency = float(cluster.get("pain_mentions_per_1000_posts") or 0.0)
             comments_frequency = float(cluster.get("pain_mentions_per_1000_comments") or 0.0)
             authors_count = int(cluster.get("unique_authors_count") or 0)
@@ -199,13 +230,36 @@ class DailyDigestDocumentService:
                     f"Cluster quality: Stability {stability:.2f} | Verified quotes {verified_quote_count} | "
                     f"Sources {independent_source_count} | Authors {quality_author_count}"
                 )
-            representative_examples = cluster.get("representative_examples") or []
-            if representative_examples:
+                document.add_paragraph(
+                    f"Coverage/confidence: Stability {stability:.2f} | Verified quotes {verified_quote_count} | "
+                    f"Sources {independent_source_count} | Authors {quality_author_count} | "
+                    f"Frequency {posts_frequency:.1f}/1k posts, {comments_frequency:.1f}/1k comments"
+                )
+            evidence_quotes = self._cluster_verified_quotes(examples)
+            for quote, url in evidence_quotes[:3]:
+                document.add_paragraph(f"Verified evidence: {quote}")
+                if url:
+                    document.add_paragraph(f"Link: {url}")
+            personas = self._cluster_personas(examples)
+            if personas:
+                document.add_paragraph(f"Affected users/personas: {'; '.join(personas[:6])}")
+            workarounds = self._cluster_text_values(examples, "current_workaround")
+            if workarounds:
+                document.add_paragraph(f"Current workarounds: {'; '.join(workarounds[:4])}")
+            document.add_paragraph(f"Competitors/tools mentioned: {incumbents_text}")
+            wedge = self._cluster_suggested_wedge(cluster, examples, personas=personas, workarounds=workarounds)
+            if wedge:
+                document.add_paragraph(f"Suggested wedge: {wedge}")
+            risks = self._cluster_risks(cluster, examples, independent_source_count=independent_source_count)
+            if risks:
+                document.add_paragraph(f"Risks: {risks}")
+            score_breakdown = self._cluster_score_breakdown(cluster, examples)
+            if score_breakdown:
+                document.add_paragraph(f"Score breakdown: {score_breakdown}")
+            if examples:
                 examples_header = document.add_paragraph()
                 examples_header.add_run("Representative examples").bold = True
-                for example in representative_examples[:3]:
-                    if not isinstance(example, dict):
-                        continue
+                for example in examples[:3]:
                     title = str(example.get("title") or "Untitled").strip() or "Untitled"
                     source = str(example.get("source") or "unknown").strip() or "unknown"
                     document.add_paragraph(f"- {title} ({source})")
@@ -216,6 +270,298 @@ class DailyDigestDocumentService:
                     if url:
                         document.add_paragraph(f"  Link: {url}")
             document.add_paragraph(f"Dominant incumbents: {incumbents_text}")
+
+    @staticmethod
+    def _cluster_examples(cluster: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = cluster.get("representative_examples") or []
+        return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+    @staticmethod
+    def _cluster_post_ids(cluster: dict[str, Any], examples: list[dict[str, Any]]) -> list[str]:
+        raw_post_ids = cluster.get("post_ids") or []
+        if isinstance(raw_post_ids, str):
+            raw_post_ids = [item for item in raw_post_ids.split(",") if item]
+        if not isinstance(raw_post_ids, list):
+            raw_post_ids = []
+        seen: set[str] = set()
+        post_ids: list[str] = []
+        for raw in [*raw_post_ids, *(example.get("post_id") for example in examples)]:
+            post_id = str(raw or "").strip()
+            if post_id and post_id not in seen:
+                seen.add(post_id)
+                post_ids.append(post_id)
+        return post_ids
+
+    @classmethod
+    def _eligible_cluster_examples(
+        cls,
+        cluster: dict[str, Any],
+        examples: list[dict[str, Any]],
+        *,
+        promoted_rows_by_id: dict[str, dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        if promoted_rows_by_id is None:
+            return examples, cls._cluster_post_ids(cluster, examples)
+        cluster_post_ids = cls._cluster_post_ids(cluster, examples)
+        eligible_post_ids = [post_id for post_id in cluster_post_ids if post_id in promoted_rows_by_id]
+        if not eligible_post_ids:
+            return [], []
+        examples_by_post_id = {
+            str(example.get("post_id") or "").strip(): example
+            for example in examples
+            if str(example.get("post_id") or "").strip()
+        }
+        eligible_examples: list[dict[str, Any]] = []
+        for post_id in eligible_post_ids:
+            row_example = cls._row_cluster_example(promoted_rows_by_id[post_id])
+            existing_example = examples_by_post_id.get(post_id, {})
+            merged = dict(row_example)
+            for key, value in existing_example.items():
+                if value not in (None, "", [], {}):
+                    merged[key] = value
+            merged["post_id"] = post_id
+            eligible_examples.append(merged)
+        return eligible_examples, eligible_post_ids
+
+    @classmethod
+    def _row_cluster_example(cls, row: dict[str, Any]) -> dict[str, Any]:
+        context = row.get("user_context")
+        if not isinstance(context, dict):
+            context = cls._json_object(row.get("user_context_json"))
+        return {
+            "post_id": str(row.get("post_id") or ""),
+            "title": str(row.get("title") or "Untitled").strip() or "Untitled",
+            "summary": str(row.get("summary") or "").strip(),
+            "source": str(row.get("source") or "").strip(),
+            "url": str(row.get("url") or "").strip(),
+            "verified_quotes": [str(item.get("quote") or "").strip() for item in cls._verified_evidence(row)],
+            "current_workaround": str(row.get("current_workaround") or "").strip(),
+            "incumbent_failure": str(row.get("incumbent_failure") or "").strip(),
+            "user_context": context,
+            "pain_level": int(row.get("pain_level") or 0),
+            "willingness_to_pay": int(row.get("willingness_to_pay") or 0),
+            "opportunity_score": cls._row_opportunity_score(row),
+            "intensity_score": cls._coerce_float(row.get("intensity_score"), default=0.0),
+            "urgency": row.get("urgency") or "",
+            "buyer_authority": str(row.get("buyer_authority") or "unknown").strip() or "unknown",
+            "buyer_authority_score": cls._buyer_authority_score(row),
+            "confidence": cls._coerce_float(row.get("confidence"), default=0.0),
+            "evidence_quality": str(row.get("evidence_quality") or "").strip(),
+            "score_components": cls._score_components(row),
+        }
+
+    @staticmethod
+    def _json_object(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str) or not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _eligible_verified_post_count_label(count: int) -> str:
+        if count == 1:
+            return "1 eligible verified post"
+        return f"{count} eligible verified posts"
+
+    @classmethod
+    def _cluster_avg_opportunity_score(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        values = [cls._coerce_float(example.get("opportunity_score"), default=0.0) for example in examples]
+        values = [value for value in values if value]
+        if values:
+            return sum(values) / len(values)
+        return float(cluster.get("avg_opportunity_score") or 0.0)
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _cluster_confidence(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        direct = cls._coerce_float(cluster.get("confidence"), default=-1.0)
+        if direct >= 0.0:
+            return max(0.0, min(1.0, direct))
+        values = [cls._coerce_float(example.get("confidence"), default=0.0) for example in examples]
+        return max(values, default=0.0)
+
+    @classmethod
+    def _cluster_intensity(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        direct = cls._coerce_float(cluster.get("intensity_score"), default=0.0)
+        if direct:
+            return direct * 10 if 0 < direct <= 1 else min(10.0, direct)
+        values = []
+        for example in examples:
+            value = cls._coerce_float(example.get("intensity_score"), default=0.0)
+            if value:
+                values.append(value * 10 if 0 < value <= 1 else min(10.0, value))
+            elif example.get("pain_level") is not None:
+                values.append(min(10.0, cls._coerce_float(example.get("pain_level"), default=0.0)))
+        return sum(values) / len(values) if values else 0.0
+
+    @classmethod
+    def _cluster_wtp(cls, cluster: dict[str, Any], examples: list[dict[str, Any]], *, item_count: int) -> float:
+        values = [cls._coerce_float(example.get("willingness_to_pay"), default=0.0) for example in examples]
+        values = [value for value in values if value]
+        if values:
+            return min(10.0, sum(values) / len(values))
+        direct = cls._coerce_float(cluster.get("wtp_score"), default=0.0)
+        if direct:
+            return direct * 10 if 0 < direct <= 1 else min(10.0, direct)
+        aggregate = cls._coerce_float(cluster.get("aggregate_wtp"), default=0.0)
+        if aggregate and item_count > 0:
+            return min(10.0, aggregate / item_count)
+        return 0.0
+
+    @classmethod
+    def _cluster_urgency(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> str:
+        direct = str(cluster.get("urgency") or "").strip()
+        if direct:
+            return direct
+        for example in examples:
+            urgency = example.get("urgency")
+            if isinstance(urgency, (int, float)):
+                if urgency >= 8:
+                    return "high"
+                if urgency >= 4:
+                    return "medium"
+                return "low"
+            rendered = str(urgency or "").strip()
+            if rendered and rendered.lower() != "none":
+                return rendered
+        return "unknown"
+
+    @classmethod
+    def _cluster_buyer_authority(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> float:
+        direct = cls._coerce_float(cluster.get("median_buyer_authority"), default=0.0)
+        if direct:
+            return direct
+        values = [cls._coerce_float(example.get("buyer_authority_score"), default=0.0) for example in examples]
+        values = [value for value in values if value]
+        return sum(values) / len(values) if values else 0.0
+
+    @staticmethod
+    def _cluster_text_values(examples: list[dict[str, Any]], key: str) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for example in examples:
+            raw = example.get(key)
+            items = raw if isinstance(raw, list) else [raw]
+            for item in items:
+                text = str(item or "").strip()
+                normalized = text.lower()
+                if text and normalized not in seen:
+                    seen.add(normalized)
+                    values.append(text)
+        return values
+
+    @classmethod
+    def _cluster_personas(cls, examples: list[dict[str, Any]]) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for example in examples:
+            context = example.get("user_context")
+            if not isinstance(context, dict):
+                context = {}
+            for key in ("persona", "role", "workflow", "industry", "company_size"):
+                raw = context.get(key) if isinstance(context, dict) else None
+                items = raw if isinstance(raw, list) else [raw]
+                for item in items:
+                    text = str(item or "").strip()
+                    normalized = text.lower()
+                    if text and normalized not in seen:
+                        seen.add(normalized)
+                        values.append(text)
+        return values
+
+    @classmethod
+    def _cluster_verified_quotes(cls, examples: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        quotes: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for example in examples:
+            url = str(example.get("url") or "").strip()
+            raw_quotes = example.get("verified_quotes") or []
+            if not isinstance(raw_quotes, list):
+                raw_quotes = [raw_quotes]
+            for raw_quote in raw_quotes:
+                quote = str(raw_quote or "").strip()
+                normalized = quote.lower()
+                if quote and normalized not in seen:
+                    seen.add(normalized)
+                    quotes.append((quote, url))
+        return quotes
+
+    @classmethod
+    def _cluster_suggested_wedge(
+        cls,
+        cluster: dict[str, Any],
+        examples: list[dict[str, Any]],
+        *,
+        personas: list[str],
+        workarounds: list[str],
+    ) -> str:
+        explicit = str(cluster.get("suggested_wedge") or "").strip()
+        if explicit:
+            return explicit
+        workaround = workarounds[0] if workarounds else "the current manual workflow"
+        persona = personas[0] if personas else "the affected operator"
+        return f"Replace {workaround} with an auditable workflow focused on {persona}."
+
+    @classmethod
+    def _cluster_risks(
+        cls,
+        cluster: dict[str, Any],
+        examples: list[dict[str, Any]],
+        *,
+        independent_source_count: int,
+    ) -> str:
+        explicit = cluster.get("risks")
+        if isinstance(explicit, list):
+            rendered = "; ".join(str(item).strip() for item in explicit if str(item).strip())
+            if rendered:
+                return rendered
+        explicit_text = str(explicit or "").strip()
+        if explicit_text:
+            return explicit_text
+        failures = cls._cluster_text_values(examples, "incumbent_failure")
+        if failures:
+            return (
+                f"Validate that {failures[0]} is painful across more than "
+                f"{max(1, independent_source_count)} independent sources."
+            )
+        return "Watch for thin evidence, narrow buyer context, or unstable clustering before outreach."
+
+    @classmethod
+    def _cluster_score_breakdown(cls, cluster: dict[str, Any], examples: list[dict[str, Any]]) -> str:
+        components = cluster.get("score_components")
+        if not isinstance(components, dict):
+            for example in examples:
+                candidate = example.get("score_components")
+                if isinstance(candidate, dict) and candidate:
+                    components = candidate
+                    break
+        if not isinstance(components, dict) or not components:
+            return ""
+        parts: list[str] = []
+        for section_name in ("factors", "penalties"):
+            values = components.get(section_name)
+            if not isinstance(values, dict) or not values:
+                continue
+            rendered_values = []
+            for key, value in values.items():
+                if isinstance(value, (int, float)):
+                    rendered_values.append(f"{key}={float(value):.2f}")
+                else:
+                    rendered_values.append(f"{key}={value}")
+            if rendered_values:
+                parts.append(f"{section_name} {', '.join(rendered_values)}")
+        return "; ".join(parts)
 
     def _render_grouped_section(
         self,
