@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,6 +32,13 @@ async def _seed_candidate(
     source_created_ts: int | None = None,
     competitor_tags: list[str] | None = None,
     author_hash: str | None = None,
+    source: str = "reddit",
+    verified_evidence: list[dict] | None = None,
+    evidence_quality: str = "no_quote",
+    current_workaround: str = "",
+    incumbent_failure: str = "",
+    user_context_json: dict | None = None,
+    pain_type: str = "unknown",
 ):
     await db.insert_pain_point(
         subreddit="python",
@@ -50,8 +58,15 @@ async def _seed_candidate(
         opportunity_bucket=opportunity_bucket,
         buyer_authority_score=buyer_authority_score,
         opportunity_score=opportunity_score,
+        source=source,
         source_created_ts=source_created_ts,
         author_hash=author_hash,
+        verified_evidence=verified_evidence,
+        evidence_quality=evidence_quality,
+        current_workaround=current_workaround,
+        incumbent_failure=incumbent_failure,
+        user_context_json=user_context_json,
+        pain_type=pain_type,
     )
 
 
@@ -271,3 +286,197 @@ def test_compose_candidate_text_handles_invalid_competitor_json():
     assert "t" in text
     assert "s" in text
     assert "d" in text
+
+
+async def test_run_uses_injected_embedder_for_primary_cluster_embeddings(db):
+    await _seed_candidate(
+        db,
+        post_id="reddit:e1",
+        title="QuickBooks payout reconciliation",
+        summary="Finance ops cannot reconcile Stripe deposits.",
+        wtp=9,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "QuickBooks deposits do not match Stripe payouts", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:e2",
+        title="Stripe payout reconciliation",
+        summary="Finance ops exports CSVs for QuickBooks deposits.",
+        wtp=8,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "Stripe payout CSVs are required for QuickBooks", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+    )
+
+    class FakeEmbedder:
+        def __init__(self):
+            self.texts: list[str] = []
+
+        async def embed_many(self, texts: list[str]) -> list[list[float]]:
+            self.texts.extend(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+    fake_embedder = FakeEmbedder()
+    clusterer = MacroTrendClusterer(
+        db=db,
+        openrouter=None,
+        embedder=fake_embedder,
+        min_cluster_size=2,
+        similarity_threshold=0.9,
+        min_wtp=7,
+    )
+
+    result = await clusterer.run(window_days=30)
+
+    assert len(result.clusters) == 1
+    assert set(result.clusters[0].post_ids) == {"reddit:e1", "reddit:e2"}
+    assert len(fake_embedder.texts) == 2
+    assert all("quickbooks" in text.lower() and "stripe" in text.lower() for text in fake_embedder.texts)
+
+
+def test_compose_problem_statement_uses_verified_evidence_and_context():
+    text = MacroTrendClusterer._compose_problem_statement(
+        {
+            "title": "Generic manual spreadsheet problem",
+            "summary": "Manual spreadsheet workaround keeps happening.",
+            "verified_evidence_json": json.dumps(
+                [{"quote": "QuickBooks payout reconciliation breaks every Friday", "match_type": "exact"}]
+            ),
+            "current_workaround": "spreadsheet",
+            "incumbent_failure": "explicit_competitor_failure",
+            "user_context_json": json.dumps({"role": "finance ops", "tool_stack": ["QuickBooks", "Stripe"]}),
+            "competitor_tags": json.dumps(["quickbooks", "stripe"]),
+            "source": "reddit",
+            "subreddit": "accounting",
+            "niche_category": "FinOps",
+            "pain_type": "integration_gap",
+        }
+    ).lower()
+
+    assert "manual spreadsheet workaround" in text
+    assert "quickbooks payout reconciliation breaks every friday" in text
+    assert "spreadsheet" in text
+    assert "explicit_competitor_failure" in text
+    assert "finance ops" in text
+    assert "quickbooks" in text
+    assert "reddit" in text
+    assert "finops" in text
+    assert "integration_gap" in text
+
+
+async def test_run_clusters_problem_statements_not_generic_titles(db):
+    shared_title = "Manual spreadsheet problem"
+    shared_summary = "We still use a manual spreadsheet workaround and it keeps breaking."
+    await _seed_candidate(
+        db,
+        post_id="reddit:q1",
+        title=shared_title,
+        summary=shared_summary,
+        wtp=9,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "QuickBooks payout reconciliation breaks every Friday", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        current_workaround="spreadsheet",
+        incumbent_failure="explicit_competitor_failure",
+        user_context_json={"role": "finance ops", "tool_stack": ["QuickBooks", "Stripe"]},
+        pain_type="integration_gap",
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:q2",
+        title=shared_title,
+        summary=shared_summary,
+        wtp=8,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "Stripe fees do not reconcile to QuickBooks deposits", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        current_workaround="csv export",
+        incumbent_failure="explicit_competitor_failure",
+        user_context_json={"role": "finance ops", "tool_stack": ["QuickBooks", "Stripe"]},
+        pain_type="integration_gap",
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:s1",
+        title=shared_title,
+        summary=shared_summary,
+        wtp=9,
+        competitor_tags=["salesforce", "hubspot"],
+        verified_evidence=[{"quote": "Salesforce HubSpot attribution sync loses lead source", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        current_workaround="spreadsheet",
+        incumbent_failure="explicit_competitor_failure",
+        user_context_json={"role": "marketing ops", "tool_stack": ["Salesforce", "HubSpot"]},
+        pain_type="reporting_gap",
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:s2",
+        title=shared_title,
+        summary=shared_summary,
+        wtp=8,
+        competitor_tags=["salesforce", "hubspot"],
+        verified_evidence=[{"quote": "HubSpot campaign IDs disappear after Salesforce sync", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        current_workaround="spreadsheet",
+        incumbent_failure="explicit_competitor_failure",
+        user_context_json={"role": "marketing ops", "tool_stack": ["Salesforce", "HubSpot"]},
+        pain_type="reporting_gap",
+    )
+
+    clusterer = MacroTrendClusterer(db=db, openrouter=None, min_cluster_size=2, similarity_threshold=0.36, min_wtp=7)
+    result = await clusterer.run(window_days=30)
+
+    member_sets = {frozenset(cluster.post_ids) for cluster in result.clusters}
+    assert member_sets == {frozenset({"reddit:q1", "reddit:q2"}), frozenset({"reddit:s1", "reddit:s2"})}
+
+
+async def test_run_persists_cluster_quality_and_representative_examples(db):
+    await _seed_candidate(
+        db,
+        post_id="reddit:v1",
+        title="QuickBooks payout reconciliation",
+        summary="Finance ops manually reconcile payouts.",
+        wtp=9,
+        opportunity_score=88.0,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "QuickBooks payout reconciliation breaks every Friday", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        author_hash="author-a",
+        source="reddit",
+    )
+    await _seed_candidate(
+        db,
+        post_id="hn:v2",
+        title="Stripe deposits fail QuickBooks reconciliation",
+        summary="Finance teams export CSVs for the same payout mismatch.",
+        wtp=8,
+        opportunity_score=82.0,
+        competitor_tags=["quickbooks", "stripe"],
+        verified_evidence=[{"quote": "Stripe deposits never match QuickBooks", "match_type": "exact"}],
+        evidence_quality="exact_quote",
+        author_hash="author-b",
+        source="hn",
+    )
+
+    clusterer = MacroTrendClusterer(db=db, openrouter=None, min_cluster_size=2, similarity_threshold=0.2, min_wtp=7)
+    result = await clusterer.run(window_days=30)
+
+    assert len(result.clusters) == 1
+    cluster = result.clusters[0]
+    assert 0.0 < cluster.cluster_stability_score <= 1.0
+    assert cluster.verified_quote_count == 2
+    assert cluster.independent_source_count == 2
+    assert cluster.unique_author_count == 2
+    assert cluster.representative_examples[0]["post_id"] in {"reddit:v1", "hn:v2"}
+    assert cluster.normalized_frequency["unique_authors_count"] == 2
+
+    stored = await db.get_macro_clusters(result.run_id)
+    assert stored[0]["cluster_stability_score"] == cluster.cluster_stability_score
+    assert stored[0]["verified_quote_count"] == 2
+    assert stored[0]["independent_source_count"] == 2
+    assert stored[0]["unique_author_count"] == 2
+    assert stored[0]["representative_examples"][0]["post_id"] in {"reddit:v1", "hn:v2"}
+    assert stored[0]["normalized_frequency"]["unique_authors_count"] == 2

@@ -1,4 +1,7 @@
 import math
+import os
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -22,6 +25,24 @@ def _unit_vector(dim: int) -> list[float]:
     """Return a simple L2-normalised vector for testing."""
     return [1.0 / math.sqrt(dim)] * dim
 
+
+
+
+def test_stable_hash_embedding_is_pythonhashseed_independent():
+    script = (
+        "import json; "
+        "from embedder import _stable_hash_embed; "
+        "print(json.dumps(_stable_hash_embed('manual reconciliation payments invoices')[:16]))"
+    )
+    outputs = []
+    for seed in ("1", "2"):
+        env = dict(os.environ)
+        env["PYTHONHASHSEED"] = seed
+        outputs.append(
+            subprocess.check_output([sys.executable, "-c", script], cwd=os.getcwd(), env=env, text=True).strip()
+        )
+
+    assert outputs[0] == outputs[1]
 
 class TestOpenRouterEmbed:
     @respx.mock

@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import math
 import re
@@ -61,15 +62,32 @@ async def _provider_embed_raw(
     return response.json()["data"][0]["embedding"]
 
 
-def _bow_embed(text: str) -> list[float]:
-    """96-dim L2-normalised hash-based bag-of-words. Never raises."""
-    vector = [0.0] * _EMBED_DIM
-    for token in _TOKEN_RE.findall(text.lower()):
-        vector[hash(token) % _EMBED_DIM] += 1.0
+def _stable_hash_bucket(feature: str, dimension: int) -> tuple[int, float]:
+    digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+    raw = int.from_bytes(digest, "big", signed=False)
+    sign = 1.0 if raw & 1 else -1.0
+    return raw % dimension, sign
+
+
+def _stable_hash_embed(text: str, dimension: int = _EMBED_DIM) -> list[float]:
+    """Deterministic L2-normalised hash embedding independent of PYTHONHASHSEED."""
+    dimension = max(1, int(dimension))
+    vector = [0.0] * dimension
+    tokens = _TOKEN_RE.findall(text.lower())
+    features: list[tuple[str, float]] = [(token, 1.0) for token in tokens]
+    features.extend((f"{left}__{right}", 0.75) for left, right in zip(tokens, tokens[1:], strict=False))
+    for feature, weight in features:
+        index, sign = _stable_hash_bucket(feature, dimension)
+        vector[index] += sign * weight
     norm = math.sqrt(sum(v * v for v in vector))
     if norm == 0:
         return vector
     return [v / norm for v in vector]
+
+
+def _bow_embed(text: str) -> list[float]:
+    """96-dim deterministic hash-based bag-of-words fallback. Never raises."""
+    return _stable_hash_embed(text, dimension=_EMBED_DIM)
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -105,7 +123,9 @@ class Embedder:
 
     async def embed(self, text: str) -> list[float]:
         """Return an embedding vector. Always succeeds."""
-        if self._provider in {"bow", "hash", "disabled", "none"} or not self._api_key:
+        if self._provider in {"emergency_hash_bow", "bow", "hash", "disabled", "none"} or not self._api_key:
+            if self._provider == "emergency_hash_bow":
+                logger.warning("Using emergency deterministic hash embeddings; configure a real provider for production clustering")
             return _bow_embed(text)
 
         try:

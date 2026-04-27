@@ -190,6 +190,31 @@ class DailyDigestDocumentService:
                     f"{posts_frequency:.1f}/1k posts | {comments_frequency:.1f}/1k comments | "
                     f"Authors {authors_count} | Threads {threads_count}"
                 )
+            stability = float(cluster.get("cluster_stability_score") or 0.0)
+            verified_quote_count = int(cluster.get("verified_quote_count") or 0)
+            independent_source_count = int(cluster.get("independent_source_count") or 0)
+            quality_author_count = int(cluster.get("unique_author_count") or cluster.get("unique_authors_count") or 0)
+            if stability or verified_quote_count or independent_source_count or quality_author_count:
+                document.add_paragraph(
+                    f"Cluster quality: Stability {stability:.2f} | Verified quotes {verified_quote_count} | "
+                    f"Sources {independent_source_count} | Authors {quality_author_count}"
+                )
+            representative_examples = cluster.get("representative_examples") or []
+            if representative_examples:
+                examples_header = document.add_paragraph()
+                examples_header.add_run("Representative examples").bold = True
+                for example in representative_examples[:3]:
+                    if not isinstance(example, dict):
+                        continue
+                    title = str(example.get("title") or "Untitled").strip() or "Untitled"
+                    source = str(example.get("source") or "unknown").strip() or "unknown"
+                    document.add_paragraph(f"- {title} ({source})")
+                    quotes = example.get("verified_quotes") or []
+                    if quotes:
+                        document.add_paragraph(f"  Evidence: {str(quotes[0])}")
+                    url = str(example.get("url") or "").strip()
+                    if url:
+                        document.add_paragraph(f"  Link: {url}")
             document.add_paragraph(f"Dominant incumbents: {incumbents_text}")
 
     def _render_grouped_section(

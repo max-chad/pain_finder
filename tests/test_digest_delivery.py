@@ -80,6 +80,20 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
             "pain_mentions_per_1000_comments": 2.5,
             "unique_authors_count": 2,
             "unique_threads_count": 2,
+            "cluster_stability_score": 0.84,
+            "verified_quote_count": 2,
+            "independent_source_count": 2,
+            "unique_author_count": 2,
+            "representative_examples": [
+                {
+                    "post_id": "p1",
+                    "title": "Need better onboarding handoff",
+                    "verified_quotes": ["Sales teams still stitch data manually"],
+                    "source": "reddit",
+                    "url": "https://reddit.com/p1",
+                }
+            ],
+            "normalized_frequency": {"pain_mentions_per_1000_posts": 12.5, "unique_authors_count": 2},
         }
     ]
 
@@ -99,6 +113,10 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     assert "Canonical pain clusters" in xml
     assert "RevOps handoff breakage" in xml
     assert "Pain frequency 12.5/1k posts | 2.5/1k comments | Authors 2 | Threads 2" in xml
+    assert "Cluster quality: Stability 0.84 | Verified quotes 2 | Sources 2 | Authors 2" in xml
+    assert "Representative examples" in xml
+    assert "Need better onboarding handoff" in xml
+    assert "Sales teams still stitch data manually" in xml
     assert "Current opportunities" in xml
     assert "Needs Review / Weak signals" in xml
     assert "Evergreen pain index: 0" in xml

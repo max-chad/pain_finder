@@ -908,6 +908,18 @@ async def test_macro_tables_persist_and_query(db):
         median_buyer_authority=0.8,
         incumbents=["quickbooks", "jira"],
         avg_opportunity_score=84.5,
+        cluster_stability_score=0.84,
+        representative_examples=[
+            {
+                "post_id": "reddit:m1",
+                "title": "API timeout",
+                "verified_quotes": ["Timeouts break reconciliation"],
+            }
+        ],
+        verified_quote_count=2,
+        independent_source_count=1,
+        unique_author_count=2,
+        normalized_frequency={"pain_mentions_per_1000_posts": 4.0, "unique_authors_count": 2},
         latest_source_created_ts=1713772800,
         members=[("reddit:m1", 0.9), ("reddit:m2", 0.88)],
     )
@@ -924,6 +936,14 @@ async def test_macro_tables_persist_and_query(db):
     assert clusters[0]["fresh_post_count"] == 1
     assert clusters[0]["evergreen_post_count"] == 1
     assert clusters[0]["incumbents"] == ["quickbooks", "jira"]
+    assert clusters[0]["cluster_stability_score"] == 0.84
+    assert clusters[0]["verified_quote_count"] == 2
+    assert clusters[0]["independent_source_count"] == 1
+    assert clusters[0]["unique_author_count"] == 2
+    assert clusters[0]["representative_examples"] == [
+        {"post_id": "reddit:m1", "title": "API timeout", "verified_quotes": ["Timeouts break reconciliation"]}
+    ]
+    assert clusters[0]["normalized_frequency"] == {"pain_mentions_per_1000_posts": 4.0, "unique_authors_count": 2}
 
     by_post = await db.get_latest_macro_cluster_for_post("reddit:m1")
     assert by_post is not None
@@ -934,6 +954,9 @@ async def test_macro_tables_persist_and_query(db):
     assert len(latest_canonical) == 1
     assert latest_canonical[0]["canonical_key"] == "api-timeout-failures"
     assert latest_canonical[0]["avg_opportunity_score"] == 84.5
+    assert latest_canonical[0]["cluster_stability_score"] == 0.84
+    assert latest_canonical[0]["representative_examples"][0]["post_id"] == "reddit:m1"
+    assert latest_canonical[0]["normalized_frequency"]["unique_authors_count"] == 2
 
     candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
     ids = {row["post_id"] for row in candidates}

@@ -163,6 +163,7 @@ async def run() -> None:
     clusterer = MacroTrendClusterer(
         db=db,
         openrouter=openrouter,
+        embedder=embedder,
         min_cluster_size=config.TREND_MIN_CLUSTER_SIZE,
         similarity_threshold=config.TREND_CLUSTER_SIMILARITY,
         min_wtp=config.EXPORT_MIN_WTP,

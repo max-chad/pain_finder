@@ -233,6 +233,12 @@ CREATE TABLE IF NOT EXISTS macro_trend_clusters (
     weekly_delta INTEGER DEFAULT 0,
     source_activity_baseline_json TEXT DEFAULT '{}',
     latest_source_created_ts INTEGER,
+    cluster_stability_score REAL DEFAULT 0,
+    representative_examples_json TEXT DEFAULT '[]',
+    verified_quote_count INTEGER DEFAULT 0,
+    independent_source_count INTEGER DEFAULT 0,
+    unique_author_count INTEGER DEFAULT 0,
+    normalized_frequency_json TEXT DEFAULT '{}',
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
@@ -427,6 +433,12 @@ MACRO_TREND_CLUSTER_COLUMNS = {
     "weekly_delta": "INTEGER DEFAULT 0",
     "source_activity_baseline_json": "TEXT DEFAULT '{}'",
     "latest_source_created_ts": "INTEGER",
+    "cluster_stability_score": "REAL DEFAULT 0",
+    "representative_examples_json": "TEXT DEFAULT '[]'",
+    "verified_quote_count": "INTEGER DEFAULT 0",
+    "independent_source_count": "INTEGER DEFAULT 0",
+    "unique_author_count": "INTEGER DEFAULT 0",
+    "normalized_frequency_json": "TEXT DEFAULT '{}'",
 }
 
 COMMENT_COLUMNS = {
@@ -522,6 +534,12 @@ class Database:
             for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
                 await self._ensure_column("macro_trend_clusters", column_name, ddl)
             await self._mark_migration_applied(macro_frequency_migration)
+
+        wave6_cluster_foundations_migration = "2026_04_27_wave6_verified_cluster_foundations"
+        if not await self._is_migration_applied(wave6_cluster_foundations_migration):
+            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+                await self._ensure_column("macro_trend_clusters", column_name, ddl)
+            await self._mark_migration_applied(wave6_cluster_foundations_migration)
 
         comment_availability_migration = "2026_04_26_comment_availability_flags"
         if not await self._is_migration_applied(comment_availability_migration):
@@ -1589,6 +1607,12 @@ class Database:
         median_buyer_authority: float = 0.0,
         incumbents: list[str] | None = None,
         avg_opportunity_score: float = 0.0,
+        cluster_stability_score: float = 0.0,
+        representative_examples: list[dict[str, Any]] | None = None,
+        verified_quote_count: int = 0,
+        independent_source_count: int = 0,
+        unique_author_count: int = 0,
+        normalized_frequency: dict[str, Any] | None = None,
         pain_mentions_per_1000_posts: float = 0.0,
         pain_mentions_per_1000_comments: float = 0.0,
         unique_authors_count: int = 0,
@@ -1598,6 +1622,18 @@ class Database:
         latest_source_created_ts: int | None = None,
         members: list[tuple[str, float]],
     ) -> int:
+        normalized_frequency_payload = normalized_frequency or {
+            "pain_mentions_per_1000_posts": float(pain_mentions_per_1000_posts),
+            "pain_mentions_per_1000_comments": float(pain_mentions_per_1000_comments),
+            "unique_authors_count": int(unique_authors_count),
+            "unique_threads_count": int(unique_threads_count),
+            "weekly_delta": int(weekly_delta),
+            "source_activity_baseline": source_activity_baseline or {},
+        }
+        if unique_author_count <= 0:
+            unique_author_count = int(normalized_frequency_payload.get("unique_authors_count") or unique_authors_count or 0)
+        if unique_authors_count <= 0:
+            unique_authors_count = int(unique_author_count or normalized_frequency_payload.get("unique_authors_count") or 0)
         async with self._conn.execute(
             """
             INSERT INTO macro_trend_clusters (
@@ -1606,8 +1642,10 @@ class Database:
                 median_buyer_authority, incumbents_json, avg_opportunity_score,
                 pain_mentions_per_1000_posts, pain_mentions_per_1000_comments,
                 unique_authors_count, unique_threads_count, weekly_delta,
-                source_activity_baseline_json, latest_source_created_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_activity_baseline_json, latest_source_created_ts, cluster_stability_score,
+                representative_examples_json, verified_quote_count, independent_source_count,
+                unique_author_count, normalized_frequency_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1630,6 +1668,12 @@ class Database:
                 int(weekly_delta),
                 json.dumps(source_activity_baseline or {}, ensure_ascii=False),
                 latest_source_created_ts,
+                self._coerce_unit_float(cluster_stability_score),
+                json.dumps(representative_examples or [], ensure_ascii=False, default=str),
+                int(verified_quote_count),
+                int(independent_source_count),
+                int(unique_author_count),
+                json.dumps(normalized_frequency_payload, ensure_ascii=False, default=str),
             ),
         ) as cursor:
             cluster_id = int(cursor.lastrowid)
@@ -1645,6 +1689,42 @@ class Database:
         async with self._conn.execute("SELECT * FROM macro_trend_runs ORDER BY created_at DESC, id DESC LIMIT 1") as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    @staticmethod
+    def _decode_json_field(raw: Any, default: Any) -> Any:
+        if isinstance(raw, (dict, list)):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return default
+        return default
+
+    @classmethod
+    def _decode_macro_cluster_row(cls, row_dict: dict[str, Any]) -> dict[str, Any]:
+        incumbents = cls._decode_json_field(row_dict.get("incumbents_json"), [])
+        row_dict["incumbents"] = incumbents if isinstance(incumbents, list) else []
+        baseline = cls._decode_json_field(row_dict.get("source_activity_baseline_json"), {})
+        row_dict["source_activity_baseline"] = baseline if isinstance(baseline, dict) else {}
+        examples = cls._decode_json_field(row_dict.get("representative_examples_json"), [])
+        row_dict["representative_examples"] = examples if isinstance(examples, list) else []
+        normalized_frequency = cls._decode_json_field(row_dict.get("normalized_frequency_json"), {})
+        if not isinstance(normalized_frequency, dict) or not normalized_frequency:
+            normalized_frequency = {
+                "pain_mentions_per_1000_posts": float(row_dict.get("pain_mentions_per_1000_posts") or 0.0),
+                "pain_mentions_per_1000_comments": float(row_dict.get("pain_mentions_per_1000_comments") or 0.0),
+                "unique_authors_count": int(row_dict.get("unique_authors_count") or row_dict.get("unique_author_count") or 0),
+                "unique_threads_count": int(row_dict.get("unique_threads_count") or 0),
+                "weekly_delta": int(row_dict.get("weekly_delta") or 0),
+                "source_activity_baseline": row_dict["source_activity_baseline"],
+            }
+        row_dict["normalized_frequency"] = normalized_frequency
+        row_dict["unique_author_count"] = int(row_dict.get("unique_author_count") or row_dict.get("unique_authors_count") or normalized_frequency.get("unique_authors_count") or 0)
+        row_dict["cluster_stability_score"] = float(row_dict.get("cluster_stability_score") or 0.0)
+        row_dict["verified_quote_count"] = int(row_dict.get("verified_quote_count") or 0)
+        row_dict["independent_source_count"] = int(row_dict.get("independent_source_count") or 0)
+        return row_dict
 
     async def get_macro_clusters(self, run_id: int) -> list[dict[str, Any]]:
         async with self._conn.execute(
@@ -1664,24 +1744,7 @@ class Database:
             row_dict = dict(row)
             post_ids = row_dict.get("post_ids")
             row_dict["post_ids"] = post_ids.split(",") if isinstance(post_ids, str) and post_ids else []
-            incumbents_raw = row_dict.get("incumbents_json")
-            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
-                try:
-                    row_dict["incumbents"] = json.loads(incumbents_raw)
-                except json.JSONDecodeError:
-                    row_dict["incumbents"] = []
-            else:
-                row_dict["incumbents"] = []
-            baseline_raw = row_dict.get("source_activity_baseline_json")
-            if isinstance(baseline_raw, str) and baseline_raw.strip():
-                try:
-                    baseline = json.loads(baseline_raw)
-                except json.JSONDecodeError:
-                    baseline = {}
-                row_dict["source_activity_baseline"] = baseline if isinstance(baseline, dict) else {}
-            else:
-                row_dict["source_activity_baseline"] = {}
-            out.append(row_dict)
+            out.append(self._decode_macro_cluster_row(row_dict))
         return out
 
     async def get_latest_macro_cluster_for_post(self, post_id: str) -> dict[str, Any] | None:
@@ -1701,15 +1764,7 @@ class Database:
             if row is None:
                 return None
             row_dict = dict(row)
-            incumbents_raw = row_dict.get("incumbents_json")
-            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
-                try:
-                    row_dict["incumbents"] = json.loads(incumbents_raw)
-                except json.JSONDecodeError:
-                    row_dict["incumbents"] = []
-            else:
-                row_dict["incumbents"] = []
-            return row_dict
+            return self._decode_macro_cluster_row(row_dict)
 
     async def get_latest_canonical_clusters(
         self,
@@ -1746,24 +1801,7 @@ class Database:
             seen_keys.add(canonical_key)
             post_ids = row_dict.get("post_ids")
             row_dict["post_ids"] = post_ids.split(",") if isinstance(post_ids, str) and post_ids else []
-            incumbents_raw = row_dict.get("incumbents_json")
-            if isinstance(incumbents_raw, str) and incumbents_raw.strip():
-                try:
-                    row_dict["incumbents"] = json.loads(incumbents_raw)
-                except json.JSONDecodeError:
-                    row_dict["incumbents"] = []
-            else:
-                row_dict["incumbents"] = []
-            baseline_raw = row_dict.get("source_activity_baseline_json")
-            if isinstance(baseline_raw, str) and baseline_raw.strip():
-                try:
-                    baseline = json.loads(baseline_raw)
-                except json.JSONDecodeError:
-                    baseline = {}
-                row_dict["source_activity_baseline"] = baseline if isinstance(baseline, dict) else {}
-            else:
-                row_dict["source_activity_baseline"] = {}
-            out.append(row_dict)
+            out.append(self._decode_macro_cluster_row(row_dict))
             if len(out) >= limit:
                 break
         return out
