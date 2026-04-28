@@ -609,9 +609,9 @@ class OpenRouterClient:
                 ],
                 "store": False,
             }
-            token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
-            if token_limit is not None:
-                stream_kwargs["max_output_tokens"] = token_limit
+            # ChatGPT Codex backend rejects max_output_tokens on the Responses stream path.
+            # Keep caller-level token limits in cache fingerprints for other providers, but omit
+            # them from the Codex runtime request to avoid 400 Unsupported parameter errors.
             if self.reasoning_effort:
                 stream_kwargs["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
             with client.responses.stream(**stream_kwargs) as stream:

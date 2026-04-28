@@ -729,6 +729,8 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
         provider="openai-codex",
         api_base="https://chatgpt.com/backend-api/codex",
         reasoning_effort="high",
+        max_tokens=4096,
+        primary_max_output_tokens=321,
         budget_guard=budget,
     )
 
@@ -737,6 +739,7 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
     assert result is not None
     assert result.summary == "From stream"
     assert captured_kwargs["instructions"]
+    assert "max_output_tokens" not in captured_kwargs
     assert captured_kwargs["reasoning"]["effort"] == "high"
     client_headers = captured_kwargs["client_kwargs"]["default_headers"]
     assert client_headers["originator"] == "codex_cli_rs"
