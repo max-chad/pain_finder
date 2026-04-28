@@ -111,6 +111,12 @@ STAGED_PAIN_DETECTION_ENABLED = os.getenv("STAGED_PAIN_DETECTION_ENABLED", "0").
     "off",
     "no",
 }
+STAGED_EVIDENCE_EXTRACTION_ENABLED = os.getenv("STAGED_EVIDENCE_EXTRACTION_ENABLED", "0").strip().lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 MIN_CONFIDENCE_FOR_PROMOTION = float(os.getenv("MIN_CONFIDENCE_FOR_PROMOTION", "0.55"))
 PRIMARY_MAX_OUTPUT_TOKENS = int(os.getenv("PRIMARY_MAX_OUTPUT_TOKENS", str(min(1200, LLM_MAX_TOKENS))))
 DEEP_DIVE_WTP_THRESHOLD = int(os.getenv("DEEP_DIVE_WTP_THRESHOLD", "8"))

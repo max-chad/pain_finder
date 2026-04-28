@@ -6,7 +6,7 @@ from typing import Any
 
 from evidence import EvidenceSource, VerifiedEvidence, verify_evidence_spans
 from embedder import cosine_similarity
-from openrouter import AnalysisResult, OpenRouterClient, PainDetectionResult
+from openrouter import AnalysisResult, EvidenceExtractionResult, OpenRouterClient, PainDetectionResult
 from scraper import Post
 
 logger = logging.getLogger(__name__)
@@ -402,6 +402,7 @@ class Classifier:
         screen_max_llm_candidates_per_run: int = 0,
         semantic_candidate_queries: list[str] | None = None,
         staged_pain_detection_enabled: bool = False,
+        staged_evidence_extraction_enabled: bool = False,
     ):
         self.openrouter = openrouter
         self.dspy_parser = dspy_parser
@@ -411,6 +412,7 @@ class Classifier:
         self.screen_min_rule_score = max(0, int(screen_min_rule_score))
         self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
         self.staged_pain_detection_enabled = bool(staged_pain_detection_enabled)
+        self.staged_evidence_extraction_enabled = bool(staged_evidence_extraction_enabled)
         self.semantic_candidate_queries = [
             str(query).strip()
             for query in (semantic_candidate_queries or list(SEMANTIC_CANDIDATE_QUERIES))
@@ -808,26 +810,76 @@ class Classifier:
         }
 
     @staticmethod
-    def _attach_pain_detection_payload(signal: PainSignal, result: PainDetectionResult | None) -> PainSignal:
-        if result is None:
-            return signal
-        primary_payload: dict[str, Any]
-        if isinstance(signal.analysis_payload, dict):
-            primary_payload = dict(signal.analysis_payload)
-        else:
-            primary_payload = {
-                "summary": signal.summary,
-                "category": signal.category,
-                "severity": signal.severity,
-                "analysis_mode": signal.analysis_mode,
-            }
-        signal.analysis_payload = {
-            "pain_detection": Classifier._pain_detection_payload(result),
-            "primary": primary_payload,
+    def _evidence_extraction_payload(result: EvidenceExtractionResult) -> dict[str, Any]:
+        return {
+            "schema_version": "evidence_extraction_v1",
+            "evidence_spans": list(result.evidence_spans),
+            "confidence": result.confidence,
+            "uncertainty_reason": result.uncertainty_reason,
+            "needs_human_review": result.needs_human_review,
         }
+
+    @staticmethod
+    def _primary_payload_from_signal(signal: PainSignal) -> dict[str, Any]:
+        if isinstance(signal.analysis_payload, dict):
+            return dict(signal.analysis_payload)
+        return {
+            "summary": signal.summary,
+            "category": signal.category,
+            "severity": signal.severity,
+            "analysis_mode": signal.analysis_mode,
+        }
+
+    @staticmethod
+    def _attach_staged_payloads(
+        signal: PainSignal,
+        pain_detection_result: PainDetectionResult | None = None,
+        evidence_extraction_result: EvidenceExtractionResult | None = None,
+    ) -> PainSignal:
+        if pain_detection_result is None and evidence_extraction_result is None:
+            return signal
+        payload: dict[str, Any] = {}
+        if pain_detection_result is not None:
+            payload["pain_detection"] = Classifier._pain_detection_payload(pain_detection_result)
+        if evidence_extraction_result is not None:
+            payload["evidence_extraction"] = Classifier._evidence_extraction_payload(evidence_extraction_result)
+        payload["primary"] = Classifier._primary_payload_from_signal(signal)
+        signal.analysis_payload = payload
         return signal
 
-    def _signal_from_analysis(self, post: Post, result: AnalysisResult, mode: str) -> PainSignal:
+    @staticmethod
+    def _attach_pain_detection_payload(signal: PainSignal, result: PainDetectionResult | None) -> PainSignal:
+        return Classifier._attach_staged_payloads(signal, pain_detection_result=result)
+
+    def _select_evidence_spans(
+        self,
+        post: Post,
+        primary_spans: list[str],
+        evidence_extraction_result: EvidenceExtractionResult | None,
+    ) -> list[str]:
+        primary_spans = [span for span in primary_spans if isinstance(span, str) and span.strip()]
+        if evidence_extraction_result is None or not evidence_extraction_result.evidence_spans:
+            return primary_spans
+        staged_spans = [span for span in evidence_extraction_result.evidence_spans if isinstance(span, str) and span.strip()]
+        if not staged_spans:
+            return primary_spans
+
+        sources = self._evidence_sources(post)
+        primary_verified = verify_evidence_spans(primary_spans, sources) if primary_spans else []
+        staged_verified = verify_evidence_spans(staged_spans, sources)
+        primary_exact_count = sum(1 for item in primary_verified if item.match_type == "exact")
+        staged_exact_spans = [item.quote for item in staged_verified if item.match_type == "exact"]
+        if len(staged_exact_spans) > primary_exact_count:
+            return staged_exact_spans[:3]
+        return primary_spans
+
+    def _signal_from_analysis(
+        self,
+        post: Post,
+        result: AnalysisResult,
+        mode: str,
+        evidence_extraction_result: EvidenceExtractionResult | None = None,
+    ) -> PainSignal:
         pain_level = max(0, min(10, int(result.pain_level)))
         willingness_to_pay = max(0, min(10, int(result.willingness_to_pay)))
         intensity = max(0, min(10, int(result.intensity)))
@@ -835,11 +887,12 @@ class Classifier:
         urgency = max(0, min(10, int(result.urgency)))
         inferred_post_type = result.post_type or self._infer_post_type(post, category=result.category)
         if result.evidence_spans:
-            evidence_spans = list(result.evidence_spans)
+            primary_evidence_spans = list(result.evidence_spans)
         elif mode == "legacy_llm":
-            evidence_spans = self._extract_evidence_spans(post)
+            primary_evidence_spans = self._extract_evidence_spans(post)
         else:
-            evidence_spans = []
+            primary_evidence_spans = []
+        evidence_spans = self._select_evidence_spans(post, primary_evidence_spans, evidence_extraction_result)
         (
             verified_evidence,
             evidence_quality,
@@ -850,6 +903,18 @@ class Classifier:
         ) = self._verify_evidence(post, evidence_spans, result)
         first_handness = result.first_handness if result.first_handness != "unknown" else self._infer_first_handness(post, post_type=inferred_post_type)
         buyer_authority = result.buyer_authority if result.buyer_authority != "unknown" else self._infer_buyer_authority(post)
+        if evidence_extraction_result is not None:
+            analysis_payload: dict[str, Any] | None = dict(result.raw_payload) if isinstance(result.raw_payload, dict) else {}
+            analysis_payload.setdefault("summary", result.summary)
+            analysis_payload.setdefault("category", result.category)
+            analysis_payload.setdefault("severity", result.severity)
+            analysis_payload.setdefault("analysis_mode", mode)
+            analysis_payload.setdefault("evidence_spans", primary_evidence_spans)
+            analysis_payload.setdefault("evidence_quality", result.evidence_quality)
+            analysis_payload.setdefault("opportunity_type", result.opportunity_type)
+            analysis_payload.setdefault("confidence", result.confidence)
+        else:
+            analysis_payload = result.raw_payload
         return PainSignal(
             post=post,
             category=result.category,
@@ -861,7 +926,7 @@ class Classifier:
             niche_category=result.niche_category,
             competitor_tags=self._normalize_competitor_tags(result.competitor_tags),
             analysis_mode=mode,
-            analysis_payload=result.raw_payload,
+            analysis_payload=analysis_payload,
             post_type=inferred_post_type,
             first_handness=first_handness,
             buyer_authority=buyer_authority,
@@ -918,6 +983,7 @@ class Classifier:
         dspy_attempted = False
         primary_attempted = False
         pain_detection_result: PainDetectionResult | None = None
+        evidence_extraction_result: EvidenceExtractionResult | None = None
 
         if self.mode in {"b2b", "dual"}:
             if self.staged_pain_detection_enabled and self.openrouter is not None:
@@ -928,11 +994,22 @@ class Classifier:
                 )
                 if pain_detection_result is None or pain_detection_result.is_noise or not pain_detection_result.is_pain:
                     return None
+            if self.staged_evidence_extraction_enabled and self.openrouter is not None:
+                evidence_extraction_result = await self.openrouter.analyze_evidence_extraction(
+                    title=post.title,
+                    body=post.body,
+                    post_id=post.post_id,
+                )
             if self.dspy_parser is not None:
                 dspy_attempted = True
                 primary = await self.dspy_parser.analyze_post(post)
                 if primary:
-                    signal = self._signal_from_analysis(post, primary, mode="dspy_b2b")
+                    signal = self._signal_from_analysis(
+                        post,
+                        primary,
+                        mode="dspy_b2b",
+                        evidence_extraction_result=evidence_extraction_result,
+                    )
                     if b2c_noise:
                         signal.is_monetizable = False
                         signal.willingness_to_pay = 0
@@ -940,12 +1017,17 @@ class Classifier:
                         signal.niche_category = signal.niche_category or "B2C-noise"
                     if not signal.competitor_tags:
                         signal.competitor_tags = self._extract_competitor_hints(post)
-                    return self._attach_pain_detection_payload(signal, pain_detection_result)
+                    return self._attach_staged_payloads(signal, pain_detection_result, evidence_extraction_result)
             if self.openrouter:
                 primary_attempted = True
                 primary = await self.openrouter.analyze_post(title=post.title, body=post.body, post_id=post.post_id)
                 if primary:
-                    signal = self._signal_from_analysis(post, primary, mode="b2b")
+                    signal = self._signal_from_analysis(
+                        post,
+                        primary,
+                        mode="b2b",
+                        evidence_extraction_result=evidence_extraction_result,
+                    )
                     if b2c_noise:
                         signal.is_monetizable = False
                         signal.willingness_to_pay = 0
@@ -953,7 +1035,7 @@ class Classifier:
                         signal.niche_category = signal.niche_category or "B2C-noise"
                     if not signal.competitor_tags:
                         signal.competitor_tags = self._extract_competitor_hints(post)
-                    return self._attach_pain_detection_payload(signal, pain_detection_result)
+                    return self._attach_staged_payloads(signal, pain_detection_result, evidence_extraction_result)
             if self.mode == "b2b":
                 return None
 
@@ -975,7 +1057,12 @@ class Classifier:
                 fallback_reason=legacy_fallback_reason,
             )
             if legacy:
-                signal = self._signal_from_analysis(post, legacy, mode="legacy_llm")
+                signal = self._signal_from_analysis(
+                    post,
+                    legacy,
+                    mode="legacy_llm",
+                    evidence_extraction_result=evidence_extraction_result,
+                )
                 if b2c_noise:
                     signal.is_monetizable = False
                     signal.willingness_to_pay = 0
@@ -988,7 +1075,7 @@ class Classifier:
                     signal.niche_category = signal.niche_category or "Uncategorized"
                 if not signal.competitor_tags:
                     signal.competitor_tags = self._extract_competitor_hints(post)
-                return self._attach_pain_detection_payload(signal, pain_detection_result)
+                return self._attach_staged_payloads(signal, pain_detection_result, evidence_extraction_result)
 
         if self.mode == "b2b":
             return None
@@ -998,7 +1085,7 @@ class Classifier:
         evidence_spans = self._extract_evidence_spans(post)
         verified_evidence = verify_evidence_spans(evidence_spans, self._evidence_sources(post))
         evidence_quality, evidence_match_rate, uncertainty_reason, needs_human_review = self._evidence_quality(verified_evidence)
-        return PainSignal(
+        signal = PainSignal(
             post=post,
             category=category,
             summary=post.title[:120],
@@ -1020,6 +1107,7 @@ class Classifier:
             uncertainty_reason=uncertainty_reason,
             needs_human_review=needs_human_review,
         )
+        return self._attach_staged_payloads(signal, pain_detection_result, evidence_extraction_result)
 
     async def classify_batch(self, posts: list[Post]) -> list[PainSignal]:
         semaphore = asyncio.Semaphore(self.max_concurrency)

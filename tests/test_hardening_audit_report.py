@@ -49,6 +49,9 @@ def test_hardening_audit_report_covers_wave9_release_gates():
     assert "Wave 4.3a" in text
     assert "STAGED_PAIN_DETECTION_ENABLED" in text
     assert "pain_detection_v1" in text
+    assert "Wave 4.3b" in text
+    assert "STAGED_EVIDENCE_EXTRACTION_ENABLED" in text
+    assert "evidence_extraction_v1" in text
     assert "not a promotion surface" in text.lower()
     assert "eval/audit gate" in text.lower()
     assert "production-readiness claim" in text.lower()
@@ -71,6 +74,8 @@ def test_readme_documents_self_research_workflow():
         "run_manifest.json",
         "artifact inventory",
         "sha256",
+        "STAGED_EVIDENCE_EXTRACTION_ENABLED",
+        "evidence_extraction_v1",
     ]
     for marker in required_markers:
         assert marker in text
@@ -85,6 +90,8 @@ def test_eval_readme_documents_wave92_mvp_threshold_assessment():
         "run_manifest.json",
         "artifact inventory",
         "SHA-256",
+        "STAGED_EVIDENCE_EXTRACTION_ENABLED",
+        "evidence_extraction_v1",
         "not usable for MVP",
         "expanded benchmark",
         "explicit waiver",

@@ -106,6 +106,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             screen_max_llm_candidates_per_run=0,
             semantic_candidate_queries=None,
             staged_pain_detection_enabled=False,
+            staged_evidence_extraction_enabled=False,
         ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
@@ -115,6 +116,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
             self.semantic_candidate_queries = semantic_candidate_queries or []
             self.staged_pain_detection_enabled = staged_pain_detection_enabled
+            self.staged_evidence_extraction_enabled = staged_evidence_extraction_enabled
 
     class FakePipeline:
         instances = []
@@ -337,6 +339,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
     assert bot.classifier.screen_min_rule_score == main.config.SCREEN_MIN_RULE_SCORE
     assert bot.classifier.staged_pain_detection_enabled == main.config.STAGED_PAIN_DETECTION_ENABLED
+    assert bot.classifier.staged_evidence_extraction_enabled == main.config.STAGED_EVIDENCE_EXTRACTION_ENABLED
     assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)
     assert bot.classifier.dspy_parser.kwargs["provider"] == main.config.DSPY_PROVIDER
     assert FakeEmbedder.instances[0].kwargs["provider"] == main.config.EMBED_PROVIDER
@@ -446,6 +449,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             screen_max_llm_candidates_per_run=0,
             semantic_candidate_queries=None,
             staged_pain_detection_enabled=False,
+            staged_evidence_extraction_enabled=False,
         ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
@@ -455,6 +459,7 @@ async def test_run_executes_macro_hn_reviews_jobs(monkeypatch, tmp_path):
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
             self.semantic_candidate_queries = semantic_candidate_queries or []
             self.staged_pain_detection_enabled = staged_pain_detection_enabled
+            self.staged_evidence_extraction_enabled = staged_evidence_extraction_enabled
 
     class FakePipeline:
         instances = []
@@ -727,6 +732,7 @@ async def test_run_in_hermes_mode_skips_telegram_polling(monkeypatch, tmp_path):
             screen_max_llm_candidates_per_run=0,
             semantic_candidate_queries=None,
             staged_pain_detection_enabled=False,
+            staged_evidence_extraction_enabled=False,
         ):
             self.openrouter = openrouter
             self.dspy_parser = dspy_parser
@@ -736,6 +742,7 @@ async def test_run_in_hermes_mode_skips_telegram_polling(monkeypatch, tmp_path):
             self.screen_max_llm_candidates_per_run = screen_max_llm_candidates_per_run
             self.semantic_candidate_queries = semantic_candidate_queries or []
             self.staged_pain_detection_enabled = staged_pain_detection_enabled
+            self.staged_evidence_extraction_enabled = staged_evidence_extraction_enabled
 
     class FakePipeline:
         def __init__(self, **kwargs):

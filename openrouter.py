@@ -95,6 +95,7 @@ RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 PRIMARY_SCHEMA_VERSION = "primary_v3"
 LEGACY_SCHEMA_VERSION = "legacy_v2"
 PAIN_DETECTION_SCHEMA_VERSION = "pain_detection_v1"
+EVIDENCE_EXTRACTION_SCHEMA_VERSION = "evidence_extraction_v1"
 DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
 CLUSTER_SCHEMA_VERSION = "cluster_v1"
 GTM_SCHEMA_VERSION = "gtm_v1"
@@ -139,6 +140,31 @@ Rules:
 - Use none when there is no grounded business/workflow consequence.
 - confidence: number 0..1.
 - needs_human_review: true when evidence is ambiguous or confidence is low.
+
+Title: {title}
+Body: {body}
+"""
+
+
+EVIDENCE_EXTRACTION_PROMPT_TEMPLATE = """You are stage 2 of a B2B pain-signal classifier.
+
+Task:
+Extract only exact quote candidates that support a concrete business/workflow pain signal.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "evidence_spans": ["exact copied quote from the post or comments"],
+  "confidence": 0.8,
+  "uncertainty_reason": "",
+  "needs_human_review": false
+}
+
+Rules:
+- evidence_spans: array of 0..3 short exact quotes copied verbatim from the provided text, max 180 chars each.
+- Use an empty array when no exact quote is present.
+- Do not paraphrase, summarize, score, classify opportunity type, estimate willingness to pay, or infer buyer authority.
+- confidence: number 0..1 for quote extraction only.
+- needs_human_review: true when the exact quote support is ambiguous or missing.
 
 Title: {title}
 Body: {body}
@@ -334,6 +360,15 @@ class PainDetectionResult:
     is_noise: bool
     post_type: str
     operational_consequence: str
+    confidence: float
+    uncertainty_reason: str = ""
+    needs_human_review: bool = False
+    raw_payload: dict[str, Any] | None = None
+
+
+@dataclass
+class EvidenceExtractionResult:
+    evidence_spans: list[str]
     confidence: float
     uncertainty_reason: str = ""
     needs_human_review: bool = False
@@ -655,6 +690,30 @@ class OpenRouterClient:
         result = self._parse_pain_detection_result(payload)
         if result is None:
             logger.warning("OpenRouter pain detection output failed validation: %s", payload)
+        return result
+
+    async def analyze_evidence_extraction(
+        self,
+        title: str,
+        body: str,
+        post_id: str | None = None,
+    ) -> EvidenceExtractionResult | None:
+        prompt = EVIDENCE_EXTRACTION_PROMPT_TEMPLATE.replace("{title}", title).replace("{body}", body[:5000])
+        payload = await self._request_json_response(
+            prompt=prompt,
+            model=self.model,
+            operation="evidence_extraction",
+            post_id=post_id,
+            validate_payload=self._is_valid_evidence_extraction_payload,
+            schema_version=EVIDENCE_EXTRACTION_SCHEMA_VERSION,
+            candidate_stage="evidence_extraction",
+            max_output_tokens=700,
+        )
+        if payload is None:
+            return None
+        result = self._parse_evidence_extraction_result(payload)
+        if result is None:
+            logger.warning("OpenRouter evidence extraction output failed validation: %s", payload)
         return result
 
     async def analyze_post(self, title: str, body: str, post_id: str | None = None) -> AnalysisResult | None:
@@ -1067,6 +1126,9 @@ class OpenRouterClient:
     def _is_valid_pain_detection_payload(self, payload: dict[str, Any]) -> bool:
         return self._parse_pain_detection_result(payload) is not None
 
+    def _is_valid_evidence_extraction_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_evidence_extraction_result(payload) is not None
+
     def _is_valid_legacy_payload(self, payload: dict[str, Any]) -> bool:
         return self._parse_legacy_result(payload) is not None
 
@@ -1177,6 +1239,36 @@ class OpenRouterClient:
             is_noise=is_noise,
             post_type=post_type,
             operational_consequence=operational_consequence,
+            confidence=confidence,
+            uncertainty_reason=uncertainty_reason.strip()[:240],
+            needs_human_review=needs_human_review,
+            raw_payload=payload,
+        )
+
+    def _parse_evidence_extraction_result(self, payload: dict[str, Any]) -> EvidenceExtractionResult | None:
+        allowed_fields = {"evidence_spans", "confidence", "uncertainty_reason", "needs_human_review"}
+        if any(field not in allowed_fields for field in payload):
+            return None
+        evidence_spans = payload.get("evidence_spans")
+        confidence = self._required_confidence(payload, "confidence")
+        uncertainty_reason = payload.get("uncertainty_reason")
+        needs_human_review = payload.get("needs_human_review")
+
+        if not isinstance(evidence_spans, list) or len(evidence_spans) > 3:
+            return None
+        if any(not isinstance(item, str) for item in evidence_spans):
+            return None
+        if confidence is None:
+            return None
+        if not isinstance(uncertainty_reason, str):
+            return None
+        needs_human_review = self._coerce_review_flag(needs_human_review)
+        if needs_human_review is None:
+            return None
+
+        cleaned_evidence = [item.strip()[:180] for item in evidence_spans if item.strip()]
+        return EvidenceExtractionResult(
+            evidence_spans=cleaned_evidence,
             confidence=confidence,
             uncertainty_reason=uncertainty_reason.strip()[:240],
             needs_human_review=needs_human_review,

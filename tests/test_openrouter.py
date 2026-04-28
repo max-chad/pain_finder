@@ -4,7 +4,14 @@ from unittest.mock import AsyncMock
 import httpx
 import respx
 
-from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient, PainDetectionResult, ResearchActionResult
+from openrouter import (
+    AnalysisResult,
+    DeepDiveResult,
+    EvidenceExtractionResult,
+    OpenRouterClient,
+    PainDetectionResult,
+    ResearchActionResult,
+)
 
 
 def _primary_payload(**overrides):
@@ -61,6 +68,24 @@ def _pain_detection_content(**overrides):
     return json.dumps(_pain_detection_payload(**overrides))
 
 
+def _evidence_extraction_payload(**overrides):
+    payload = {
+        "evidence_spans": [
+            "We export CSVs every week",
+            "reconcile payouts manually between Stripe and QuickBooks",
+        ],
+        "confidence": 0.78,
+        "uncertainty_reason": "",
+        "needs_human_review": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _evidence_extraction_content(**overrides):
+    return json.dumps(_evidence_extraction_payload(**overrides))
+
+
 async def test_analyze_pain_detection_returns_stage_result_and_records_stage_usage(respx_mock):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
         return_value=httpx.Response(
@@ -110,6 +135,60 @@ def test_parse_pain_detection_rejects_invalid_or_ambiguous_gate_payload():
     assert client._parse_pain_detection_result(_pain_detection_payload(post_type="buying_question")) is None
     assert client._parse_pain_detection_result(_pain_detection_payload(operational_consequence="legal_compliance")) is None
     assert client._parse_pain_detection_result(_pain_detection_payload(is_pain=True, is_noise=True)) is None
+
+
+async def test_analyze_evidence_extraction_returns_quotes_and_records_stage_usage(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": _evidence_extraction_content(
+                                evidence_spans=["We export CSVs every week"],
+                                confidence=0.81,
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 150, "completion_tokens": 24},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_evidence_extraction(
+        title="How do you reconcile payouts?",
+        body="We export CSVs every week and reconcile payouts manually between Stripe and QuickBooks.",
+        post_id="reddit:evidence-stage",
+    )
+
+    assert isinstance(result, EvidenceExtractionResult)
+    assert result.evidence_spans == ["We export CSVs every week"]
+    assert result.confidence == 0.81
+    budget.ensure_can_spend.assert_awaited_once_with("evidence_extraction")
+    budget.record_usage.assert_awaited_once()
+    call_kwargs = budget.record_usage.await_args.kwargs
+    assert call_kwargs["operation"] == "evidence_extraction"
+    assert call_kwargs["schema_version"] == "evidence_extraction_v1"
+    assert call_kwargs["candidate_stage"] == "evidence_extraction"
+
+
+def test_parse_evidence_extraction_rejects_non_quote_or_promotion_payloads():
+    client = OpenRouterClient(api_key="key", model="m1")
+
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(evidence_spans="not-list")) is None
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(evidence_spans=[123])) is None
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(confidence="high")) is None
+    assert client._parse_evidence_extraction_result(
+        _evidence_extraction_payload(willingness_to_pay=9, opportunity_type="current_opportunity")
+    ) is None
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(promotion_eligible=True)) is None
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(opportunity_score=0.91)) is None
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(first_handness="first_hand")) is None
+    assert client._parse_evidence_extraction_result(_evidence_extraction_payload(post_type="solution_request")) is None
 
 
 async def test_analyze_returns_primary_b2b_result(respx_mock):

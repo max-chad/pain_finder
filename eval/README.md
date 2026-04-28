@@ -22,6 +22,7 @@ The parser has grown beyond simple keyword search:
 - typed post taxonomy,
 - cheap screening,
 - optional staged `pain_detection_v1` gating behind `STAGED_PAIN_DETECTION_ENABLED=0` by default,
+- optional staged `evidence_extraction_v1` quote-candidate extraction behind `STAGED_EVIDENCE_EXTRACTION_ENABLED=0` by default,
 - composite scoring,
 - verified evidence quality,
 - evidence-first promotion rules,

@@ -1,6 +1,6 @@
 # Pain Finder Hardening Audit — 2026-04-27
 
-Wave 9.1–9.4 plus Wave 4.3a audit for the external-review synthesis branch. This document is intentionally conservative: it records what is verified in the current PR, adds the Wave 9.2 threshold/manifest handoff, records the disabled-by-default staged pain-detection gate, and states what is still not proven enough for unattended production use.
+Wave 9.1–9.4 plus Wave 4.3a–4.3b audit for the external-review synthesis branch. This document is intentionally conservative: it records what is verified in the current PR, adds the Wave 9.2 threshold/manifest handoff, records the disabled-by-default staged classifier gates, and states what is still not proven enough for unattended production use.
 
 ## Branch / PR scope
 
@@ -11,7 +11,7 @@ Wave 9.1–9.4 plus Wave 4.3a audit for the external-review synthesis branch. Th
 - Base branch: `main`.
 - Audited head before this Wave 9 documentation slice: `e1e46b8 feat: add Wave 8 research action workflow`.
 - Wave 9.2 threshold-assessment head before this traceability slice: `e3327c8 feat: add Wave 9 MVP threshold assessment`.
-- Current PR state for the Wave 4.3a staged pain detection handoff: PR #6 remains open and draft; this branch stacks follow-up commits into the same PR.
+- Current PR state for the Wave 4.3b staged evidence extraction handoff: PR #6 remains open and draft; this branch stacks follow-up commits into the same PR.
 - Scope: branch/PR work only; this audit does not claim the same state is already merged to `main`.
 
 ## Validation evidence
@@ -82,6 +82,20 @@ Final Wave 4.3a staged pain detection validation for this slice:
 | static added-lines secret scan | local added-line scanner over unstaged diff | `0 findings` |
 | Independent review | unstaged-diff review of Wave 4.3a staged pain detection gate | pass; no blocking issues |
 
+Final Wave 4.3b staged evidence extraction validation for this slice:
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Targeted blocker regressions | `pytest -q tests/test_openrouter.py::test_parse_evidence_extraction_rejects_non_quote_or_promotion_payloads tests/test_classifier.py::test_staged_evidence_extraction_filters_unmatched_spans_from_selected_evidence` | `2 passed in 0.31s` |
+| Focused staged-evidence/docs suites | `pytest -q tests/test_hardening_audit_report.py tests/test_openrouter.py tests/test_classifier.py tests/test_config.py tests/test_main.py` | `74 passed in 1.82s` |
+| Full regression | `pytest --cov=. --cov-fail-under=80 -q` | `363 passed in 27.80s`, total coverage `90.63%` |
+| Lint | `ruff check .` | passed |
+| Syntax | `python -m compileall -q .` | passed |
+| Whitespace diff check | `git diff --check` | passed |
+| Compose config | Python `subprocess.run([...docker compose --ansi never -f docker-compose.yml config --quiet...], timeout=45)` wrapper | passed |
+| static added-lines secret scan | local added-line scanner over unstaged diff | `0 findings` |
+| Independent review | unstaged-diff re-review of Wave 4.3b staged evidence extraction after blocker fixes | pass; no blocking issues |
+
 ## Evaluation / MVP threshold status
 
 The checked-in eval harness is present and covers evidence, hard negatives, cluster/usefulness metrics, and baseline comparison. However, the branch should **not** be considered fully usable for unattended production use until the MVP thresholds are measured on a larger live/offline benchmark or explicitly waived by the user.
@@ -118,6 +132,7 @@ Verified in code/tests across Waves 2-8:
 - Competitor radar, source diversity, buyer/WTP intelligence, and research actions are all gated by promotion eligibility and verified evidence.
 - Wave 8.4 hardening fixed stale `representative_examples` leakage: report/digest/research-action text is rebuilt from current eligible DB rows, and stale persona/workaround/incumbent fields are not copied into primary surfaces.
 - Wave 4.3a adds optional `pain_detection_v1` staged gating behind `STAGED_PAIN_DETECTION_ENABLED=0` by default. Its payload is attached as diagnostic/manual-review metadata and is not a promotion surface; weak/no-evidence rows still require the existing verified-evidence path before any primary promotion.
+- Wave 4.3b adds optional `evidence_extraction_v1` quote-candidate extraction behind `STAGED_EVIDENCE_EXTRACTION_ENABLED=0` by default. It may improve selected evidence only when quotes verify exactly against source text; unmatched staged quotes remain diagnostic/manual-review metadata and are not a promotion surface.
 - OpenRouter research-action payloads must include anchored `evidence_post_ids`; malformed or unanchored action payloads fail closed.
 
 Residual risk: evidence quality is only as good as source availability and quote extraction. Deletions/removed posts remain handled as data-quality signals, not as proof of opportunity.
@@ -162,6 +177,7 @@ Checked-in `config.py` defaults relevant to fail-safe operation:
 - `SCRAPER_TOP_COMMENTS=5`, `SCRAPER_COMMENT_FETCH_CONCURRENCY=8`.
 - `SEMANTIC_CANDIDATE_QUERIES` contains 5 configured query prototypes.
 - `STAGED_PAIN_DETECTION_ENABLED=0` by default; the optional `pain_detection_v1` gate is disabled unless explicitly enabled.
+- `STAGED_EVIDENCE_EXTRACTION_ENABLED=0` by default; the optional `evidence_extraction_v1` quote-only stage is disabled unless explicitly enabled.
 
 Effective values observed in the local audit environment were stricter for several knobs (`DSPY_REDDIT_PARSER_ENABLED=False`, `LLM_MAX_CLASSIFICATIONS_PER_RUN=10`, `SCREEN_MAX_LLM_CANDIDATES_PER_RUN=10`, `DEEP_DIVE_WTP_THRESHOLD=10`, `SCRAPER_TOP_COMMENTS=0`). Those are local environment overrides, not checked-in defaults, and must not be treated as guarantees after deploy.
 

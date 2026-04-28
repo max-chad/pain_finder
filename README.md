@@ -119,6 +119,7 @@ Classifier/deep dive controls:
 - `CLASSIFIER_MAX_CONCURRENCY` (default `8`)
 - `LLM_MAX_CLASSIFICATIONS_PER_RUN` (default `0`, disabled when `0`; set >0 to cap classifications per analysis run)
 - `STAGED_PAIN_DETECTION_ENABLED` (default `0`; optional `pain_detection_v1` gate before primary LLM extraction, still bounded by existing screening/caps and not a promotion surface)
+- `STAGED_EVIDENCE_EXTRACTION_ENABLED` (default `0`; optional `evidence_extraction_v1` quote-only stage before primary LLM extraction; diagnostic/manual-review metadata only, and verified exact evidence gates remain authoritative)
 - `DEEP_DIVE_WTP_THRESHOLD` (default `8`)
 - `DEEP_DIVE_MAX_COMMENTS` (default `250`)
 

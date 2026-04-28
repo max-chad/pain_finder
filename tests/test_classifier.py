@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock
 
 from classifier import Classifier, extract_comment_market_signals
-from openrouter import AnalysisResult, PainDetectionResult
+from openrouter import AnalysisResult, EvidenceExtractionResult, PainDetectionResult
 from scraper import Post
 
 
@@ -95,6 +95,7 @@ async def test_dual_mode_uses_primary_b2b_result():
     assert result.incumbent_failure == "Shopify integration drops orders"
     assert result.opportunity_type == "current_opportunity"
     mock_llm.analyze_pain_detection.assert_not_awaited()
+    mock_llm.analyze_evidence_extraction.assert_not_awaited()
 
 
 async def test_staged_pain_detection_can_skip_noise_before_primary():
@@ -112,6 +113,7 @@ async def test_staged_pain_detection_can_skip_noise_before_primary():
 
     assert result is None
     mock_llm.analyze_pain_detection.assert_awaited_once()
+    mock_llm.analyze_evidence_extraction.assert_not_called()
     mock_llm.analyze_post.assert_not_called()
     mock_llm.analyze_legacy_post.assert_not_called()
 
@@ -163,6 +165,210 @@ async def test_staged_pain_detection_allows_pain_to_continue_and_attaches_gate_m
     assert result.analysis_payload["primary"]["summary"] == "Payout reconciliation burns time"
     mock_llm.analyze_pain_detection.assert_awaited_once()
     mock_llm.analyze_post.assert_awaited_once()
+
+
+async def test_staged_evidence_extraction_exact_quote_replaces_unverified_primary_span():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_evidence_extraction.return_value = EvidenceExtractionResult(
+        evidence_spans=["We export CSVs every week"],
+        confidence=0.82,
+    )
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Payout reconciliation burns time",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Finance Ops",
+        post_type="solution_request",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        pain_type="billing_payout",
+        expression_type="solution_request",
+        user_context="Founder reconciling payouts",
+        intensity=8,
+        frequency=7,
+        urgency=7,
+        current_workaround="Export CSV and reconcile manually",
+        incumbent_failure="Stripe and QuickBooks do not match payout records",
+        evidence_spans=["invented quote that is not in the source"],
+        evidence_quality="exact_quote",
+        opportunity_type="billing_ops",
+        confidence=0.8,
+    )
+    clf = Classifier(openrouter=mock_llm, mode="b2b", staged_evidence_extraction_enabled=True)
+    post = make_post(
+        title="How do you handle payout reconciliation?",
+        body="We export CSVs every week and reconcile payouts manually between Stripe and QuickBooks.",
+    )
+
+    result = await clf.classify(post)
+
+    assert result is not None
+    assert result.evidence_spans == ["We export CSVs every week"]
+    assert [item.match_type for item in result.verified_evidence] == ["exact"]
+    assert result.evidence_quality == "exact_quote"
+    assert result.analysis_payload["evidence_extraction"]["schema_version"] == "evidence_extraction_v1"
+    assert result.analysis_payload["evidence_extraction"]["evidence_spans"] == ["We export CSVs every week"]
+    assert result.analysis_payload["primary"]["evidence_spans"] == ["invented quote that is not in the source"]
+    mock_llm.analyze_evidence_extraction.assert_awaited_once()
+    mock_llm.analyze_post.assert_awaited_once()
+
+
+async def test_staged_evidence_extraction_unmatched_quote_stays_diagnostic_only():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_evidence_extraction.return_value = EvidenceExtractionResult(
+        evidence_spans=["paraphrased payout reconciliation pain"],
+        confidence=0.77,
+    )
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Unsupported high score",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="Finance Ops",
+        post_type="solution_request",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        pain_type="billing_payout",
+        expression_type="solution_request",
+        user_context="Founder reconciling payouts",
+        intensity=9,
+        frequency=8,
+        urgency=8,
+        current_workaround="Export CSV and reconcile manually",
+        incumbent_failure="Stripe and QuickBooks do not match payout records",
+        evidence_spans=["invented quote that is not in the source"],
+        evidence_quality="exact_quote",
+        opportunity_type="billing_ops",
+        confidence=0.9,
+    )
+    clf = Classifier(openrouter=mock_llm, mode="b2b", staged_evidence_extraction_enabled=True)
+    post = make_post(
+        title="How do you handle payout reconciliation?",
+        body="We export CSVs every week and reconcile payouts manually between Stripe and QuickBooks.",
+    )
+
+    result = await clf.classify(post)
+
+    assert result is not None
+    assert result.evidence_spans == ["invented quote that is not in the source"]
+    assert result.evidence_quality == "no_quote"
+    assert result.needs_human_review is True
+    assert "No verified evidence" in result.uncertainty_reason
+    assert result.analysis_payload["evidence_extraction"]["evidence_spans"] == ["paraphrased payout reconciliation pain"]
+    mock_llm.analyze_evidence_extraction.assert_awaited_once()
+
+
+async def test_staged_evidence_extraction_filters_unmatched_spans_from_selected_evidence():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_evidence_extraction.return_value = EvidenceExtractionResult(
+        evidence_spans=["We export CSVs every week", "paraphrased payout reconciliation pain"],
+        confidence=0.8,
+    )
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Payout reconciliation burns time",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Finance Ops",
+        post_type="solution_request",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        pain_type="billing_payout",
+        expression_type="solution_request",
+        user_context="Founder reconciling payouts",
+        intensity=8,
+        frequency=7,
+        urgency=7,
+        current_workaround="Export CSV and reconcile manually",
+        incumbent_failure="Stripe and QuickBooks do not match payout records",
+        evidence_spans=["invented quote that is not in the source"],
+        evidence_quality="exact_quote",
+        opportunity_type="billing_ops",
+        confidence=0.8,
+    )
+    clf = Classifier(openrouter=mock_llm, mode="b2b", staged_evidence_extraction_enabled=True)
+    post = make_post(
+        title="How do you handle payout reconciliation?",
+        body="We export CSVs every week and reconcile payouts manually between Stripe and QuickBooks.",
+    )
+
+    result = await clf.classify(post)
+
+    assert result is not None
+    assert result.evidence_spans == ["We export CSVs every week"]
+    assert [item.match_type for item in result.verified_evidence] == ["exact"]
+    assert result.evidence_match_rate == 1.0
+    assert result.needs_human_review is False
+    assert result.analysis_payload["evidence_extraction"]["evidence_spans"] == [
+        "We export CSVs every week",
+        "paraphrased payout reconciliation pain",
+    ]
+
+
+async def test_staged_evidence_extraction_runs_after_pain_detection_passes():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_pain_detection.return_value = PainDetectionResult(
+        is_pain=True,
+        is_noise=False,
+        post_type="solution_request",
+        operational_consequence="reconciliation",
+        confidence=0.84,
+    )
+    mock_llm.analyze_evidence_extraction.return_value = EvidenceExtractionResult(
+        evidence_spans=["Export CSV and reconcile manually every week"],
+        confidence=0.82,
+    )
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Payout reconciliation burns time",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Finance Ops",
+        post_type="solution_request",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        pain_type="billing_payout",
+        expression_type="solution_request",
+        user_context="Founder reconciling payouts",
+        intensity=8,
+        frequency=7,
+        urgency=7,
+        current_workaround="Export CSV and reconcile manually",
+        incumbent_failure="Stripe and QuickBooks do not match payout records",
+        evidence_spans=["invented quote that is not in the source"],
+        evidence_quality="exact_quote",
+        opportunity_type="billing_ops",
+        confidence=0.8,
+    )
+    clf = Classifier(
+        openrouter=mock_llm,
+        mode="dual",
+        staged_pain_detection_enabled=True,
+        staged_evidence_extraction_enabled=True,
+    )
+    post = make_post(
+        title="How do you handle payout reconciliation?",
+        body="Export CSV and reconcile manually every week between Stripe and QuickBooks.",
+    )
+
+    result = await clf.classify(post)
+
+    assert result is not None
+    assert result.analysis_payload["pain_detection"]["schema_version"] == "pain_detection_v1"
+    assert result.analysis_payload["evidence_extraction"]["schema_version"] == "evidence_extraction_v1"
+    assert result.evidence_spans == ["Export CSV and reconcile manually every week"]
+    assert mock_llm.method_calls[0][0] == "analyze_pain_detection"
+    assert mock_llm.method_calls[1][0] == "analyze_evidence_extraction"
+    assert mock_llm.method_calls[2][0] == "analyze_post"
 
 
 async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():
