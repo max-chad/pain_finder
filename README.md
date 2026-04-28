@@ -118,6 +118,7 @@ Classifier/deep dive controls:
 - `CLASSIFIER_MODE` (`legacy|b2b|dual`, default `dual`)
 - `CLASSIFIER_MAX_CONCURRENCY` (default `8`)
 - `LLM_MAX_CLASSIFICATIONS_PER_RUN` (default `0`, disabled when `0`; set >0 to cap classifications per analysis run)
+- `STAGED_PAIN_DETECTION_ENABLED` (default `0`; optional `pain_detection_v1` gate before primary LLM extraction, still bounded by existing screening/caps and not a promotion surface)
 - `DEEP_DIVE_WTP_THRESHOLD` (default `8`)
 - `DEEP_DIVE_MAX_COMMENTS` (default `250`)
 

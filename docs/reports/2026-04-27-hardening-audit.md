@@ -1,6 +1,6 @@
 # Pain Finder Hardening Audit — 2026-04-27
 
-Wave 9.1–9.4 audit for the external-review synthesis branch. This document is intentionally conservative: it records what is verified in the current PR, adds the Wave 9.2 threshold/manifest handoff, and states what is still not proven enough for unattended production use.
+Wave 9.1–9.4 plus Wave 4.3a audit for the external-review synthesis branch. This document is intentionally conservative: it records what is verified in the current PR, adds the Wave 9.2 threshold/manifest handoff, records the disabled-by-default staged pain-detection gate, and states what is still not proven enough for unattended production use.
 
 ## Branch / PR scope
 
@@ -11,7 +11,7 @@ Wave 9.1–9.4 audit for the external-review synthesis branch. This document is 
 - Base branch: `main`.
 - Audited head before this Wave 9 documentation slice: `e1e46b8 feat: add Wave 8 research action workflow`.
 - Wave 9.2 threshold-assessment head before this traceability slice: `e3327c8 feat: add Wave 9 MVP threshold assessment`.
-- Current PR state for the Wave 9.4 handoff: PR #6 remains open and draft; this branch stacks follow-up commits into the same PR.
+- Current PR state for the Wave 4.3a staged pain detection handoff: PR #6 remains open and draft; this branch stacks follow-up commits into the same PR.
 - Scope: branch/PR work only; this audit does not claim the same state is already merged to `main`.
 
 ## Validation evidence
@@ -69,6 +69,19 @@ Final Wave 9.4 eval packet integrity/provenance validation for this slice:
 | static added-lines secret scan | local added-line scanner over unstaged diff | `0 findings` |
 | Independent review | unstaged-diff review of Wave 9.4 artifact inventory/provenance packet | pass; no blocking issues |
 
+Final Wave 4.3a staged pain detection validation for this slice:
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Focused staged-pain/docs suites | `pytest -q tests/test_hardening_audit_report.py tests/test_openrouter.py tests/test_classifier.py tests/test_config.py tests/test_main.py` | `68 passed in 1.72s` |
+| Full regression | `pytest --cov=. --cov-fail-under=80 -q` | `357 passed in 28.02s`, total coverage `90.52%` |
+| Lint | `ruff check .` | passed |
+| Syntax | `python -m compileall -q .` | passed |
+| Whitespace diff check | `git diff --check` | passed |
+| Compose config | Python `subprocess.run([...docker compose --ansi never -f docker-compose.yml config --quiet...], timeout=45)` wrapper | passed |
+| static added-lines secret scan | local added-line scanner over unstaged diff | `0 findings` |
+| Independent review | unstaged-diff review of Wave 4.3a staged pain detection gate | pass; no blocking issues |
+
 ## Evaluation / MVP threshold status
 
 The checked-in eval harness is present and covers evidence, hard negatives, cluster/usefulness metrics, and baseline comparison. However, the branch should **not** be considered fully usable for unattended production use until the MVP thresholds are measured on a larger live/offline benchmark or explicitly waived by the user.
@@ -104,6 +117,7 @@ Verified in code/tests across Waves 2-8:
 - Feedback metadata is diagnostic/manual-review data and does not promote weak/no-evidence rows.
 - Competitor radar, source diversity, buyer/WTP intelligence, and research actions are all gated by promotion eligibility and verified evidence.
 - Wave 8.4 hardening fixed stale `representative_examples` leakage: report/digest/research-action text is rebuilt from current eligible DB rows, and stale persona/workaround/incumbent fields are not copied into primary surfaces.
+- Wave 4.3a adds optional `pain_detection_v1` staged gating behind `STAGED_PAIN_DETECTION_ENABLED=0` by default. Its payload is attached as diagnostic/manual-review metadata and is not a promotion surface; weak/no-evidence rows still require the existing verified-evidence path before any primary promotion.
 - OpenRouter research-action payloads must include anchored `evidence_post_ids`; malformed or unanchored action payloads fail closed.
 
 Residual risk: evidence quality is only as good as source availability and quote extraction. Deletions/removed posts remain handled as data-quality signals, not as proof of opportunity.
@@ -147,6 +161,7 @@ Checked-in `config.py` defaults relevant to fail-safe operation:
 - `DEEP_DIVE_WTP_THRESHOLD=8`, `DEEP_DIVE_MAX_COMMENTS=250`.
 - `SCRAPER_TOP_COMMENTS=5`, `SCRAPER_COMMENT_FETCH_CONCURRENCY=8`.
 - `SEMANTIC_CANDIDATE_QUERIES` contains 5 configured query prototypes.
+- `STAGED_PAIN_DETECTION_ENABLED=0` by default; the optional `pain_detection_v1` gate is disabled unless explicitly enabled.
 
 Effective values observed in the local audit environment were stricter for several knobs (`DSPY_REDDIT_PARSER_ENABLED=False`, `LLM_MAX_CLASSIFICATIONS_PER_RUN=10`, `SCREEN_MAX_LLM_CANDIDATES_PER_RUN=10`, `DEEP_DIVE_WTP_THRESHOLD=10`, `SCRAPER_TOP_COMMENTS=0`). Those are local environment overrides, not checked-in defaults, and must not be treated as guarantees after deploy.
 

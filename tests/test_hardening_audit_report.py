@@ -46,6 +46,10 @@ def test_hardening_audit_report_covers_wave9_release_gates():
     assert "run_manifest.json" in text
     assert "artifact inventory" in text.lower()
     assert "sha256" in text.lower()
+    assert "Wave 4.3a" in text
+    assert "STAGED_PAIN_DETECTION_ENABLED" in text
+    assert "pain_detection_v1" in text
+    assert "not a promotion surface" in text.lower()
     assert "eval/audit gate" in text.lower()
     assert "production-readiness claim" in text.lower()
     assert "pytest --cov=. --cov-fail-under=80 -q" in text

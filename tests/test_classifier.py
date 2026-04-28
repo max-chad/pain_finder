@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock
 
 from classifier import Classifier, extract_comment_market_signals
-from openrouter import AnalysisResult
+from openrouter import AnalysisResult, PainDetectionResult
 from scraper import Post
 
 
@@ -45,6 +45,13 @@ async def test_classify_skips_llm_for_zero_score():
 
 async def test_dual_mode_uses_primary_b2b_result():
     mock_llm = AsyncMock()
+    mock_llm.analyze_pain_detection.return_value = PainDetectionResult(
+        is_pain=False,
+        is_noise=True,
+        post_type="advice_thread",
+        operational_consequence="none",
+        confidence=0.91,
+    )
     mock_llm.analyze_post.return_value = AnalysisResult(
         category="complaint",
         summary="Users lose revenue",
@@ -87,6 +94,75 @@ async def test_dual_mode_uses_primary_b2b_result():
     assert result.current_workaround == "Manual order audit"
     assert result.incumbent_failure == "Shopify integration drops orders"
     assert result.opportunity_type == "current_opportunity"
+    mock_llm.analyze_pain_detection.assert_not_awaited()
+
+
+async def test_staged_pain_detection_can_skip_noise_before_primary():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_pain_detection.return_value = PainDetectionResult(
+        is_pain=False,
+        is_noise=True,
+        post_type="advice_thread",
+        operational_consequence="none",
+        confidence=0.88,
+    )
+    clf = Classifier(openrouter=mock_llm, mode="dual", staged_pain_detection_enabled=True)
+
+    result = await clf.classify(make_post(title="Spreadsheet template giveaway", body="No workflow pain here, just sharing."))
+
+    assert result is None
+    mock_llm.analyze_pain_detection.assert_awaited_once()
+    mock_llm.analyze_post.assert_not_called()
+    mock_llm.analyze_legacy_post.assert_not_called()
+
+
+async def test_staged_pain_detection_allows_pain_to_continue_and_attaches_gate_metadata():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_pain_detection.return_value = PainDetectionResult(
+        is_pain=True,
+        is_noise=False,
+        post_type="solution_request",
+        operational_consequence="reconciliation",
+        confidence=0.84,
+    )
+    mock_llm.analyze_post.return_value = AnalysisResult(
+        category="complaint",
+        summary="Payout reconciliation burns time",
+        severity="high",
+        is_monetizable=True,
+        pain_level=8,
+        willingness_to_pay=8,
+        niche_category="Finance Ops",
+        post_type="solution_request",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        pain_type="billing_payout",
+        expression_type="solution_request",
+        user_context="Founder reconciling payouts",
+        intensity=8,
+        frequency=7,
+        urgency=7,
+        current_workaround="Export CSV and reconcile manually",
+        incumbent_failure="Stripe and QuickBooks do not match payout records",
+        evidence_spans=["Export CSV and reconcile manually"],
+        evidence_quality="exact_quote",
+        opportunity_type="billing_ops",
+        confidence=0.8,
+    )
+    clf = Classifier(openrouter=mock_llm, mode="dual", staged_pain_detection_enabled=True)
+    post = make_post(
+        title="How do you handle payout reconciliation?",
+        body="Export CSV and reconcile manually every week between Stripe and QuickBooks.",
+    )
+
+    result = await clf.classify(post)
+
+    assert result is not None
+    assert result.analysis_payload["pain_detection"]["schema_version"] == "pain_detection_v1"
+    assert result.analysis_payload["pain_detection"]["operational_consequence"] == "reconciliation"
+    assert result.analysis_payload["primary"]["summary"] == "Payout reconciliation burns time"
+    mock_llm.analyze_pain_detection.assert_awaited_once()
+    mock_llm.analyze_post.assert_awaited_once()
 
 
 async def test_dual_mode_prefers_dspy_parser_before_openrouter_primary():

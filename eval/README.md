@@ -21,6 +21,7 @@ The parser has grown beyond simple keyword search:
 - source-age buckets,
 - typed post taxonomy,
 - cheap screening,
+- optional staged `pain_detection_v1` gating behind `STAGED_PAIN_DETECTION_ENABLED=0` by default,
 - composite scoring,
 - verified evidence quality,
 - evidence-first promotion rules,

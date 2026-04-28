@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import httpx
 import respx
 
-from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient, ResearchActionResult
+from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient, PainDetectionResult, ResearchActionResult
 
 
 def _primary_payload(**overrides):
@@ -41,6 +41,75 @@ def _primary_payload(**overrides):
 
 def _primary_content(**overrides):
     return json.dumps(_primary_payload(**overrides))
+
+
+def _pain_detection_payload(**overrides):
+    payload = {
+        "is_pain": True,
+        "is_noise": False,
+        "post_type": "solution_request",
+        "operational_consequence": "reconciliation",
+        "confidence": 0.82,
+        "uncertainty_reason": "",
+        "needs_human_review": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _pain_detection_content(**overrides):
+    return json.dumps(_pain_detection_payload(**overrides))
+
+
+async def test_analyze_pain_detection_returns_stage_result_and_records_stage_usage(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": _pain_detection_content(
+                                post_type="solution_request",
+                                operational_consequence="csv_spreadsheet_handoff",
+                                confidence=0.74,
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 140, "completion_tokens": 30},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_pain_detection(
+        title="How are you reconciling payout CSVs?",
+        body="Our ops team copy/pastes between Stripe and QuickBooks every week.",
+        post_id="reddit:stage",
+    )
+
+    assert isinstance(result, PainDetectionResult)
+    assert result.is_pain is True
+    assert result.is_noise is False
+    assert result.post_type == "solution_request"
+    assert result.operational_consequence == "csv_spreadsheet_handoff"
+    assert result.confidence == 0.74
+    budget.record_usage.assert_awaited_once()
+    call_kwargs = budget.record_usage.await_args.kwargs
+    assert call_kwargs["operation"] == "pain_detection"
+    assert call_kwargs["schema_version"] == "pain_detection_v1"
+    assert call_kwargs["candidate_stage"] == "pain_detection"
+
+
+def test_parse_pain_detection_rejects_invalid_or_ambiguous_gate_payload():
+    client = OpenRouterClient(api_key="key", model="m1")
+
+    assert client._parse_pain_detection_result(_pain_detection_payload(is_pain="yes")) is None
+    assert client._parse_pain_detection_result(_pain_detection_payload(post_type="buying_question")) is None
+    assert client._parse_pain_detection_result(_pain_detection_payload(operational_consequence="legal_compliance")) is None
+    assert client._parse_pain_detection_result(_pain_detection_payload(is_pain=True, is_noise=True)) is None
 
 
 async def test_analyze_returns_primary_b2b_result(respx_mock):

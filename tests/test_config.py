@@ -24,6 +24,7 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("SEMANTIC_CANDIDATE_MAX_POOL", "123")
     monkeypatch.setenv("SEMANTIC_CANDIDATE_MIN_SIMILARITY", "0.31")
     monkeypatch.setenv("SEMANTIC_CANDIDATE_QUERIES_JSON", '["manual reconciliation", "approval routing"]')
+    monkeypatch.setenv("STAGED_PAIN_DETECTION_ENABLED", "1")
     monkeypatch.setenv("MIN_CONFIDENCE_FOR_PROMOTION", "0.61")
     monkeypatch.setenv("PRIMARY_MAX_OUTPUT_TOKENS", "777")
     monkeypatch.setenv("DEEP_DIVE_WTP_THRESHOLD", "9")
@@ -79,6 +80,7 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.SEMANTIC_CANDIDATE_MAX_POOL == 123
     assert config_module.SEMANTIC_CANDIDATE_MIN_SIMILARITY == 0.31
     assert config_module.SEMANTIC_CANDIDATE_QUERIES == ["manual reconciliation", "approval routing"]
+    assert config_module.STAGED_PAIN_DETECTION_ENABLED is True
     assert config_module.MIN_CONFIDENCE_FOR_PROMOTION == 0.61
     assert config_module.PRIMARY_MAX_OUTPUT_TOKENS == 777
     assert config_module.DEEP_DIVE_WTP_THRESHOLD == 9

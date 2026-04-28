@@ -6,7 +6,7 @@ from typing import Any
 
 from evidence import EvidenceSource, VerifiedEvidence, verify_evidence_spans
 from embedder import cosine_similarity
-from openrouter import AnalysisResult, OpenRouterClient
+from openrouter import AnalysisResult, OpenRouterClient, PainDetectionResult
 from scraper import Post
 
 logger = logging.getLogger(__name__)
@@ -401,6 +401,7 @@ class Classifier:
         screen_min_rule_score: int = 1,
         screen_max_llm_candidates_per_run: int = 0,
         semantic_candidate_queries: list[str] | None = None,
+        staged_pain_detection_enabled: bool = False,
     ):
         self.openrouter = openrouter
         self.dspy_parser = dspy_parser
@@ -409,6 +410,7 @@ class Classifier:
         self.max_concurrency = max(1, max_concurrency)
         self.screen_min_rule_score = max(0, int(screen_min_rule_score))
         self.screen_max_llm_candidates_per_run = max(0, int(screen_max_llm_candidates_per_run))
+        self.staged_pain_detection_enabled = bool(staged_pain_detection_enabled)
         self.semantic_candidate_queries = [
             str(query).strip()
             for query in (semantic_candidate_queries or list(SEMANTIC_CANDIDATE_QUERIES))
@@ -792,6 +794,39 @@ class Classifier:
         needs_human_review = bool(result.needs_human_review) or needs_human_review
         return verified_evidence, evidence_quality, evidence_match_rate, confidence, uncertainty_reason, needs_human_review
 
+    @staticmethod
+    def _pain_detection_payload(result: PainDetectionResult) -> dict[str, Any]:
+        return {
+            "schema_version": "pain_detection_v1",
+            "is_pain": result.is_pain,
+            "is_noise": result.is_noise,
+            "post_type": result.post_type,
+            "operational_consequence": result.operational_consequence,
+            "confidence": result.confidence,
+            "uncertainty_reason": result.uncertainty_reason,
+            "needs_human_review": result.needs_human_review,
+        }
+
+    @staticmethod
+    def _attach_pain_detection_payload(signal: PainSignal, result: PainDetectionResult | None) -> PainSignal:
+        if result is None:
+            return signal
+        primary_payload: dict[str, Any]
+        if isinstance(signal.analysis_payload, dict):
+            primary_payload = dict(signal.analysis_payload)
+        else:
+            primary_payload = {
+                "summary": signal.summary,
+                "category": signal.category,
+                "severity": signal.severity,
+                "analysis_mode": signal.analysis_mode,
+            }
+        signal.analysis_payload = {
+            "pain_detection": Classifier._pain_detection_payload(result),
+            "primary": primary_payload,
+        }
+        return signal
+
     def _signal_from_analysis(self, post: Post, result: AnalysisResult, mode: str) -> PainSignal:
         pain_level = max(0, min(10, int(result.pain_level)))
         willingness_to_pay = max(0, min(10, int(result.willingness_to_pay)))
@@ -882,8 +917,17 @@ class Classifier:
         b2c_noise = self._is_likely_b2c_noise(post)
         dspy_attempted = False
         primary_attempted = False
+        pain_detection_result: PainDetectionResult | None = None
 
         if self.mode in {"b2b", "dual"}:
+            if self.staged_pain_detection_enabled and self.openrouter is not None:
+                pain_detection_result = await self.openrouter.analyze_pain_detection(
+                    title=post.title,
+                    body=post.body,
+                    post_id=post.post_id,
+                )
+                if pain_detection_result is None or pain_detection_result.is_noise or not pain_detection_result.is_pain:
+                    return None
             if self.dspy_parser is not None:
                 dspy_attempted = True
                 primary = await self.dspy_parser.analyze_post(post)
@@ -896,7 +940,7 @@ class Classifier:
                         signal.niche_category = signal.niche_category or "B2C-noise"
                     if not signal.competitor_tags:
                         signal.competitor_tags = self._extract_competitor_hints(post)
-                    return signal
+                    return self._attach_pain_detection_payload(signal, pain_detection_result)
             if self.openrouter:
                 primary_attempted = True
                 primary = await self.openrouter.analyze_post(title=post.title, body=post.body, post_id=post.post_id)
@@ -909,7 +953,7 @@ class Classifier:
                         signal.niche_category = signal.niche_category or "B2C-noise"
                     if not signal.competitor_tags:
                         signal.competitor_tags = self._extract_competitor_hints(post)
-                    return signal
+                    return self._attach_pain_detection_payload(signal, pain_detection_result)
             if self.mode == "b2b":
                 return None
 
@@ -944,7 +988,7 @@ class Classifier:
                     signal.niche_category = signal.niche_category or "Uncategorized"
                 if not signal.competitor_tags:
                     signal.competitor_tags = self._extract_competitor_hints(post)
-                return signal
+                return self._attach_pain_detection_payload(signal, pain_detection_result)
 
         if self.mode == "b2b":
             return None

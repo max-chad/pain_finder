@@ -94,10 +94,55 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = (0.5, 1.0)
 PRIMARY_SCHEMA_VERSION = "primary_v3"
 LEGACY_SCHEMA_VERSION = "legacy_v2"
+PAIN_DETECTION_SCHEMA_VERSION = "pain_detection_v1"
 DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
 CLUSTER_SCHEMA_VERSION = "cluster_v1"
 GTM_SCHEMA_VERSION = "gtm_v1"
 RESEARCH_ACTION_SCHEMA_VERSION = "research_action_v1"
+VALID_OPERATIONAL_CONSEQUENCES = {
+    "none",
+    "manual_work",
+    "reconciliation",
+    "sync_integration",
+    "csv_spreadsheet_handoff",
+    "approval_bottleneck",
+    "deadline_sla",
+    "billing_payout",
+    "support_escalation",
+    "tool_switching",
+    "unknown",
+}
+
+
+PAIN_DETECTION_PROMPT_TEMPLATE = """You are stage 1 of a B2B pain-signal classifier.
+
+Task:
+1. Decide whether the post contains a real business/workflow pain signal.
+2. Reject noise, announcements, consumer-only venting, vendor pitches, and generic advice with no operational consequence.
+3. Classify the post type and the main operational consequence only when grounded in the text.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "is_pain": true,
+  "is_noise": false,
+  "post_type": "solution_request",
+  "operational_consequence": "reconciliation",
+  "confidence": 0.8,
+  "uncertainty_reason": "",
+  "needs_human_review": false
+}
+
+Rules:
+- is_pain and is_noise are booleans and must not both be true.
+- post_type: one of first_person_pain, solution_request, founder_pitch, news_analysis, tool_comparison, advice_thread, vendor_rant.
+- operational_consequence: one of none, manual_work, reconciliation, sync_integration, csv_spreadsheet_handoff, approval_bottleneck, deadline_sla, billing_payout, support_escalation, tool_switching, unknown.
+- Use none when there is no grounded business/workflow consequence.
+- confidence: number 0..1.
+- needs_human_review: true when evidence is ambiguous or confidence is low.
+
+Title: {title}
+Body: {body}
+"""
 
 
 PRIMARY_PROMPT_TEMPLATE = """You are a B2B SaaS product manager analyzing Reddit pain signals.
@@ -281,6 +326,18 @@ class UsageEvent:
     provider: str | None = None
     request_path: str | None = None
     candidate_stage: str | None = None
+
+
+@dataclass
+class PainDetectionResult:
+    is_pain: bool
+    is_noise: bool
+    post_type: str
+    operational_consequence: str
+    confidence: float
+    uncertainty_reason: str = ""
+    needs_human_review: bool = False
+    raw_payload: dict[str, Any] | None = None
 
 
 @dataclass
@@ -575,6 +632,30 @@ class OpenRouterClient:
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
+
+    async def analyze_pain_detection(
+        self,
+        title: str,
+        body: str,
+        post_id: str | None = None,
+    ) -> PainDetectionResult | None:
+        prompt = PAIN_DETECTION_PROMPT_TEMPLATE.replace("{title}", title).replace("{body}", body[:3500])
+        payload = await self._request_json_response(
+            prompt=prompt,
+            model=self.model,
+            operation="pain_detection",
+            post_id=post_id,
+            validate_payload=self._is_valid_pain_detection_payload,
+            schema_version=PAIN_DETECTION_SCHEMA_VERSION,
+            candidate_stage="pain_detection",
+            max_output_tokens=600,
+        )
+        if payload is None:
+            return None
+        result = self._parse_pain_detection_result(payload)
+        if result is None:
+            logger.warning("OpenRouter pain detection output failed validation: %s", payload)
+        return result
 
     async def analyze_post(self, title: str, body: str, post_id: str | None = None) -> AnalysisResult | None:
         prompt = PRIMARY_PROMPT_TEMPLATE.replace("{title}", title).replace("{body}", body[:5000])
@@ -983,6 +1064,9 @@ class OpenRouterClient:
     def _is_valid_primary_payload(self, payload: dict[str, Any]) -> bool:
         return self._parse_primary_result(payload) is not None
 
+    def _is_valid_pain_detection_payload(self, payload: dict[str, Any]) -> bool:
+        return self._parse_pain_detection_result(payload) is not None
+
     def _is_valid_legacy_payload(self, payload: dict[str, Any]) -> bool:
         return self._parse_legacy_result(payload) is not None
 
@@ -1062,6 +1146,42 @@ class OpenRouterClient:
         if not math.isfinite(numeric):
             return None
         return round(max(0.0, min(1.0, numeric)), 3)
+
+    def _parse_pain_detection_result(self, payload: dict[str, Any]) -> PainDetectionResult | None:
+        is_pain = payload.get("is_pain")
+        is_noise = payload.get("is_noise")
+        post_type = payload.get("post_type")
+        operational_consequence = payload.get("operational_consequence")
+        confidence = self._required_confidence(payload, "confidence")
+        uncertainty_reason = payload.get("uncertainty_reason")
+        needs_human_review = payload.get("needs_human_review")
+
+        if not isinstance(is_pain, bool) or not isinstance(is_noise, bool):
+            return None
+        if is_pain and is_noise:
+            return None
+        if post_type not in VALID_POST_TYPES:
+            return None
+        if operational_consequence not in VALID_OPERATIONAL_CONSEQUENCES:
+            return None
+        if confidence is None:
+            return None
+        if not isinstance(uncertainty_reason, str):
+            return None
+        needs_human_review = self._coerce_review_flag(needs_human_review)
+        if needs_human_review is None:
+            return None
+
+        return PainDetectionResult(
+            is_pain=is_pain,
+            is_noise=is_noise,
+            post_type=post_type,
+            operational_consequence=operational_consequence,
+            confidence=confidence,
+            uncertainty_reason=uncertainty_reason.strip()[:240],
+            needs_human_review=needs_human_review,
+            raw_payload=payload,
+        )
 
     def _parse_primary_result(self, payload: dict[str, Any]) -> AnalysisResult | None:
         category = payload.get("category")

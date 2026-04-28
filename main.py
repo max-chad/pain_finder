@@ -140,6 +140,7 @@ async def run() -> None:
         screen_min_rule_score=config.SCREEN_MIN_RULE_SCORE,
         screen_max_llm_candidates_per_run=config.SCREEN_MAX_LLM_CANDIDATES_PER_RUN,
         semantic_candidate_queries=config.SEMANTIC_CANDIDATE_QUERIES,
+        staged_pain_detection_enabled=config.STAGED_PAIN_DETECTION_ENABLED,
     )
     pipeline = AnalysisPipeline(
         scraper=scraper,
