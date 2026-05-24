@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -27,6 +28,13 @@ if TYPE_CHECKING:
     from deduplicator import Deduplicator
 
 logger = logging.getLogger(__name__)
+ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
+    stem = ARTIFACT_STEM_RE.sub("_", str(raw or "").strip())
+    stem = stem.strip("._-")
+    return stem or default
 
 
 @dataclass
@@ -469,7 +477,8 @@ class AnalysisPipeline:
     async def _write_report(self, *, run_label: str, payload: list[dict[str, Any]]) -> str:
         os.makedirs(self.reports_dir, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-        json_path = os.path.join(self.reports_dir, f"{run_label}_{timestamp}.json")
+        safe_run_label = safe_artifact_stem(run_label, default="report")
+        json_path = os.path.join(self.reports_dir, f"{safe_run_label}_{timestamp}.json")
         tmp_path = f"{json_path}.tmp"
         try:
             with open(tmp_path, "w", encoding="utf-8") as report_file:

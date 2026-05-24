@@ -293,6 +293,23 @@ async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_p
     assert tmp_files == []
 
 
+async def test_write_report_sanitizes_run_label_path(db, tmp_path):
+    reports_dir = tmp_path / "reports"
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        reports_dir=str(reports_dir),
+    )
+
+    json_path = await pipeline._write_report(run_label="../bad/path", payload=[])
+
+    assert json_path.startswith(str(reports_dir))
+    assert ".." not in json_path.replace(str(reports_dir), "")
+    assert "bad_path" in json_path
+    assert (reports_dir).exists()
+
+
 async def test_run_deep_dive_manual_success(db, tmp_path):
     await db.insert_pain_point(
         subreddit="python",

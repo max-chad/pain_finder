@@ -153,3 +153,10 @@
 - Change: Include microseconds in export CSV and daily digest `.docx` filenames.
 - Verification: Added filename pattern assertions covering microsecond-resolution export and digest artifacts; full gates are run after this note.
 - Impact: Preserves distinct report artifacts during rapid repeated runs and makes operator/debug evidence less ambiguous.
+
+## 2026-05-25 - Report artifact scopes are filename-safe
+
+- Reason: report and CSV artifact filenames included run labels/scopes directly, so an untrusted or corrupted scheduler/source scope containing path separators could escape `REPORTS_DIR`.
+- Change: Sanitize pipeline report run labels and export scopes into safe filename stems before writing local artifacts.
+- Verification: Added targeted pipeline and export tests proving path-like scopes stay under the configured reports directory; full gates are run after this note.
+- Impact: Hardens local report storage against path traversal and keeps artifact names predictable for operators.

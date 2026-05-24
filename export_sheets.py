@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
+ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
+    stem = ARTIFACT_STEM_RE.sub("_", str(raw or "").strip())
+    stem = stem.strip("._-")
+    return stem or default
 
 
 def _safe_spreadsheet_cell(value: Any) -> Any:
@@ -62,7 +70,7 @@ class ExportService:
         )
 
         os.makedirs(self.reports_dir, exist_ok=True)
-        scope = subreddit or "all"
+        scope = _safe_artifact_stem(subreddit or "all", default="all")
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         csv_path = os.path.join(self.reports_dir, f"export_{scope}_{timestamp}.csv")
 

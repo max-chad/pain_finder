@@ -59,6 +59,18 @@ async def test_export_service_works_without_sheets_config(tmp_path):
     assert result.sheet_url is None
 
 
+async def test_export_service_sanitizes_scope_filename(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = []
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    result = await service.export(subreddit="../bad/scope")
+
+    assert result.csv_path.startswith(str(tmp_path))
+    assert ".." not in result.csv_path.replace(str(tmp_path), "")
+    assert "bad_scope" in result.csv_path
+
+
 async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
     db = AsyncMock()
     db.list_export_rows.return_value = [
