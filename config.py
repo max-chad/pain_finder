@@ -40,6 +40,14 @@ def _default_max_tokens(provider: str, model: str) -> str:
     return "4000"
 
 
+def _choice_env(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower() or default
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise ValueError(f"{name} must be one of: {allowed}")
+    return value
+
+
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 
@@ -76,7 +84,7 @@ DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("DEDUP_SIMILARITY_THRESHOLD", "0.88
 DB_PATH = os.getenv("DB_PATH", "pain_finder.db")
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 
-CLASSIFIER_MODE = os.getenv("CLASSIFIER_MODE", "dual").strip().lower()
+CLASSIFIER_MODE = _choice_env("CLASSIFIER_MODE", "dual", {"legacy", "b2b", "dual"})
 CLASSIFIER_MAX_CONCURRENCY = int(os.getenv("CLASSIFIER_MAX_CONCURRENCY", "8"))
 LLM_MAX_CLASSIFICATIONS_PER_RUN = int(os.getenv("LLM_MAX_CLASSIFICATIONS_PER_RUN", "0"))
 SCREEN_MIN_RULE_SCORE = int(os.getenv("SCREEN_MIN_RULE_SCORE", "2"))
@@ -108,10 +116,10 @@ GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
 GOOGLE_SHEETS_WORKSHEET_PREFIX = os.getenv("GOOGLE_SHEETS_WORKSHEET_PREFIX", "pain_finder")
 
-APP_MODE = os.getenv("APP_MODE", "telegram").strip().lower() or "telegram"
+APP_MODE = _choice_env("APP_MODE", "telegram", {"telegram", "hermes"})
 DIGEST_DELIVERY_ENABLED = os.getenv("DIGEST_DELIVERY_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
 DIGEST_HOURS = int(os.getenv("DIGEST_HOURS", "24"))
-DIGEST_GROUP_BY = os.getenv("DIGEST_GROUP_BY", "niche").strip().lower() or "niche"
+DIGEST_GROUP_BY = _choice_env("DIGEST_GROUP_BY", "niche", {"niche", "source", "category"})
 DIGEST_HOUR_UTC = int(os.getenv("DIGEST_HOUR_UTC", "9"))
 DIGEST_MINUTE_UTC = int(os.getenv("DIGEST_MINUTE_UTC", "0"))
 DIGEST_MIN_WTP = int(os.getenv("DIGEST_MIN_WTP", str(EXPORT_MIN_WTP)))

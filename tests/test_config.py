@@ -109,3 +109,24 @@ def test_dspy_parser_is_disabled_by_default(monkeypatch):
 
     assert config_module.DSPY_REDDIT_PARSER_ENABLED is False
 
+
+def test_config_rejects_invalid_enum_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("APP_MODE", "telegrm", "APP_MODE must be one of: hermes, telegram"),
+        ("CLASSIFIER_MODE", "strict", "CLASSIFIER_MODE must be one of: b2b, dual, legacy"),
+        ("DIGEST_GROUP_BY", "team", "DIGEST_GROUP_BY must be one of: category, niche, source"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+

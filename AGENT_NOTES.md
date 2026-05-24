@@ -125,3 +125,10 @@
 - Change: Include temperature and the effective token limit in the cache fingerprint.
 - Verification: Added a targeted cache-key test covering temperature and token-limit differences; full gates are run after this note.
 - Impact: Prevents config changes from silently reusing incompatible cached LLM responses during collection, deep dives, clustering, and GTM generation.
+
+## 2026-05-25 - Runtime enum env fails fast
+
+- Reason: invalid `APP_MODE`, `CLASSIFIER_MODE`, or `DIGEST_GROUP_BY` values could silently fall back or be treated as a different runtime path, including disabling Telegram polling for an `APP_MODE` typo.
+- Change: Validate those documented enum environment variables during config import and raise a clear `ValueError` on invalid values.
+- Verification: Added a config test covering invalid values for all three enum env vars; full gates are run after this note.
+- Impact: Catches deployment typos before startup instead of running the collector in an unintended mode.
