@@ -111,3 +111,10 @@
 - Change: Track attempted, successful, and failed HN keyword queries; preserve partial-success behavior, but raise when every attempted query fails.
 - Verification: Added a targeted HN scraper test for all-keyword HTTP failure; full gates are run after this note.
 - Impact: Improves source outage observability and prevents full HN collection failures from being mistaken for no new data.
+
+## 2026-05-25 - Review full-target failure is explicit
+
+- Reason: review ingestion converted every HTTP fetch failure into an empty result, so a full review-source outage looked identical to accessible pages with no negative reviews.
+- Change: Raise `ReviewFetchError` for target HTTP failures, keep partial target success in `fetch_many_targets`, and raise only when every enabled target fails.
+- Verification: Added targeted review scraper tests for partial target failure and all-target failure; full gates are run after this note.
+- Impact: Improves scheduled review ingestion diagnostics while preserving valid empty accessible pages as no-op results.

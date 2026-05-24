@@ -23,6 +23,10 @@ class ReviewTarget:
     enabled: bool = True
 
 
+class ReviewFetchError(RuntimeError):
+    pass
+
+
 class ReviewScraper:
     def __init__(self, user_agent: str = "pain_finder/1.0"):
         self.user_agent = user_agent
@@ -83,9 +87,23 @@ class ReviewScraper:
         max_per_target: int,
     ) -> list[Post]:
         all_posts: list[Post] = []
+        attempted_targets = 0
+        successful_targets = 0
+        failed_targets: list[str] = []
         for target in targets:
-            target_posts = await self.fetch_negative_reviews(target=target, max_reviews=max_per_target)
+            if not target.enabled or max_per_target <= 0:
+                continue
+            attempted_targets += 1
+            try:
+                target_posts = await self.fetch_negative_reviews(target=target, max_reviews=max_per_target)
+            except ReviewFetchError as exc:
+                failed_targets.append(target.name)
+                logger.warning("Review target failed for %s: %s", target.name, exc)
+                continue
+            successful_targets += 1
             all_posts.extend(target_posts)
+        if attempted_targets and failed_targets and successful_targets == 0:
+            raise RuntimeError(f"Review fetch failed for all {attempted_targets} enabled targets")
         return all_posts
 
     @staticmethod
@@ -114,7 +132,7 @@ class ReviewScraper:
                 return response.text
         except httpx.HTTPError as e:
             logger.warning("Review scraper failed for %s: %s", url, e)
-            return ""
+            raise ReviewFetchError(f"Review scraper failed for {url}") from e
 
     def _parse_appstore_reviews(self, html: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")

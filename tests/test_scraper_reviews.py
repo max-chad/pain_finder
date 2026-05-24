@@ -1,6 +1,8 @@
 from unittest.mock import AsyncMock
 
-from scraper_reviews import ReviewScraper, ReviewTarget
+import pytest
+
+from scraper_reviews import ReviewFetchError, ReviewScraper, ReviewTarget
 
 
 def test_parse_appstore_reviews_from_ld_json():
@@ -131,6 +133,46 @@ async def test_fetch_many_targets_combines_results(monkeypatch):
     ]
     rows = await scraper.fetch_many_targets(targets=targets, max_per_target=2)
     assert len(rows) == 2
+
+
+async def test_fetch_many_targets_tolerates_partial_target_failure(monkeypatch):
+    scraper = ReviewScraper()
+    monkeypatch.setattr(
+        scraper,
+        "fetch_negative_reviews",
+        AsyncMock(
+            side_effect=[
+                ReviewFetchError("temporary outage"),
+                [
+                    type("P", (), {"post_id": "review:g2:x:2"})(),
+                ],
+            ]
+        ),
+    )
+    targets = [
+        ReviewTarget(site="g2", name="A", url="u1"),
+        ReviewTarget(site="g2", name="B", url="u2"),
+    ]
+
+    rows = await scraper.fetch_many_targets(targets=targets, max_per_target=2)
+
+    assert len(rows) == 1
+
+
+async def test_fetch_many_targets_raises_when_all_enabled_targets_fail(monkeypatch):
+    scraper = ReviewScraper()
+    monkeypatch.setattr(
+        scraper,
+        "fetch_negative_reviews",
+        AsyncMock(side_effect=[ReviewFetchError("down"), ReviewFetchError("still down")]),
+    )
+    targets = [
+        ReviewTarget(site="g2", name="A", url="u1"),
+        ReviewTarget(site="g2", name="B", url="u2"),
+    ]
+
+    with pytest.raises(RuntimeError, match="Review fetch failed for all 2 enabled targets"):
+        await scraper.fetch_many_targets(targets=targets, max_per_target=2)
 
 
 def test_parse_rating_from_text_requires_rating_context():
