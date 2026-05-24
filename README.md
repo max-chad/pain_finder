@@ -244,11 +244,23 @@ Persisted mounts in `docker-compose.yml`:
 - `./data -> /app/data` (`DB_PATH=/app/data/pain_finder.db`)
 - `./reports -> /app/reports`
 
+## Source Smoke Checks
+
+Use the read-only source smoke check before a first data-collection run or after changing source env. It fetches source posts and prints JSON, but does not call LLMs, Telegram, database writes, exports, or schedulers.
+
+```bash
+python smoke_collect.py --source reddit --subreddit python --limit 5
+python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
+python smoke_collect.py --source all --limit 5
+```
+
+Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`) and does not require Telegram or LLM credentials.
+
 ## Quality Gates
 
 ```bash
 ruff check .
-mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py
+mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py
 python -m pip_audit -r requirements.txt
 pytest --cov=. --cov-fail-under=80 -q
 ```

@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from dataclasses import dataclass
+from typing import Any, Sequence
+
+from dotenv import load_dotenv
+
+from scraper import Post, RedditScraper
+from scraper_hn import HackerNewsScraper
+from scraper_reviews import ReviewScraper, ReviewTarget
+
+
+DEFAULT_HN_KEYWORDS = ["internal tool", "frustrating", "we built our own", "manual process"]
+
+
+@dataclass(frozen=True)
+class SourceSmokeConfig:
+    reddit_client_id: str
+    reddit_client_secret: str
+    reddit_user_agent: str
+    scraper_top_comments: int
+    scraper_comment_fetch_concurrency: int
+    scraper_retry_max_attempts: int
+    scraper_retry_base_delay: float
+    scraper_feed_mix: list[str]
+    scraper_search_queries: list[str]
+    hn_keywords: list[str]
+    hn_lookback_hours: int
+    review_targets: list[ReviewTarget]
+    reviews_max_per_target: int
+
+
+def _parse_json_list(raw: str, default: list[Any]) -> list[Any]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+    if not isinstance(parsed, list):
+        return default
+    return parsed
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
+    targets: list[ReviewTarget] = []
+    for raw in raw_targets:
+        if not isinstance(raw, dict):
+            continue
+        site = str(raw.get("site") or "").strip()
+        name = str(raw.get("name") or "").strip()
+        url = str(raw.get("url") or "").strip()
+        if not site or not name or not url:
+            continue
+        enabled = str(raw.get("enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
+        targets.append(ReviewTarget(site=site, name=name, url=url, enabled=enabled))
+    return targets
+
+
+def load_source_smoke_config() -> SourceSmokeConfig:
+    load_dotenv()
+    scraper_feed_mix = [
+        str(feed).strip()
+        for feed in _parse_json_list(os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "top"]'), ["new", "rising", "top"])
+        if str(feed).strip()
+    ]
+    scraper_search_queries = [
+        str(query).strip()
+        for query in _parse_json_list(os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]"), [])
+        if str(query).strip()
+    ]
+    hn_keywords = [
+        str(keyword).strip()
+        for keyword in _parse_json_list(os.getenv("HN_KEYWORDS_JSON", json.dumps(DEFAULT_HN_KEYWORDS)), DEFAULT_HN_KEYWORDS)
+        if str(keyword).strip()
+    ]
+    return SourceSmokeConfig(
+        reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
+        reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
+        reddit_user_agent=os.getenv("REDDIT_USER_AGENT", "pain_finder/1.0"),
+        scraper_top_comments=_env_int("SCRAPER_TOP_COMMENTS", 5),
+        scraper_comment_fetch_concurrency=_env_int("SCRAPER_COMMENT_FETCH_CONCURRENCY", 8),
+        scraper_retry_max_attempts=_env_int("SCRAPER_RETRY_MAX_ATTEMPTS", 5),
+        scraper_retry_base_delay=_env_float("SCRAPER_RETRY_BASE_DELAY", 1.0),
+        scraper_feed_mix=scraper_feed_mix,
+        scraper_search_queries=scraper_search_queries,
+        hn_keywords=hn_keywords,
+        hn_lookback_hours=_env_int("HN_LOOKBACK_HOURS", 72),
+        review_targets=_build_review_targets(_parse_json_list(os.getenv("REVIEW_TARGETS_JSON", "[]"), [])),
+        reviews_max_per_target=_env_int("REVIEWS_MAX_PER_TARGET", 30),
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Read-only smoke check for source collection paths. Does not call LLMs, Telegram, or write the DB."
+    )
+    parser.add_argument("--source", choices=("reddit", "hn", "reviews", "all"), default="reddit")
+    parser.add_argument("--subreddit", default="python", help="Subreddit for the Reddit smoke check.")
+    parser.add_argument("--limit", type=int, default=5, help="Maximum posts to fetch per source.")
+    parser.add_argument(
+        "--hn-keyword",
+        action="append",
+        default=[],
+        help="HN keyword to query. Can be repeated; defaults to HN_KEYWORDS_JSON.",
+    )
+    parser.add_argument(
+        "--require-posts",
+        action="store_true",
+        help="Return a non-zero exit code when a requested source completes but returns no posts.",
+    )
+    return parser
+
+
+def _post_preview(post: Post) -> dict[str, Any]:
+    return {
+        "post_id": post.post_id,
+        "source": post.source,
+        "subreddit": post.subreddit,
+        "title": post.title[:160],
+        "score": post.score,
+        "url": post.url,
+        "source_created_at": post.source_created_at,
+    }
+
+
+async def _fetch_reddit(config: SourceSmokeConfig, *, subreddit: str, limit: int) -> list[Post]:
+    scraper = RedditScraper(
+        client_id=config.reddit_client_id,
+        client_secret=config.reddit_client_secret,
+        user_agent=config.reddit_user_agent,
+        top_comments_limit=config.scraper_top_comments,
+        comment_fetch_concurrency=config.scraper_comment_fetch_concurrency,
+        retry_max_attempts=config.scraper_retry_max_attempts,
+        retry_base_delay=config.scraper_retry_base_delay,
+        feed_mix=config.scraper_feed_mix,
+        search_queries=config.scraper_search_queries,
+    )
+    return await scraper.fetch_posts(subreddit, limit=limit)
+
+
+async def _fetch_hn(config: SourceSmokeConfig, *, keywords: list[str], limit: int) -> list[Post]:
+    scraper = HackerNewsScraper(user_agent=config.reddit_user_agent)
+    active_keywords = keywords or config.hn_keywords or DEFAULT_HN_KEYWORDS
+    return await scraper.fetch_posts(
+        keywords=active_keywords,
+        lookback_hours=config.hn_lookback_hours,
+        max_posts=limit,
+    )
+
+
+async def _fetch_reviews(config: SourceSmokeConfig, *, limit: int) -> list[Post]:
+    if not config.review_targets:
+        return []
+    scraper = ReviewScraper(user_agent=config.reddit_user_agent)
+    return await scraper.fetch_many_targets(
+        targets=config.review_targets,
+        max_per_target=min(limit, max(1, config.reviews_max_per_target)),
+    )
+
+
+async def run_smoke(argv: Sequence[str] | None = None) -> tuple[int, dict[str, Any]]:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    limit = max(1, min(args.limit, 100))
+    config = load_source_smoke_config()
+    sources = ["reddit", "hn", "reviews"] if args.source == "all" else [args.source]
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for source in sources:
+        try:
+            if source == "reddit":
+                posts = await _fetch_reddit(config, subreddit=args.subreddit, limit=limit)
+                context: dict[str, Any] = {"subreddit": args.subreddit}
+            elif source == "hn":
+                keywords = [keyword.strip() for keyword in args.hn_keyword if keyword.strip()]
+                posts = await _fetch_hn(config, keywords=keywords, limit=limit)
+                context = {"keywords": keywords or config.hn_keywords or DEFAULT_HN_KEYWORDS}
+            else:
+                posts = await _fetch_reviews(config, limit=limit)
+                context = {"targets_configured": len(config.review_targets)}
+        except Exception as exc:
+            errors.append({"source": source, "reason": "exception", "error": str(exc)})
+            continue
+
+        preview = [_post_preview(post) for post in posts[: min(5, limit)]]
+        result = {
+            "source": source,
+            "ok": True,
+            "post_count": len(posts),
+            "preview": preview,
+            **context,
+        }
+        results.append(result)
+        if args.require_posts and not posts:
+            errors.append({"source": source, "reason": "empty", "error": "source returned zero posts"})
+
+    exit_code = 0
+    if errors:
+        exit_code = 2 if all(error["reason"] == "empty" for error in errors) else 1
+
+    return (
+        exit_code,
+        {
+            "ok": exit_code == 0,
+            "side_effects": "none: no LLM, Telegram, database, or export writes",
+            "sources": results,
+            "errors": errors,
+        },
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    exit_code, payload = asyncio.run(run_smoke(argv))
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

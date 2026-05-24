@@ -97,3 +97,10 @@
 - Change: Configure scheduler job defaults with `coalesce=True`, `max_instances=1`, and a 5-minute `misfire_grace_time`.
 - Verification: Added a scheduler test asserting the effective job defaults on loaded monitor jobs; full gates are run after this note.
 - Impact: Reduces duplicate collection/classification load and makes delayed job behavior predictable.
+
+## 2026-05-25 - Read-only source collection smoke check
+
+- Reason: deployments had a local healthcheck for env/storage but no safe way to prove Reddit, HN, and review-source collection paths before starting Telegram/scheduler flows or spending LLM budget.
+- Change: Add `smoke_collect.py`, a JSON-emitting read-only CLI that fetches source posts only, avoids `config.py`'s Telegram/LLM fail-fast requirements, and supports `--require-posts` for stricter deployment gates.
+- Verification: Added targeted smoke CLI tests for Reddit success, source exceptions, empty-source failure, and all-source review target handling; full gates are run after this note.
+- Impact: Improves deploy readiness and diagnostics for data collection without database writes, Telegram side effects, scheduler startup, or LLM spend.
