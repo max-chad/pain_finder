@@ -237,6 +237,7 @@ docker compose up -d --build
 ```
 
 The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, SQLite storage, and report-directory writability without calling external APIs.
+The runtime handles `SIGTERM`/`SIGINT` through the asyncio loop so Docker stops and manual interrupts drain through scheduler/database cleanup.
 
 Persisted mounts in `docker-compose.yml`:
 

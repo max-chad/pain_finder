@@ -83,3 +83,17 @@
 - Change: Add `healthcheck.py`, wire it into the Dockerfile `HEALTHCHECK`, and document that it performs only local checks without external API calls.
 - Verification: Added healthcheck tests, included `healthcheck.py` in documented/CI mypy checks, and run Docker Compose config validation plus full quality gates after this note.
 - Impact: Improves deploy observability and catches broken volume/env/storage setups before data collection silently stalls.
+
+## 2026-05-25 - Graceful runtime shutdown signals
+
+- Reason: `main.run()` waited on an unreferenced `asyncio.Event`, so container `SIGTERM`/manual `SIGINT` had no application-level shutdown path before cleanup.
+- Change: Add a signal-aware shutdown event for `SIGINT` and `SIGTERM`, and use it in both Telegram and Hermes runtime waits.
+- Verification: Added a unit test proving signal handlers set the shutdown event; full gates are run after this note.
+- Impact: Docker stops and manual interrupts can flow through Telegram stop, scheduler stop, and database close cleanup.
+
+## 2026-05-25 - Explicit scheduler overlap policy
+
+- Reason: long-running LLM ingestion jobs should not overlap or fan out after scheduler delays, and relying on APScheduler defaults makes that production invariant implicit.
+- Change: Configure scheduler job defaults with `coalesce=True`, `max_instances=1`, and a 5-minute `misfire_grace_time`.
+- Verification: Added a scheduler test asserting the effective job defaults on loaded monitor jobs; full gates are run after this note.
+- Impact: Reduces duplicate collection/classification load and makes delayed job behavior predictable.

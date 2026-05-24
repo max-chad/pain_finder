@@ -1,7 +1,7 @@
 ﻿# tests/test_scheduler.py
 from unittest.mock import AsyncMock
 
-from scheduler import MonitoringScheduler
+from scheduler import JOB_DEFAULTS, MonitoringScheduler
 
 
 async def test_scheduler_starts_and_stops_without_error():
@@ -28,6 +28,10 @@ async def test_reload_jobs_creates_job_per_subreddit():
     job_ids = {job.id for job in sched.scheduler.get_jobs()}
     assert "monitor_python" in job_ids
     assert "monitor_webdev" in job_ids
+    python_job = sched.scheduler.get_job("monitor_python")
+    assert python_job.coalesce is JOB_DEFAULTS["coalesce"]
+    assert python_job.max_instances == JOB_DEFAULTS["max_instances"]
+    assert python_job.misfire_grace_time == JOB_DEFAULTS["misfire_grace_time"]
     sched.stop()
 
 

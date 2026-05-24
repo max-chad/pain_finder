@@ -7,6 +7,12 @@ from db import Database
 
 logger = logging.getLogger(__name__)
 
+JOB_DEFAULTS = {
+    "coalesce": True,
+    "max_instances": 1,
+    "misfire_grace_time": 300,
+}
+
 
 class MonitoringScheduler:
     def __init__(
@@ -45,7 +51,7 @@ class MonitoringScheduler:
         self.digest_enabled = digest_enabled
         self.digest_hour_utc = digest_hour_utc
         self.digest_minute_utc = digest_minute_utc
-        self.scheduler = AsyncIOScheduler()
+        self.scheduler = AsyncIOScheduler(job_defaults=JOB_DEFAULTS)
 
     def start(self):
         self.scheduler.start()

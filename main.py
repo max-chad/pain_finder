@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 
 import config
 from bot import PainFinderBot
@@ -62,6 +63,23 @@ def _build_dspy_parser():
         temperature=config.DSPY_TEMPERATURE,
         max_tokens=config.DSPY_MAX_TOKENS,
     )
+
+
+def _build_shutdown_event() -> asyncio.Event:
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def request_shutdown(signame: str) -> None:
+        if not shutdown_event.is_set():
+            logger.info("shutdown_requested stage=runtime signal=%s", signame)
+            shutdown_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_shutdown, sig.name)
+        except (AttributeError, NotImplementedError, RuntimeError, ValueError):
+            logger.debug("Signal handler unavailable for %s on this event loop", sig.name)
+    return shutdown_event
 
 
 async def _publish_daily_digest(*, digest_service: DailyDigestDocumentService):
@@ -316,6 +334,7 @@ async def run() -> None:
     budget_guard.set_on_pause_callback(on_budget_pause)
 
     scheduler_started = False
+    shutdown_event = _build_shutdown_event()
     try:
         scheduler.start()
         scheduler_started = True
@@ -331,13 +350,13 @@ async def run() -> None:
                 await tg_app.updater.start_polling()
                 logger.info("Bot is running. Send /status in Telegram to verify.")
                 try:
-                    await asyncio.Event().wait()
+                    await shutdown_event.wait()
                 finally:
                     await tg_app.updater.stop()
                     await tg_app.stop()
         else:
             logger.info("Hermes mode enabled: skipping Telegram polling and keeping scheduler alive.")
-            await asyncio.Event().wait()
+            await shutdown_event.wait()
     finally:
         if scheduler_started:
             scheduler.stop()

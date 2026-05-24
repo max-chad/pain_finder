@@ -24,6 +24,30 @@ def test_build_dspy_parser_returns_none_when_dependency_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_build_shutdown_event_registers_sigint_and_sigterm(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    registered = []
+
+    class FakeLoop:
+        def add_signal_handler(self, sig, callback, *args):
+            registered.append((sig, callback, args))
+
+    monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: FakeLoop())
+
+    event = main._build_shutdown_event()
+
+    assert [item[0] for item in registered] == [main.signal.SIGINT, main.signal.SIGTERM]
+    assert event.is_set() is False
+    registered[1][1](*registered[1][2])
+    assert event.is_set() is True
+
+
+@pytest.mark.asyncio
 async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
