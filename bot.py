@@ -47,6 +47,8 @@ TriageStatus = Literal["favorite", "discarded"]
 
 logger = logging.getLogger(__name__)
 SESSION_TOKEN_RE = re.compile(r"^[0-9a-f]{8}$")
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_TRUNCATION_SUFFIX = "\n...[truncated]"
 
 SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 POST_ID_RE = re.compile(r"^[A-Za-z0-9_:-]+$")
@@ -175,6 +177,14 @@ def parse_scoped_callback_data(data: str, prefix: str) -> tuple[str, str]:
     if len(parts) != 2:
         raise ValueError("Malformed callback data")
     return parts[0], parts[1]
+
+
+def limit_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= len(TELEGRAM_TRUNCATION_SUFFIX):
+        return text[:limit]
+    return text[: limit - len(TELEGRAM_TRUNCATION_SUFFIX)].rstrip() + TELEGRAM_TRUNCATION_SUFFIX
 
 
 def _signal_icon(signal: PainSignal) -> str:
@@ -338,7 +348,7 @@ class PainFinderBot:
             ],
             [InlineKeyboardButton("\u2190 Back to list", callback_data=f"back:{token}")],
         ]
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        return limit_telegram_text("\n".join(lines)), InlineKeyboardMarkup(keyboard_rows)
 
     def _resolve_session_signal(self, token: str, idx_raw: str) -> tuple[str, "PainSignal | None"]:
         session = self._sessions.get(token)
@@ -555,9 +565,9 @@ class PainFinderBot:
         await update.message.reply_text(f"Running deep dive for {post_id}...")
         result = await self.deep_dive_fn(post_id, row["subreddit"], "manual")
         if result.status == "completed":
-            await update.message.reply_text(f"Deep dive complete for {post_id}: {result.summary}")
+            await update.message.reply_text(limit_telegram_text(f"Deep dive complete for {post_id}: {result.summary}"))
         else:
-            await update.message.reply_text(f"Deep dive failed for {post_id}: {result.error}")
+            await update.message.reply_text(limit_telegram_text(f"Deep dive failed for {post_id}: {result.error}"))
 
     async def cmd_digest(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -600,7 +610,7 @@ class PainFinderBot:
             lines.append("Recurring blockers:")
             for blocker in digest["recurring_blockers"][:3]:
                 lines.append(f"- {blocker[:120]}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_macro(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -631,7 +641,7 @@ class PainFinderBot:
                 f"- {cluster.label} | items={cluster.item_count} | signal={cluster.estimated_monetization_signal} | wtp_total={cluster.aggregate_wtp:.1f}"
             )
             lines.append(f"  {cluster.summary[:160]}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_budget(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -800,9 +810,13 @@ class PainFinderBot:
                 await query.answer("Running deep dive...", show_alert=False)
                 result = await self.deep_dive_fn(post_id, subreddit, "callback")
                 if result.status == "completed":
-                    await query.message.reply_text(f"Deep dive complete for {post_id}: {result.summary}")
+                    await query.message.reply_text(
+                        limit_telegram_text(f"Deep dive complete for {post_id}: {result.summary}")
+                    )
                 else:
-                    await query.message.reply_text(f"Deep dive failed for {post_id}: {result.error}")
+                    await query.message.reply_text(
+                        limit_telegram_text(f"Deep dive failed for {post_id}: {result.error}")
+                    )
                 return
 
             if data.startswith("gtm:"):
@@ -849,7 +863,7 @@ class PainFinderBot:
             lines.append(f"- {feature}")
         lines.append(f"Pricing: {payload.pricing_tier}")
         lines.append(f"Positioning: {payload.positioning_rationale}")
-        return "\n".join(lines)
+        return limit_telegram_text("\n".join(lines))
 
     def build_app(self):
         from telegram.ext import Application, CallbackQueryHandler, CommandHandler

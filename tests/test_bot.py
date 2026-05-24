@@ -13,6 +13,7 @@ from bot import (
     MONITOR_USAGE,
     UNMONITOR_USAGE,
     PainFinderBot,
+    TELEGRAM_TEXT_LIMIT,
     format_report,
     normalize_subreddit,
     parse_analyze_args,
@@ -303,6 +304,21 @@ async def test_cmd_deepdive_runs_injected_function():
     assert update.message.reply_text.await_count == 2
 
 
+async def test_cmd_deepdive_truncates_long_summary_reply():
+    db = AsyncMock()
+    db.get_pain_point.return_value = {"subreddit": "python"}
+    deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="S" * 6000, error=None))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db, deep_dive_fn=deep_dive_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_deepdive(update, _make_ctx(["abc123"]))
+
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
 async def test_cmd_deepdive_usage_on_bad_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -505,6 +521,27 @@ async def test_cmd_gtm_success():
     assert "GTM package for reddit:abc123" in update.message.reply_text.await_args.args[0]
 
 
+async def test_cmd_gtm_truncates_long_generated_reply():
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1" * 2000,
+        hero_h2="H2" * 2000,
+        mvp_features=["feature" * 500],
+        pricing_tier="$19",
+        positioning_rationale="why" * 2000,
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="reddit:abc123", payload=gtm_payload))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["reddit:abc123"]))
+
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
 async def test_cmd_gtm_usage_on_bad_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -677,6 +714,20 @@ def test_render_card_view_callback_data_stays_under_telegram_limit_for_long_ids(
     callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
     assert all(callback is not None and len(callback.encode()) <= 64 for callback in callbacks)
     assert all(long_post_id not in callback for callback in callbacks if callback)
+
+
+def test_render_card_view_text_stays_under_telegram_limit_for_long_external_fields():
+    bot = _make_bot()
+    signal = _make_signal("p1", "complaint", "S" * 3000)
+    signal.post.title = "T" * 2500
+    signal.post.url = "https://example.com/" + ("u" * 1200)
+    token = bot._create_session([signal], "Reviews")
+    session = bot._sessions[token]
+
+    text, _ = bot._render_card_view(token, session, 0)
+
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
 
 
 def test_sel_callback_data_format():

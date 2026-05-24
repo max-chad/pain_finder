@@ -167,3 +167,10 @@
 - Change: Use existing session token plus item index for triage, deep-dive, and GTM card callbacks while preserving legacy callback parsing.
 - Verification: Added bot tests proving long-ID card callbacks stay under the Telegram limit and resolve back to the original post ID; full gates are run after this note.
 - Impact: Keeps review-source and other long-ID pain cards actionable in Telegram without losing callback compatibility.
+
+## 2026-05-25 - Telegram replies cap external and LLM text
+
+- Reason: Telegram message text has a hard length limit, while card fields, deep-dive summaries, digest rows, macro summaries, and GTM copy can include unbounded external or LLM-generated text.
+- Change: Add a shared Telegram text limiter and apply it to pain cards plus generated deep-dive, digest, macro, and GTM replies.
+- Verification: Added bot tests proving long card fields, deep-dive summaries, and GTM output stay within the Telegram text limit; full gates are run after this note.
+- Impact: Prevents oversized operator responses from failing at send/edit time while preserving a visible truncation marker.
