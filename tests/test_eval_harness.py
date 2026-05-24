@@ -301,7 +301,8 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
         ],
     )
 
-    runpy.run_path("/opt/repos/pain_finder/eval/run_eval.py", run_name="__main__")
+    run_eval_path = Path(__file__).resolve().parents[1] / "eval" / "run_eval.py"
+    runpy.run_path(str(run_eval_path), run_name="__main__")
 
     metrics_path = output_dir / "metrics.json"
     written_predictions_path = output_dir / "predictions.jsonl"

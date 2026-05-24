@@ -36,16 +36,8 @@ TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 # an OpenRouter embeddings endpoint) and raise EMBED_DIM to match its output
 # dimensionality.
 #
-# PYTHONHASHSEED note
-# -------------------
-# Python randomises hash() output for strings once per process start (controlled
-# by the PYTHONHASHSEED environment variable).  This means the same token maps
-# to a different EMBED_DIM bucket across process restarts, so cosine-similarity
-# scores — and therefore the cluster assignments produced by _cluster_indices —
-# are non-reproducible between runs.  Set PYTHONHASHSEED=0 to disable this
-# randomisation and obtain deterministic results.  For the current use case
-# (ephemeral, per-run macro-trend snapshots) non-reproducibility is acceptable,
-# but it is worth knowing when debugging unexpected cluster differences.
+# The token-to-bucket mapping uses a stable hash so persisted cluster snapshots
+# and local fallback embeddings are reproducible across Python process restarts.
 EMBED_DIM = 96
 STOPWORDS = {
     "about",
@@ -380,7 +372,7 @@ class MacroTrendClusterer:
         # the full trade-off discussion.
         vector = [0.0 for _ in range(EMBED_DIM)]
         for token in TOKEN_RE.findall(text.lower()):
-            index = hash(token) % EMBED_DIM
+            index = MacroTrendClusterer._stable_token_bucket(token, EMBED_DIM)
             vector[index] += 1.0
         norm = math.sqrt(sum(value * value for value in vector))
         if norm == 0:
@@ -421,3 +413,8 @@ class MacroTrendClusterer:
         if len(a) != len(b):
             return 0.0
         return sum(x * y for x, y in zip(a, b))
+
+    @staticmethod
+    def _stable_token_bucket(token: str, dim: int) -> int:
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "big") % dim

@@ -64,6 +64,15 @@ async def test_run_returns_empty_when_no_candidates(db):
     assert latest["cluster_count"] == 0
 
 
+def test_fallback_embedding_uses_stable_token_buckets():
+    vector = MacroTrendClusterer._embed("quickbooks quickbooks sync")
+    quickbooks_bucket = MacroTrendClusterer._stable_token_bucket("quickbooks", 96)
+    sync_bucket = MacroTrendClusterer._stable_token_bucket("sync", 96)
+
+    assert quickbooks_bucket == MacroTrendClusterer._stable_token_bucket("quickbooks", 96)
+    assert vector[quickbooks_bucket] > vector[sync_bucket]
+
+
 async def test_run_clusters_candidates_and_persists_fallback_labels(db):
     await _seed_candidate(
         db,

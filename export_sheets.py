@@ -17,6 +17,18 @@ from db import Database
 logger = logging.getLogger(__name__)
 
 
+SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _safe_spreadsheet_cell(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped.startswith(SPREADSHEET_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 @dataclass
 class ExportResult:
     csv_path: str
@@ -78,22 +90,22 @@ class ExportService:
             writer.writeheader()
             for row in rows:
                 writer.writerow({
-                    "created_at": row.get("created_at", ""),
-                    "subreddit": row.get("subreddit", ""),
-                    "source": row.get("source", ""),
-                    "post_id": row.get("post_id", ""),
-                    "title": row.get("title", ""),
-                    "summary": row.get("summary", ""),
+                    "created_at": _safe_spreadsheet_cell(row.get("created_at", "")),
+                    "subreddit": _safe_spreadsheet_cell(row.get("subreddit", "")),
+                    "source": _safe_spreadsheet_cell(row.get("source", "")),
+                    "post_id": _safe_spreadsheet_cell(row.get("post_id", "")),
+                    "title": _safe_spreadsheet_cell(row.get("title", "")),
+                    "summary": _safe_spreadsheet_cell(row.get("summary", "")),
                     "pain_level": row.get("pain_level", 0),
                     "willingness_to_pay": row.get("willingness_to_pay", 0),
-                    "niche_category": row.get("niche_category", ""),
-                    "competitor_tags": row.get("competitor_tags", "[]"),
-                    "category": row.get("category", ""),
-                    "severity": row.get("severity", ""),
-                    "triage_status": row.get("triage_status", "new"),
-                    "deep_dive_status": row.get("deep_dive_status", "not_requested"),
-                    "deep_dive_summary": row.get("deep_dive_summary", ""),
-                    "url": row.get("url", ""),
+                    "niche_category": _safe_spreadsheet_cell(row.get("niche_category", "")),
+                    "competitor_tags": _safe_spreadsheet_cell(row.get("competitor_tags", "[]")),
+                    "category": _safe_spreadsheet_cell(row.get("category", "")),
+                    "severity": _safe_spreadsheet_cell(row.get("severity", "")),
+                    "triage_status": _safe_spreadsheet_cell(row.get("triage_status", "new")),
+                    "deep_dive_status": _safe_spreadsheet_cell(row.get("deep_dive_status", "not_requested")),
+                    "deep_dive_summary": _safe_spreadsheet_cell(row.get("deep_dive_summary", "")),
+                    "url": _safe_spreadsheet_cell(row.get("url", "")),
                 })
 
         sheet_url = None
@@ -142,22 +154,22 @@ class ExportService:
         values = [headers]
         for row in rows:
             values.append([
-                str(row.get("created_at", "")),
-                str(row.get("subreddit", "")),
-                str(row.get("source", "")),
-                str(row.get("post_id", "")),
-                str(row.get("title", "")),
-                str(row.get("summary", "")),
-                str(row.get("pain_level", 0)),
-                str(row.get("willingness_to_pay", 0)),
-                str(row.get("niche_category", "")),
-                str(row.get("competitor_tags", "[]")),
-                str(row.get("category", "")),
-                str(row.get("severity", "")),
-                str(row.get("triage_status", "new")),
-                str(row.get("deep_dive_status", "not_requested")),
-                str(row.get("deep_dive_summary", "")),
-                str(row.get("url", "")),
+                str(_safe_spreadsheet_cell(str(row.get("created_at", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("subreddit", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("source", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("post_id", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("title", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("summary", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("pain_level", 0)))),
+                str(_safe_spreadsheet_cell(str(row.get("willingness_to_pay", 0)))),
+                str(_safe_spreadsheet_cell(str(row.get("niche_category", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("competitor_tags", "[]")))),
+                str(_safe_spreadsheet_cell(str(row.get("category", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("severity", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("triage_status", "new")))),
+                str(_safe_spreadsheet_cell(str(row.get("deep_dive_status", "not_requested")))),
+                str(_safe_spreadsheet_cell(str(row.get("deep_dive_summary", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("url", "")))),
             ])
 
         worksheet.update("A1", values)

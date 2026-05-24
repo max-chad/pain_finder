@@ -1,0 +1,50 @@
+# AGENT_NOTES
+
+## 2026-05-24 - Portable local baseline
+
+- Reason: `pytest -q` failed locally on Windows even though the scraper implementation already used `asyncio.gather`; the concurrency tests measured wall-clock time including `httpx.AsyncClient` startup overhead instead of proving task overlap.
+- Change: Replaced the scraper wall-clock assertions with deterministic in-flight request counting for public JSON and OAuth JSON feed fetches.
+- Verification: Targeted scraper tests and full suite are run after this note.
+- Impact: Improves local/CI compatibility and keeps the concurrency contract covered without machine-speed flakiness.
+
+## 2026-05-24 - Eval runner path portability
+
+- Reason: `tests/test_eval_harness.py::test_run_eval_offline_writes_artifacts` hardcoded `/opt/repos/pain_finder/eval/run_eval.py`, which fails outside the Linux CI checkout path.
+- Change: Resolve `eval/run_eval.py` relative to the repository root inferred from the test file path.
+- Verification: Targeted eval harness test and full suite are run after this note.
+- Impact: Allows the offline eval CLI test to run from local Windows checkouts and alternate CI workspace paths.
+
+## 2026-05-24 - Spreadsheet export injection guard
+
+- Reason: exported rows contain untrusted Reddit/HN/review text, and CSV or Google Sheets cells beginning with `=`, `+`, `-`, or `@` can be interpreted as formulas when opened by spreadsheet tools.
+- Change: Escape dangerous spreadsheet cell prefixes with a leading apostrophe for both CSV output and Google Sheets upsert values.
+- Verification: Added targeted CSV and Google Sheets export tests covering dangerous title, summary, niche, and deep-dive fields.
+- Impact: Reduces formula-injection risk when operators open exported pain reports.
+
+## 2026-05-24 - Stable review ingestion identity
+
+- Reason: review-source `post_id` values were based on the card index after parsing, so a new or reordered review page could change identifiers for existing complaints and create duplicates or overwrite identity.
+- Change: Generate review IDs from a stable hash of site, product slug, URL, rating, and normalized review text; also apply `max_reviews` after filtering to negative reviews.
+- Verification: Added tests proving stable IDs under page reordering and that positive reviews do not consume the negative-review limit.
+- Impact: Improves review ingestion correctness and dedup reliability across repeated runs.
+
+## 2026-05-24 - Explicit pytest asyncio loop scope
+
+- Reason: pytest emitted a deprecation warning that the default async fixture loop scope will change in a future pytest-asyncio release.
+- Change: Set `asyncio_default_fixture_loop_scope = function` explicitly in `pytest.ini`.
+- Verification: Full test suite is run after this note.
+- Impact: Keeps async test behavior stable across dependency upgrades and removes warning noise.
+
+## 2026-05-24 - Stable local embedding buckets
+
+- Reason: local hash-based fallback embeddings used Python `hash()`, which is randomized per process; persisted dedup vectors and macro cluster snapshots could become inconsistent after restart.
+- Change: Use a stable `blake2b` token-to-bucket hash in `embedder.py` and `clusterer.py`.
+- Verification: Added targeted tests for stable bucket mapping in fallback embeddings and macro clustering.
+- Impact: Improves dedup and clustering reproducibility when remote embeddings or sentence-transformers are unavailable.
+
+## 2026-05-24 - Optional DSPy dependency surface
+
+- Reason: `pip-audit -r requirements.txt` reported `diskcache 5.6.3` / `CVE-2025-69872`, pulled transitively by `dspy`; DSPy is lazy-loaded and documented as an optional parser path, but was installed by the base requirements.
+- Change: Move `dspy>=3.2` from `requirements.txt` to `requirements-dspy.txt` and document the optional install command.
+- Verification: `pip-audit -r requirements.txt` and full quality gates are run after this note.
+- Impact: Removes a vulnerable optional transitive dependency from default installs while preserving an explicit opt-in path for DSPy users.

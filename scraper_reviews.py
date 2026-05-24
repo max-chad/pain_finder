@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,14 +52,16 @@ class ReviewScraper:
 
         posts: list[Post] = []
         slug = re.sub(r"[^a-z0-9]+", "-", target.name.lower()).strip("-") or "unknown"
-        for index, row in enumerate(rows[:max_reviews], start=1):
+        for row in rows:
+            if len(posts) >= max_reviews:
+                break
             rating = float(row.get("rating", 0))
             text = (row.get("text") or "").strip()
             if not text:
                 continue
             if rating <= 0 or rating > 2.0:
                 continue
-            post_id = f"review:{site}:{slug}:{index}"
+            post_id = self._review_post_id(site=site, slug=slug, url=target.url, rating=rating, text=text)
             posts.append(
                 Post(
                     post_id=post_id,
@@ -84,6 +87,23 @@ class ReviewScraper:
             target_posts = await self.fetch_negative_reviews(target=target, max_reviews=max_per_target)
             all_posts.extend(target_posts)
         return all_posts
+
+    @staticmethod
+    def _review_post_id(*, site: str, slug: str, url: str, rating: float, text: str) -> str:
+        normalized_text = " ".join(text.lower().split())
+        identity = json.dumps(
+            {
+                "site": site,
+                "slug": slug,
+                "url": url.strip().lower(),
+                "rating": round(rating, 2),
+                "text": normalized_text,
+            },
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        return f"review:{site}:{slug}:{digest}"
 
     async def _fetch_html(self, url: str) -> str:
         headers = {"User-Agent": self.user_agent}

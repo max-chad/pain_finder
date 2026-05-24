@@ -124,6 +124,12 @@ Optional DSPy Reddit parser:
 - `DSPY_TEMPERATURE`
 - `DSPY_MAX_TOKENS`
 
+Install the optional DSPy dependency only when this parser path is needed:
+
+```bash
+pip install -r requirements-dspy.txt
+```
+
 Trend clustering:
 
 - `MACRO_TREND_ENABLED`

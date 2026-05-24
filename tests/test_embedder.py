@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import respx
 
-from embedder import Embedder
+from embedder import Embedder, _bow_embed, _stable_token_bucket
 
 
 def _make_embedder(**kwargs):
@@ -100,6 +100,15 @@ class TestOpenRouterEmbed:
         remote_mock.assert_not_called()
         assert isinstance(result, list)
         assert len(result) == 96
+
+    async def test_bow_embedding_uses_stable_token_buckets(self):
+        e = _make_embedder(provider="bow")
+        result = await e.embed("hello world hello")
+        direct = _bow_embed("hello world hello")
+
+        assert result == direct
+        assert _stable_token_bucket("hello", 96) == _stable_token_bucket("hello", 96)
+        assert result[_stable_token_bucket("hello", 96)] > result[_stable_token_bucket("world", 96)]
 
     @respx.mock
     async def test_embed_never_raises(self):

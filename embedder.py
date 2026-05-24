@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+import hashlib
 import sys
 from typing import Any
 
@@ -65,11 +66,16 @@ def _bow_embed(text: str) -> list[float]:
     """96-dim L2-normalised hash-based bag-of-words. Never raises."""
     vector = [0.0] * _EMBED_DIM
     for token in _TOKEN_RE.findall(text.lower()):
-        vector[hash(token) % _EMBED_DIM] += 1.0
+        vector[_stable_token_bucket(token, _EMBED_DIM)] += 1.0
     norm = math.sqrt(sum(v * v for v in vector))
     if norm == 0:
         return vector
     return [v / norm for v in vector]
+
+
+def _stable_token_bucket(token: str, dim: int) -> int:
+    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % dim
 
 
 class Embedder:

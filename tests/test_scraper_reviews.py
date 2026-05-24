@@ -61,6 +61,44 @@ async def test_fetch_negative_reviews_filters_to_1_and_2_star(monkeypatch):
     assert all(post.subreddit == "reviews_g2" for post in posts)
 
 
+async def test_fetch_negative_reviews_uses_stable_content_ids(monkeypatch):
+    first_html = """
+    <article class="review-card" aria-label="1 star">Completely unusable for invoicing.</article>
+    <article class="review-card" aria-label="2 stars">No API retries and poor docs.</article>
+    """
+    reordered_html = """
+    <article class="review-card" aria-label="5 stars">Fine for tiny teams.</article>
+    <article class="review-card" aria-label="2 stars">No API retries and poor docs.</article>
+    <article class="review-card" aria-label="1 star">Completely unusable for invoicing.</article>
+    """
+    scraper = ReviewScraper()
+    target = ReviewTarget(site="g2", name="QuickBooks Sync Tool", url="https://example.com/reviews")
+
+    monkeypatch.setattr(scraper, "_fetch_html", AsyncMock(return_value=first_html))
+    first_posts = await scraper.fetch_negative_reviews(target=target, max_reviews=10)
+    monkeypatch.setattr(scraper, "_fetch_html", AsyncMock(return_value=reordered_html))
+    reordered_posts = await scraper.fetch_negative_reviews(target=target, max_reviews=10)
+
+    assert {post.post_id for post in reordered_posts} == {post.post_id for post in first_posts}
+
+
+async def test_fetch_negative_reviews_filters_before_applying_limit(monkeypatch):
+    html = """
+    <article class="review-card" aria-label="5 stars">Good enough.</article>
+    <article class="review-card" aria-label="4 stars">Mostly fine.</article>
+    <article class="review-card" aria-label="1 star">Lost invoices every week.</article>
+    <article class="review-card" aria-label="2 stars">No retry controls.</article>
+    """
+    scraper = ReviewScraper()
+    monkeypatch.setattr(scraper, "_fetch_html", AsyncMock(return_value=html))
+    target = ReviewTarget(site="g2", name="QuickBooks Sync Tool", url="https://example.com/reviews")
+
+    posts = await scraper.fetch_negative_reviews(target=target, max_reviews=1)
+
+    assert len(posts) == 1
+    assert "Lost invoices" in posts[0].body
+
+
 async def test_fetch_negative_reviews_handles_disabled_or_fetch_failure(monkeypatch):
     scraper = ReviewScraper()
     monkeypatch.setattr(scraper, "_fetch_html", AsyncMock(return_value=""))
