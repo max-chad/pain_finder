@@ -97,3 +97,15 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.DSPY_REASONING_EFFORT == "high"
     assert config_module.DSPY_API_KEY == "test-key"
 
+
+def test_dspy_parser_is_disabled_by_default(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.delenv("DSPY_REDDIT_PARSER_ENABLED", raising=False)
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.DSPY_REDDIT_PARSER_ENABLED is False
+

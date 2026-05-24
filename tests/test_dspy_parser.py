@@ -1,6 +1,14 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from dspy_parser import DSPyRedditPainParser
+
+
+def test_is_available_reflects_installed_dspy_package():
+    with patch("dspy_parser.importlib.util.find_spec", return_value=None):
+        assert DSPyRedditPainParser.is_available() is False
+    with patch("dspy_parser.importlib.util.find_spec", return_value=object()):
+        assert DSPyRedditPainParser.is_available() is True
 
 
 def test_model_name_for_codex_provider_uses_openai_prefix():

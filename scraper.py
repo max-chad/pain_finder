@@ -423,19 +423,30 @@ class RedditScraper:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
             feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+            feed_error: Exception | None = None
 
             async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
+                nonlocal feed_error
                 url = f"https://www.reddit.com/r/{subreddit}/{feed}.json"
-                return await self._request_json_with_retries(
-                    client=client,
-                    url=url,
-                    params=params,
-                    headers=headers,
-                )
+                try:
+                    return await self._request_json_with_retries(
+                        client=client,
+                        url=url,
+                        params=params,
+                        headers=headers,
+                    )
+                except Exception as e:
+                    feed_error = e
+                    logger.warning("Reddit public feed failed for r/%s feed=%s: %s", subreddit, feed, e)
+                    return None
 
             payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            if all(payload is None for payload in payloads) and feed_error is not None:
+                raise feed_error
 
             for payload in payloads:
+                if payload is None:
+                    continue
                 for child in payload.get("data", {}).get("children", []):
                     post = self._build_post(subreddit, child.get("data", {}))
                     if post is None:
@@ -444,17 +455,23 @@ class RedditScraper:
 
             async def fetch_search(query: str, params: dict[str, Any]) -> Any:
                 url = f"https://www.reddit.com/r/{subreddit}/search.json"
-                return await self._request_json_with_retries(
-                    client=client,
-                    url=url,
-                    params=params,
-                    headers=headers,
-                )
+                try:
+                    return await self._request_json_with_retries(
+                        client=client,
+                        url=url,
+                        params=params,
+                        headers=headers,
+                    )
+                except Exception as e:
+                    logger.warning("Reddit public search failed for r/%s query=%r: %s", subreddit, query, e)
+                    return None
 
             search_payloads = await asyncio.gather(
                 *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
             )
             for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
+                if payload is None:
+                    continue
                 for child in payload.get("data", {}).get("children", []):
                     post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
                     if post is None:
@@ -488,19 +505,30 @@ class RedditScraper:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
             feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+            feed_error: Exception | None = None
 
             async def fetch_feed(feed: str, params: dict[str, Any]) -> str:
-                response = await client.get(
-                    self._rss_feed_url(subreddit, feed),
-                    params=self._rss_request_params(params),
-                    headers=headers,
-                    timeout=20,
-                )
-                response.raise_for_status()
-                return response.text
+                nonlocal feed_error
+                try:
+                    response = await client.get(
+                        self._rss_feed_url(subreddit, feed),
+                        params=self._rss_request_params(params),
+                        headers=headers,
+                        timeout=20,
+                    )
+                    response.raise_for_status()
+                    return response.text
+                except Exception as e:
+                    feed_error = e
+                    logger.warning("RSS feed failed for r/%s feed=%s: %s", subreddit, feed, e)
+                    return ""
 
             feed_payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            if all(not payload for payload in feed_payloads) and feed_error is not None:
+                raise feed_error
             for payload in feed_payloads:
+                if not payload:
+                    continue
                 for post in self._parse_rss_entries(subreddit, payload):
                     self._merge_post(posts_by_id, post)
 
@@ -550,17 +578,28 @@ class RedditScraper:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
             feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+            feed_error: Exception | None = None
 
             async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
-                return await self._request_oauth_json(
-                    client=client,
-                    path=f"/r/{subreddit}/{feed}.json",
-                    params=params,
-                )
+                nonlocal feed_error
+                try:
+                    return await self._request_oauth_json(
+                        client=client,
+                        path=f"/r/{subreddit}/{feed}.json",
+                        params=params,
+                    )
+                except Exception as e:
+                    feed_error = e
+                    logger.warning("Reddit OAuth feed failed for r/%s feed=%s: %s", subreddit, feed, e)
+                    return None
 
             payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            if all(payload is None for payload in payloads) and feed_error is not None:
+                raise feed_error
 
             for payload in payloads:
+                if payload is None:
+                    continue
                 for child in payload.get("data", {}).get("children", []):
                     post = self._build_post(subreddit, child.get("data", {}))
                     if post is None:
@@ -568,16 +607,22 @@ class RedditScraper:
                     self._merge_post(posts_by_id, post)
 
             async def fetch_search(query: str, params: dict[str, Any]) -> Any:
-                return await self._request_oauth_json(
-                    client=client,
-                    path=f"/r/{subreddit}/search.json",
-                    params=params,
-                )
+                try:
+                    return await self._request_oauth_json(
+                        client=client,
+                        path=f"/r/{subreddit}/search.json",
+                        params=params,
+                    )
+                except Exception as e:
+                    logger.warning("Reddit OAuth search failed for r/%s query=%r: %s", subreddit, query, e)
+                    return None
 
             search_payloads = await asyncio.gather(
                 *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
             )
             for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
+                if payload is None:
+                    continue
                 for child in payload.get("data", {}).get("children", []):
                     post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
                     if post is None:

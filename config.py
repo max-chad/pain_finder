@@ -94,7 +94,7 @@ SCRAPER_RETRY_BASE_DELAY = float(os.getenv("SCRAPER_RETRY_BASE_DELAY", "1.0"))
 SCRAPER_FEED_MIX_JSON = os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "top"]')
 SCRAPER_SEARCH_QUERIES_JSON = os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]")
 
-DSPY_REDDIT_PARSER_ENABLED = os.getenv("DSPY_REDDIT_PARSER_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+DSPY_REDDIT_PARSER_ENABLED = os.getenv("DSPY_REDDIT_PARSER_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
 DSPY_PROVIDER = _first_env("DSPY_PROVIDER", default=LLM_PROVIDER).strip().lower() or LLM_PROVIDER
 DSPY_MODEL = _first_env("DSPY_MODEL", default=LLM_MODEL).strip() or LLM_MODEL
 DSPY_REASONING_EFFORT = _first_env("DSPY_REASONING_EFFORT", default=LLM_REASONING_EFFORT).strip().lower() or LLM_REASONING_EFFORT

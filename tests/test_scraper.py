@@ -375,6 +375,43 @@ async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_moc
     assert {post.post_id for post in posts} == {"reddit:same", "reddit:fresh"}
 
 
+async def test_fetch_public_json_keeps_successful_feed_when_peer_feed_fails():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    async def payload_or_error(*, client, url, params, headers):
+        if url.endswith("/top.json"):
+            raise RuntimeError("top feed unavailable")
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "newonly",
+                            "title": "New feed pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/newonly",
+                            "score": 8,
+                            "permalink": "/r/python/comments/newonly/new-feed-pain/",
+                        }
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_json_with_retries", side_effect=payload_or_error):
+        posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:newonly"]
+
+
 async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_query(respx_mock):
     respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
         return_value=httpx.Response(
@@ -444,6 +481,44 @@ async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_q
     assert by_id["reddit:same"].discovery_query == "spreadsheet workaround"
     assert by_id["reddit:searchonly"].discovery_query == "spreadsheet workaround"
     assert search_route.call_count == 1
+
+
+async def test_fetch_public_json_treats_search_query_failure_as_optional():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["spreadsheet workaround"],
+    )
+
+    async def payload_or_error(*, client, url, params, headers):
+        if url.endswith("/search.json"):
+            raise RuntimeError("search unavailable")
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "toponly",
+                            "title": "Top feed pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/toponly",
+                            "score": 8,
+                            "permalink": "/r/python/comments/toponly/top-feed-pain/",
+                        }
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_json_with_retries", side_effect=payload_or_error):
+        posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:toponly"]
 
 
 async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_mock):
@@ -601,6 +676,33 @@ async def test_fetch_rss_merges_feed_and_search_results(respx_mock):
     assert search_route.call_count == 1
 
 
+async def test_fetch_rss_keeps_successful_feed_when_peer_feed_fails(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_rssnew</id>
+        <title>New RSS pain</title>
+        <summary>Manual checks still break</summary>
+        <link href='https://reddit.com/r/python/comments/rssnew/new-rss-pain/' />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(503))
+    respx_mock.get("https://old.reddit.com/r/python/new/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:rssnew"]
+
+
 async def test_fetch_oauth_json_requests_feeds_concurrently():
     from unittest.mock import patch
 
@@ -628,6 +730,43 @@ async def test_fetch_oauth_json_requests_feeds_concurrently():
 
     assert posts == []
     assert max_active_requests == 3
+
+
+async def test_fetch_oauth_json_keeps_successful_feed_when_peer_feed_fails():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    async def payload_or_error(*, client, path, params):
+        if path.endswith("/top.json"):
+            raise RuntimeError("top feed unavailable")
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "oauthnew",
+                            "title": "OAuth new pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/oauthnew",
+                            "score": 8,
+                            "permalink": "/r/python/comments/oauthnew/oauth-new-pain/",
+                        }
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_oauth_json", side_effect=payload_or_error):
+        posts = await scraper._fetch_oauth_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:oauthnew"]
 
 
 async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):

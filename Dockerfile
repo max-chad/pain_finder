@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN mkdir -p /app/reports \
+RUN mkdir -p /app/data /app/reports \
     && chown -R appuser:appuser /app
 
 USER appuser

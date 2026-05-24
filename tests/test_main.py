@@ -4,6 +4,25 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_build_dspy_parser_returns_none_when_dependency_missing(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+
+    class MissingDSPyParser:
+        @staticmethod
+        def is_available():
+            return False
+
+    monkeypatch.setattr(main, "DSPyRedditPainParser", MissingDSPyParser)
+
+    assert main._build_dspy_parser() is None
+
+
 @pytest.mark.asyncio
 async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
@@ -22,6 +41,8 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
 
+    import config
+    importlib.reload(config)
     main = importlib.import_module("main")
     main = importlib.reload(main)
     main.config.APP_MODE = "telegram"

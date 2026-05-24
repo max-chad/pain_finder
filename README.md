@@ -115,7 +115,7 @@ Scraper controls:
 
 Optional DSPy Reddit parser:
 
-- `DSPY_REDDIT_PARSER_ENABLED` (default `1`)
+- `DSPY_REDDIT_PARSER_ENABLED` (default `0`; set to `1` after installing `requirements-dspy.txt`)
 - `DSPY_PROVIDER` (defaults to `LLM_PROVIDER`, so Codex by default)
 - `DSPY_MODEL` (defaults to `LLM_MODEL`)
 - `DSPY_REASONING_EFFORT` (defaults to `LLM_REASONING_EFFORT`)
@@ -124,7 +124,7 @@ Optional DSPy Reddit parser:
 - `DSPY_TEMPERATURE`
 - `DSPY_MAX_TOKENS`
 
-Install the optional DSPy dependency only when this parser path is needed:
+The DSPy dependency is intentionally optional and is not installed by the base requirements. Install it only when this parser path is needed:
 
 ```bash
 pip install -r requirements-dspy.txt
@@ -238,7 +238,7 @@ docker compose up -d --build
 
 Persisted mounts in `docker-compose.yml`:
 
-- `./pain_finder.db -> /app/pain_finder.db`
+- `./data -> /app/data` (`DB_PATH=/app/data/pain_finder.db`)
 - `./reports -> /app/reports`
 
 ## Quality Gates
@@ -246,6 +246,7 @@ Persisted mounts in `docker-compose.yml`:
 ```bash
 ruff check .
 mypy .
+python -m pip_audit -r requirements.txt
 pytest --cov=. --cov-fail-under=80 -q
 ```
 

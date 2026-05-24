@@ -43,6 +43,27 @@ def _build_review_targets() -> list[ReviewTarget]:
     return targets
 
 
+def _build_dspy_parser():
+    if not config.DSPY_REDDIT_PARSER_ENABLED:
+        return None
+    if not config.DSPY_API_KEY:
+        logger.warning("DSPy Reddit parser enabled but no API key was provided; falling back to the configured LLM client")
+        return None
+    dspy_available = getattr(DSPyRedditPainParser, "is_available", lambda: True)()
+    if not dspy_available:
+        logger.warning("DSPy Reddit parser enabled but the dspy package is not installed; falling back to the configured LLM client")
+        return None
+    return DSPyRedditPainParser(
+        api_key=config.DSPY_API_KEY,
+        provider=config.DSPY_PROVIDER,
+        model=config.DSPY_MODEL,
+        api_base=config.DSPY_API_BASE,
+        reasoning_effort=config.DSPY_REASONING_EFFORT,
+        temperature=config.DSPY_TEMPERATURE,
+        max_tokens=config.DSPY_MAX_TOKENS,
+    )
+
+
 async def _publish_daily_digest(*, digest_service: DailyDigestDocumentService):
     result = await digest_service.build_document(
         hours=config.DIGEST_HOURS,
@@ -118,19 +139,7 @@ async def run() -> None:
         max_tokens=config.LLM_MAX_TOKENS,
         primary_max_output_tokens=config.PRIMARY_MAX_OUTPUT_TOKENS,
     )
-    dspy_parser = None
-    if config.DSPY_REDDIT_PARSER_ENABLED and config.DSPY_API_KEY:
-        dspy_parser = DSPyRedditPainParser(
-            api_key=config.DSPY_API_KEY,
-            provider=config.DSPY_PROVIDER,
-            model=config.DSPY_MODEL,
-            api_base=config.DSPY_API_BASE,
-            reasoning_effort=config.DSPY_REASONING_EFFORT,
-            temperature=config.DSPY_TEMPERATURE,
-            max_tokens=config.DSPY_MAX_TOKENS,
-        )
-    elif config.DSPY_REDDIT_PARSER_ENABLED:
-        logger.warning("DSPy Reddit parser enabled but no API key was provided; falling back to the configured LLM client")
+    dspy_parser = _build_dspy_parser()
 
     classifier = Classifier(
         openrouter=openrouter,

@@ -48,3 +48,31 @@
 - Change: Move `dspy>=3.2` from `requirements.txt` to `requirements-dspy.txt` and document the optional install command.
 - Verification: `pip-audit -r requirements.txt` and full quality gates are run after this note.
 - Impact: Removes a vulnerable optional transitive dependency from default installs while preserving an explicit opt-in path for DSPy users.
+
+## 2026-05-25 - DSPy parser is explicit opt-in
+
+- Reason: after making DSPy an optional install, the parser flag still defaulted to enabled, so a base deployment with an LLM key would try the missing optional parser path before falling back.
+- Change: Default `DSPY_REDDIT_PARSER_ENABLED` to off, update `.env.example` and README, and guard startup so an explicitly enabled parser is skipped once if the `dspy` package is not installed.
+- Verification: Added config, startup, and availability tests for the opt-in behavior.
+- Impact: Keeps default deployments on the supported base dependency set without per-post optional-dependency failures or noisy fallback logs.
+
+## 2026-05-25 - Partial Reddit feed failure tolerance
+
+- Reason: public JSON, OAuth JSON, and RSS ingestion used `asyncio.gather` over multiple Reddit feeds/searches; one failed endpoint could discard successful peer feed payloads or optional search results.
+- Change: Treat individual feed/search failures independently, keep successful peer feeds, and still raise to the next fallback layer when every primary feed fails.
+- Verification: Added tests for partial public JSON, OAuth JSON, RSS, and optional search failures.
+- Impact: Improves data collection reliability under Reddit endpoint/rate-limit instability without hiding total source failure.
+
+## 2026-05-25 - Docker SQLite data directory
+
+- Reason: `docker-compose.yml` bind-mounted `./pain_finder.db` directly to `/app/pain_finder.db`; on a fresh host a missing bind source can be created as a directory, causing SQLite startup failures.
+- Change: Mount `./data` to `/app/data`, set `DB_PATH=/app/data/pain_finder.db`, create `/app/data` in the image, ignore local data directories in Git/Docker build context, and make the `.env` file optional for Compose config validation.
+- Verification: Docker Compose config validation is run after this note.
+- Impact: Makes first-run Docker deployment more reliable and keeps persistent DB/report storage explicit.
+
+## 2026-05-25 - CI dependency audit gate
+
+- Reason: dependency CVE checks were run locally but were not part of the GitHub Actions quality gate, so future vulnerable default dependencies could regress silently.
+- Change: Install `pip-audit` in CI and run `python -m pip_audit -r requirements.txt`; document the same command in README quality gates.
+- Verification: Local `pip-audit` and workflow syntax/config checks are run after this note.
+- Impact: Moves dependency security from an ad-hoc local check into the default CI path.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 from typing import Any
 
@@ -11,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class DSPyRedditPainParser:
+    @staticmethod
+    def is_available() -> bool:
+        return importlib.util.find_spec("dspy") is not None
+
     def __init__(
         self,
         *,

@@ -9,5 +9,6 @@ __pycache__
 .coverage
 htmlcov
 reports
+data
 pain_finder.db
 
