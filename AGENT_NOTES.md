@@ -174,3 +174,10 @@
 - Change: Add a shared Telegram text limiter and apply it to pain cards plus generated deep-dive, digest, macro, and GTM replies.
 - Verification: Added bot tests proving long card fields, deep-dive summaries, and GTM output stay within the Telegram text limit; full gates are run after this note.
 - Impact: Prevents oversized operator responses from failing at send/edit time while preserving a visible truncation marker.
+
+## 2026-05-25 - Scheduled collection no longer depends on Telegram delivery
+
+- Reason: Scheduled analysis and external-source jobs sent Telegram notifications after successful collection; a transient Telegram failure could make the scheduler treat the whole job as failed and skip normal success bookkeeping.
+- Change: Wrap grouped notifications and direct Telegram alert messages in safe helpers that log delivery failures, cap message text, and do not raise back into collection jobs.
+- Verification: Added main tests proving grouped notification and direct-message failures are swallowed after attempting delivery; full gates are run after this note.
+- Impact: Keeps Reddit/HN/review collection and budget-pause state transitions reliable even when Telegram delivery is temporarily unavailable.

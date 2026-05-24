@@ -1,5 +1,6 @@
 ﻿import importlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -45,6 +46,44 @@ async def test_build_shutdown_event_registers_sigint_and_sigterm(monkeypatch):
     assert event.is_set() is False
     registered[1][1](*registered[1][2])
     assert event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_safe_grouped_notification_swallows_delivery_failure(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    signals = [object()]
+    bot = SimpleNamespace(send_grouped_notification=AsyncMock(side_effect=RuntimeError("telegram down")))
+
+    await main._send_grouped_notification_safely(bot, chat_id=123, signals=signals, label="r/python")
+
+    bot.send_grouped_notification.assert_awaited_once_with(chat_id=123, signals=signals, label="r/python")
+
+
+@pytest.mark.asyncio
+async def test_safe_telegram_message_truncates_and_swallows_delivery_failure(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    telegram_bot = SimpleNamespace(send_message=AsyncMock(side_effect=RuntimeError("telegram down")))
+
+    await main._send_telegram_message_safely(
+        telegram_bot,
+        chat_id=123,
+        text="x" * 6000,
+        context="macro_trend",
+    )
+
+    sent_text = telegram_bot.send_message.await_args.kwargs["text"]
+    assert len(sent_text) <= 4096
+    assert "[truncated]" in sent_text
 
 
 @pytest.mark.asyncio

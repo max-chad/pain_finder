@@ -4,7 +4,7 @@ import os
 import signal
 
 import config
-from bot import PainFinderBot
+from bot import PainFinderBot, limit_telegram_text
 from budget import BudgetGuard
 from classifier import Classifier
 from clusterer import MacroTrendClusterer
@@ -27,6 +27,22 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+async def _send_grouped_notification_safely(
+    bot: PainFinderBot, *, chat_id: int, signals: list, label: str
+) -> None:
+    try:
+        await bot.send_grouped_notification(chat_id=chat_id, signals=signals, label=label)
+    except Exception:
+        logger.exception("telegram_grouped_notification_failed stage=notification label=%s", label)
+
+
+async def _send_telegram_message_safely(bot, *, chat_id: int, text: str, context: str) -> None:
+    try:
+        await bot.send_message(chat_id=chat_id, text=limit_telegram_text(text))
+    except Exception:
+        logger.exception("telegram_message_failed stage=notification context=%s", context)
 
 
 def _build_review_targets() -> list[ReviewTarget]:
@@ -246,7 +262,8 @@ async def run() -> None:
     async def analyze_and_notify(subreddit: str) -> None:
         run_result = await pipeline.analyze_subreddit(subreddit=subreddit, limit=100)
         if notifications_enabled and run_result.pain_count:
-            await bot.send_grouped_notification(
+            await _send_grouped_notification_safely(
+                bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label=f"r/{subreddit}",
@@ -256,13 +273,15 @@ async def run() -> None:
         result = await clusterer.run(window_days=config.TREND_LOOKBACK_DAYS)
         if notifications_enabled and bot.app and result.clusters:
             top = result.clusters[0]
-            await bot.app.bot.send_message(
+            await _send_telegram_message_safely(
+                bot.app.bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 text=(
                     f"Macro trend detected ({len(result.clusters)} clusters, {result.candidate_count} candidates).\n"
                     f"Top: {top.label} | items={top.item_count} | signal={top.estimated_monetization_signal}\n"
                     f"{top.summary}"
                 ),
+                context="macro_trend",
             )
 
     async def run_hn_job() -> None:
@@ -277,7 +296,8 @@ async def run() -> None:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="hn", run_scope="hackernews")
         if notifications_enabled and run_result.pain_count:
-            await bot.send_grouped_notification(
+            await _send_grouped_notification_safely(
+                bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label="HN",
@@ -294,7 +314,8 @@ async def run() -> None:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="reviews", run_scope="reviews")
         if notifications_enabled and run_result.pain_count:
-            await bot.send_grouped_notification(
+            await _send_grouped_notification_safely(
+                bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label="Reviews",
@@ -326,9 +347,11 @@ async def run() -> None:
     async def on_budget_pause(reason: str) -> None:
         await scheduler.reload_jobs()
         if bot.app:
-            await bot.app.bot.send_message(
+            await _send_telegram_message_safely(
+                bot.app.bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 text=f"Budget cap reached. Monitoring paused. Reason: {reason}. Use /resume to override.",
+                context="budget_pause",
             )
 
     budget_guard.set_on_pause_callback(on_budget_pause)
