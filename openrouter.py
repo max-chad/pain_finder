@@ -556,6 +556,7 @@ class OpenRouterClient:
         fallback_reason: str | None = None,
         max_output_tokens: int | None = None,
     ) -> dict[str, Any] | None:
+        token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
         cache_key = self._build_cache_key(
             model=model,
             operation=operation,
@@ -563,7 +564,8 @@ class OpenRouterClient:
             provider=self.provider,
             request_path=self._request_path(),
             reasoning_effort=self.reasoning_effort,
-            max_output_tokens=max_output_tokens,
+            temperature=self.temperature,
+            token_limit=token_limit,
         )
         prompt_hash = self._prompt_hash(prompt)
         cached_payload = await self._get_cached_payload(cache_key)
@@ -704,7 +706,8 @@ class OpenRouterClient:
         provider: str,
         request_path: str,
         reasoning_effort: str,
-        max_output_tokens: int | None,
+        temperature: float | None,
+        token_limit: int | None,
     ) -> str:
         digest = cls._prompt_hash(prompt)
         config_fingerprint = hashlib.sha256(
@@ -713,7 +716,8 @@ class OpenRouterClient:
                     "provider": provider,
                     "request_path": request_path,
                     "reasoning_effort": reasoning_effort,
-                    "max_output_tokens": max_output_tokens,
+                    "temperature": temperature,
+                    "token_limit": token_limit,
                 },
                 sort_keys=True,
             ).encode("utf-8")

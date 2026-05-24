@@ -118,3 +118,10 @@
 - Change: Raise `ReviewFetchError` for target HTTP failures, keep partial target success in `fetch_many_targets`, and raise only when every enabled target fails.
 - Verification: Added targeted review scraper tests for partial target failure and all-target failure; full gates are run after this note.
 - Impact: Improves scheduled review ingestion diagnostics while preserving valid empty accessible pages as no-op results.
+
+## 2026-05-25 - LLM cache keys include generation config
+
+- Reason: LLM response cache keys included provider/model/path/reasoning but omitted temperature and used only explicit per-call max output tokens, so changing `LLM_TEMPERATURE` or global `LLM_MAX_TOKENS` could reuse stale payloads generated under different runtime settings.
+- Change: Include temperature and the effective token limit in the cache fingerprint.
+- Verification: Added a targeted cache-key test covering temperature and token-limit differences; full gates are run after this note.
+- Impact: Prevents config changes from silently reusing incompatible cached LLM responses during collection, deep dives, clustering, and GTM generation.

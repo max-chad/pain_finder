@@ -474,6 +474,24 @@ async def test_openrouter_uses_cache_hit_without_http_call():
     cache_db.get_cached_llm_payload.assert_awaited_once()
 
 
+def test_openrouter_cache_key_includes_generation_config():
+    base_kwargs = {
+        "model": "m1",
+        "operation": "deep_dive",
+        "prompt": "same prompt",
+        "provider": "openrouter",
+        "request_path": "https://openrouter.ai/api/v1/chat/completions",
+        "reasoning_effort": "high",
+    }
+
+    baseline = OpenRouterClient._build_cache_key(**base_kwargs, temperature=0.1, token_limit=4000)
+    hotter = OpenRouterClient._build_cache_key(**base_kwargs, temperature=0.7, token_limit=4000)
+    shorter = OpenRouterClient._build_cache_key(**base_kwargs, temperature=0.1, token_limit=1000)
+
+    assert baseline != hotter
+    assert baseline != shorter
+
+
 @respx.mock
 async def test_openrouter_stores_successful_response_in_cache():
     respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
