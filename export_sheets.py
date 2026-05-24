@@ -63,7 +63,7 @@ class ExportService:
 
         os.makedirs(self.reports_dir, exist_ok=True)
         scope = subreddit or "all"
-        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         csv_path = os.path.join(self.reports_dir, f"export_{scope}_{timestamp}.csv")
 
         headers = [

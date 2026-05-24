@@ -1,4 +1,5 @@
 import zipfile
+import re
 from unittest.mock import AsyncMock
 
 from digest_delivery import DailyDigestDocumentService
@@ -74,6 +75,7 @@ async def test_daily_digest_document_service_writes_grouped_docx(tmp_path):
     assert result.group_count == 2
     assert result.docx_path is not None
     assert result.docx_path.endswith(".docx")
+    assert re.search(r"daily_digest_\d{8}_\d{6}_\d{6}\.docx$", result.docx_path)
 
     with zipfile.ZipFile(result.docx_path) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")

@@ -1,4 +1,5 @@
 import csv
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from export_sheets import ExportService
@@ -37,6 +38,7 @@ async def test_export_service_writes_csv_and_returns_warning_when_sheets_fails(t
 
     assert result.row_count == 1
     assert result.csv_path.endswith(".csv")
+    assert re.search(r"export_python_\d{8}_\d{6}_\d{6}\.csv$", result.csv_path)
     assert result.warning is not None
     assert result.sheet_url is None
 

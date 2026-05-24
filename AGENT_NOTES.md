@@ -146,3 +146,10 @@
 - Change: Validate scheduler-facing env ranges and weekday values during config import.
 - Verification: Added config tests for invalid digest, macro, HN interval, and review interval values; full gates are run after this note.
 - Impact: Catches broken schedule configuration before runtime job loading and keeps operator errors explicit.
+
+## 2026-05-25 - Export and digest filenames include microseconds
+
+- Reason: CSV exports and daily digest documents used second-resolution timestamps, so repeated operator actions or scheduler retries within the same second could overwrite report artifacts.
+- Change: Include microseconds in export CSV and daily digest `.docx` filenames.
+- Verification: Added filename pattern assertions covering microsecond-resolution export and digest artifacts; full gates are run after this note.
+- Impact: Preserves distinct report artifacts during rapid repeated runs and makes operator/debug evidence less ambiguous.

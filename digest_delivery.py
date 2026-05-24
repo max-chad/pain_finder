@@ -92,7 +92,7 @@ class DailyDigestDocumentService:
             self._render_grouped_section(document, unknown_groups, max_items_per_group=max_items_per_group)
 
         os.makedirs(self.reports_dir, exist_ok=True)
-        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         final_path = os.path.join(self.reports_dir, f"daily_digest_{timestamp}.docx")
         tmp_path = f"{final_path}.tmp"
         try:
