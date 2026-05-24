@@ -236,6 +236,8 @@ pip install -r requirements-ml.txt
 docker compose up -d --build
 ```
 
+The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, SQLite storage, and report-directory writability without calling external APIs.
+
 Persisted mounts in `docker-compose.yml`:
 
 - `./data -> /app/data` (`DB_PATH=/app/data/pain_finder.db`)
@@ -245,7 +247,7 @@ Persisted mounts in `docker-compose.yml`:
 
 ```bash
 ruff check .
-mypy .
+mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py
 python -m pip_audit -r requirements.txt
 pytest --cov=. --cov-fail-under=80 -q
 ```

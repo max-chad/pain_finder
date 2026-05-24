@@ -17,5 +17,7 @@ RUN mkdir -p /app/data /app/reports \
 
 USER appuser
 
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 CMD ["python", "healthcheck.py"]
+
 CMD ["python", "main.py"]
 

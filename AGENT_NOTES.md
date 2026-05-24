@@ -76,3 +76,10 @@
 - Change: Install `pip-audit` in CI and run `python -m pip_audit -r requirements.txt`; document the same command in README quality gates.
 - Verification: Local `pip-audit` and workflow syntax/config checks are run after this note.
 - Impact: Moves dependency security from an ad-hoc local check into the default CI path.
+
+## 2026-05-25 - Local container healthcheck
+
+- Reason: Docker deployments had no local health signal proving that required env parsing, SQLite storage, and report output paths are usable after startup.
+- Change: Add `healthcheck.py`, wire it into the Dockerfile `HEALTHCHECK`, and document that it performs only local checks without external API calls.
+- Verification: Added healthcheck tests, included `healthcheck.py` in documented/CI mypy checks, and run Docker Compose config validation plus full quality gates after this note.
+- Impact: Improves deploy observability and catches broken volume/env/storage setups before data collection silently stalls.
