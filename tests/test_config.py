@@ -187,3 +187,27 @@ def test_config_loads_valid_enabled_source_environment(monkeypatch):
     assert config_module.REVIEWS_ENABLED is True
     assert config_module.REVIEW_TARGETS[0]["name"] == "Example CRM"
 
+
+def test_config_rejects_invalid_scheduler_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("DIGEST_HOUR_UTC", "24", "DIGEST_HOUR_UTC must be between 0 and 23"),
+        ("DIGEST_MINUTE_UTC", "60", "DIGEST_MINUTE_UTC must be between 0 and 59"),
+        ("MACRO_TREND_WEEKDAY_UTC", "funday", "MACRO_TREND_WEEKDAY_UTC must be one of: fri, mon, sat, sun, thu, tue, wed"),
+        ("MACRO_TREND_HOUR_UTC", "-1", "MACRO_TREND_HOUR_UTC must be between 0 and 23"),
+        ("HN_INTERVAL_HOURS", "0", "HN_INTERVAL_HOURS must be at least 1"),
+        ("REVIEWS_INTERVAL_HOURS", "0", "REVIEWS_INTERVAL_HOURS must be at least 1"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+

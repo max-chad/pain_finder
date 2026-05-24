@@ -49,6 +49,28 @@ def _choice_env(name: str, default: str, choices: set[str]) -> str:
     return value
 
 
+def _int_range_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _int_min_env(name: str, default: int, minimum: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return value
+
+
 def _json_list_env(name: str, default: list[Any]) -> list[Any]:
     raw = os.getenv(name)
     if raw is None:
@@ -138,8 +160,8 @@ APP_MODE = _choice_env("APP_MODE", "telegram", {"telegram", "hermes"})
 DIGEST_DELIVERY_ENABLED = _bool_env("DIGEST_DELIVERY_ENABLED")
 DIGEST_HOURS = int(os.getenv("DIGEST_HOURS", "24"))
 DIGEST_GROUP_BY = _choice_env("DIGEST_GROUP_BY", "niche", {"niche", "source", "category"})
-DIGEST_HOUR_UTC = int(os.getenv("DIGEST_HOUR_UTC", "9"))
-DIGEST_MINUTE_UTC = int(os.getenv("DIGEST_MINUTE_UTC", "0"))
+DIGEST_HOUR_UTC = _int_range_env("DIGEST_HOUR_UTC", 9, 0, 23)
+DIGEST_MINUTE_UTC = _int_range_env("DIGEST_MINUTE_UTC", 0, 0, 59)
 DIGEST_MIN_WTP = int(os.getenv("DIGEST_MIN_WTP", str(EXPORT_MIN_WTP)))
 DIGEST_MAX_ITEMS_PER_GROUP = int(os.getenv("DIGEST_MAX_ITEMS_PER_GROUP", "10"))
 CURRENT_OPPORTUNITY_MAX_AGE_DAYS = int(os.getenv("CURRENT_OPPORTUNITY_MAX_AGE_DAYS", "180"))
@@ -151,8 +173,8 @@ TREND_LOOKBACK_DAYS = int(os.getenv("TREND_LOOKBACK_DAYS", "30"))
 TREND_MIN_CLUSTER_SIZE = int(os.getenv("TREND_MIN_CLUSTER_SIZE", "3"))
 TREND_CLUSTER_SIMILARITY = float(os.getenv("TREND_CLUSTER_SIMILARITY", "0.72"))
 MACRO_TREND_ENABLED = _bool_env("MACRO_TREND_ENABLED", "1")
-MACRO_TREND_WEEKDAY_UTC = os.getenv("MACRO_TREND_WEEKDAY_UTC", "sun")
-MACRO_TREND_HOUR_UTC = int(os.getenv("MACRO_TREND_HOUR_UTC", "8"))
+MACRO_TREND_WEEKDAY_UTC = _choice_env("MACRO_TREND_WEEKDAY_UTC", "sun", {"mon", "tue", "wed", "thu", "fri", "sat", "sun"})
+MACRO_TREND_HOUR_UTC = _int_range_env("MACRO_TREND_HOUR_UTC", 8, 0, 23)
 
 HN_ENABLED = _bool_env("HN_ENABLED")
 HN_KEYWORDS_JSON = os.getenv(
@@ -161,12 +183,12 @@ HN_KEYWORDS_JSON = os.getenv(
 )
 HN_LOOKBACK_HOURS = int(os.getenv("HN_LOOKBACK_HOURS", "72"))
 HN_MAX_POSTS = int(os.getenv("HN_MAX_POSTS", "100"))
-HN_INTERVAL_HOURS = int(os.getenv("HN_INTERVAL_HOURS", "6"))
+HN_INTERVAL_HOURS = _int_min_env("HN_INTERVAL_HOURS", 6, 1)
 
 REVIEWS_ENABLED = _bool_env("REVIEWS_ENABLED")
 REVIEW_TARGETS_JSON = os.getenv("REVIEW_TARGETS_JSON", "[]")
 REVIEWS_MAX_PER_TARGET = int(os.getenv("REVIEWS_MAX_PER_TARGET", "30"))
-REVIEWS_INTERVAL_HOURS = int(os.getenv("REVIEWS_INTERVAL_HOURS", "24"))
+REVIEWS_INTERVAL_HOURS = _int_min_env("REVIEWS_INTERVAL_HOURS", 24, 1)
 
 GTM_ENABLED = _bool_env("GTM_ENABLED", "1")
 

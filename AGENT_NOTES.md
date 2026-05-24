@@ -139,3 +139,10 @@
 - Change: Validate source JSON arrays during config import, require non-empty HN keywords when `HN_ENABLED=1`, require at least one enabled review target with `site`, `name`, and `url` when `REVIEWS_ENABLED=1`, and reject unsupported Reddit feed names.
 - Verification: Added config tests for invalid enabled-source env and valid enabled-source env; full gates are run after this note.
 - Impact: Prevents source misconfiguration from looking like normal no-data collection in deployed scheduler runs.
+
+## 2026-05-25 - Scheduler env ranges fail fast
+
+- Reason: invalid digest/macro hours, minutes, weekdays, or source intervals were only rejected later by scheduler job construction or silently clamped, making deployment errors harder to diagnose.
+- Change: Validate scheduler-facing env ranges and weekday values during config import.
+- Verification: Added config tests for invalid digest, macro, HN interval, and review interval values; full gates are run after this note.
+- Impact: Catches broken schedule configuration before runtime job loading and keeps operator errors explicit.
