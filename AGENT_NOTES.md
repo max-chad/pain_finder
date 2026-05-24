@@ -181,3 +181,10 @@
 - Change: Wrap grouped notifications and direct Telegram alert messages in safe helpers that log delivery failures, cap message text, and do not raise back into collection jobs.
 - Verification: Added main tests proving grouped notification and direct-message failures are swallowed after attempting delivery; full gates are run after this note.
 - Impact: Keeps Reddit/HN/review collection and budget-pause state transitions reliable even when Telegram delivery is temporarily unavailable.
+
+## 2026-05-25 - Runtime numeric config fails fast
+
+- Reason: Several critical numeric env vars were parsed with raw `int()`/`float()` and accepted invalid runtime values such as zero token limits, impossible similarity thresholds, or non-positive source limits until later runtime failures.
+- Change: Reuse strict config helpers for LLM token limits, classifier concurrency, scraper retry/comment settings, WTP thresholds, digest windows, budget, clustering thresholds, and source collection limits.
+- Verification: Added config tests covering invalid runtime numeric values; full gates are run after this note.
+- Impact: Converts bad deploy configuration into clear startup errors instead of late OpenAI/OpenRouter, scheduler, clusterer, or source-collection failures.

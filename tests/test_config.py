@@ -211,3 +211,29 @@ def test_config_rejects_invalid_scheduler_environment(monkeypatch):
         monkeypatch.delenv(env_name)
         config_module = importlib.reload(config_module)
 
+
+def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("LLM_MAX_TOKENS", "0", "LLM_MAX_TOKENS must be at least 1"),
+        ("PRIMARY_MAX_OUTPUT_TOKENS", "0", "PRIMARY_MAX_OUTPUT_TOKENS must be at least 1"),
+        ("CLASSIFIER_MAX_CONCURRENCY", "0", "CLASSIFIER_MAX_CONCURRENCY must be at least 1"),
+        ("DEDUP_SIMILARITY_THRESHOLD", "1.5", "DEDUP_SIMILARITY_THRESHOLD must be between 0 and 1"),
+        ("TREND_CLUSTER_SIMILARITY", "-0.1", "TREND_CLUSTER_SIMILARITY must be between 0 and 1"),
+        ("DIGEST_HOURS", "169", "DIGEST_HOURS must be between 1 and 168"),
+        ("REVIEWS_MAX_PER_TARGET", "0", "REVIEWS_MAX_PER_TARGET must be at least 1"),
+        ("DAILY_BUDGET_USD", "-0.01", "DAILY_BUDGET_USD must be at least 0"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+
