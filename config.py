@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -46,6 +47,23 @@ def _choice_env(name: str, default: str, choices: set[str]) -> str:
         allowed = ", ".join(sorted(choices))
         raise ValueError(f"{name} must be one of: {allowed}")
     return value
+
+
+def _json_list_env(name: str, default: list[Any]) -> list[Any]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a valid JSON array") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"{name} must be a JSON array")
+    return parsed
+
+
+def _bool_env(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() not in {"0", "false", "off", "no"}
 
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -102,7 +120,7 @@ SCRAPER_RETRY_BASE_DELAY = float(os.getenv("SCRAPER_RETRY_BASE_DELAY", "1.0"))
 SCRAPER_FEED_MIX_JSON = os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "top"]')
 SCRAPER_SEARCH_QUERIES_JSON = os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]")
 
-DSPY_REDDIT_PARSER_ENABLED = os.getenv("DSPY_REDDIT_PARSER_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
+DSPY_REDDIT_PARSER_ENABLED = _bool_env("DSPY_REDDIT_PARSER_ENABLED")
 DSPY_PROVIDER = _first_env("DSPY_PROVIDER", default=LLM_PROVIDER).strip().lower() or LLM_PROVIDER
 DSPY_MODEL = _first_env("DSPY_MODEL", default=LLM_MODEL).strip() or LLM_MODEL
 DSPY_REASONING_EFFORT = _first_env("DSPY_REASONING_EFFORT", default=LLM_REASONING_EFFORT).strip().lower() or LLM_REASONING_EFFORT
@@ -117,7 +135,7 @@ GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
 GOOGLE_SHEETS_WORKSHEET_PREFIX = os.getenv("GOOGLE_SHEETS_WORKSHEET_PREFIX", "pain_finder")
 
 APP_MODE = _choice_env("APP_MODE", "telegram", {"telegram", "hermes"})
-DIGEST_DELIVERY_ENABLED = os.getenv("DIGEST_DELIVERY_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
+DIGEST_DELIVERY_ENABLED = _bool_env("DIGEST_DELIVERY_ENABLED")
 DIGEST_HOURS = int(os.getenv("DIGEST_HOURS", "24"))
 DIGEST_GROUP_BY = _choice_env("DIGEST_GROUP_BY", "niche", {"niche", "source", "category"})
 DIGEST_HOUR_UTC = int(os.getenv("DIGEST_HOUR_UTC", "9"))
@@ -132,11 +150,11 @@ DAILY_BUDGET_USD = float(os.getenv("DAILY_BUDGET_USD", "2.0"))
 TREND_LOOKBACK_DAYS = int(os.getenv("TREND_LOOKBACK_DAYS", "30"))
 TREND_MIN_CLUSTER_SIZE = int(os.getenv("TREND_MIN_CLUSTER_SIZE", "3"))
 TREND_CLUSTER_SIMILARITY = float(os.getenv("TREND_CLUSTER_SIMILARITY", "0.72"))
-MACRO_TREND_ENABLED = os.getenv("MACRO_TREND_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+MACRO_TREND_ENABLED = _bool_env("MACRO_TREND_ENABLED", "1")
 MACRO_TREND_WEEKDAY_UTC = os.getenv("MACRO_TREND_WEEKDAY_UTC", "sun")
 MACRO_TREND_HOUR_UTC = int(os.getenv("MACRO_TREND_HOUR_UTC", "8"))
 
-HN_ENABLED = os.getenv("HN_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
+HN_ENABLED = _bool_env("HN_ENABLED")
 HN_KEYWORDS_JSON = os.getenv(
     "HN_KEYWORDS_JSON",
     '["internal tool", "frustrating", "we built our own", "manual process"]',
@@ -145,12 +163,12 @@ HN_LOOKBACK_HOURS = int(os.getenv("HN_LOOKBACK_HOURS", "72"))
 HN_MAX_POSTS = int(os.getenv("HN_MAX_POSTS", "100"))
 HN_INTERVAL_HOURS = int(os.getenv("HN_INTERVAL_HOURS", "6"))
 
-REVIEWS_ENABLED = os.getenv("REVIEWS_ENABLED", "0").strip().lower() not in {"0", "false", "off", "no"}
+REVIEWS_ENABLED = _bool_env("REVIEWS_ENABLED")
 REVIEW_TARGETS_JSON = os.getenv("REVIEW_TARGETS_JSON", "[]")
 REVIEWS_MAX_PER_TARGET = int(os.getenv("REVIEWS_MAX_PER_TARGET", "30"))
 REVIEWS_INTERVAL_HOURS = int(os.getenv("REVIEWS_INTERVAL_HOURS", "24"))
 
-GTM_ENABLED = os.getenv("GTM_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+GTM_ENABLED = _bool_env("GTM_ENABLED", "1")
 
 
 def parse_json_env(raw: str, default):
@@ -162,20 +180,39 @@ def parse_json_env(raw: str, default):
 
 LLM_MODEL_PRICING = parse_json_env(LLM_MODEL_PRICING_JSON, {})
 OPENROUTER_MODEL_PRICING = LLM_MODEL_PRICING
-HN_KEYWORDS = parse_json_env(HN_KEYWORDS_JSON, [])
+HN_KEYWORDS = _json_list_env("HN_KEYWORDS_JSON", ["internal tool", "frustrating", "we built our own", "manual process"])
 if not isinstance(HN_KEYWORDS, list):
     HN_KEYWORDS = []
+HN_KEYWORDS = [str(keyword).strip() for keyword in HN_KEYWORDS if str(keyword).strip()]
+if HN_ENABLED and not HN_KEYWORDS:
+    raise ValueError("HN_KEYWORDS_JSON must contain at least one non-empty keyword when HN_ENABLED=1")
 
-REVIEW_TARGETS = parse_json_env(REVIEW_TARGETS_JSON, [])
+REVIEW_TARGETS = _json_list_env("REVIEW_TARGETS_JSON", [])
 if not isinstance(REVIEW_TARGETS, list):
     REVIEW_TARGETS = []
+_valid_review_targets = [
+    target
+    for target in REVIEW_TARGETS
+    if isinstance(target, dict)
+    and str(target.get("site") or "").strip()
+    and str(target.get("name") or "").strip()
+    and str(target.get("url") or "").strip()
+    and str(target.get("enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
+]
+if REVIEWS_ENABLED and not _valid_review_targets:
+    raise ValueError("REVIEW_TARGETS_JSON must contain at least one enabled target with site, name, and url when REVIEWS_ENABLED=1")
 
-SCRAPER_FEED_MIX = parse_json_env(SCRAPER_FEED_MIX_JSON, ["new", "rising", "top"])
+SCRAPER_FEED_MIX = _json_list_env("SCRAPER_FEED_MIX_JSON", ["new", "rising", "top"])
 if not isinstance(SCRAPER_FEED_MIX, list):
     SCRAPER_FEED_MIX = ["new", "rising", "top"]
-SCRAPER_FEED_MIX = [str(feed) for feed in SCRAPER_FEED_MIX]
+SCRAPER_FEED_MIX = [str(feed).strip().lower() for feed in SCRAPER_FEED_MIX if str(feed).strip()]
+_ALLOWED_SCRAPER_FEEDS = {"new", "rising", "top"}
+_invalid_feeds = [feed for feed in SCRAPER_FEED_MIX if feed not in _ALLOWED_SCRAPER_FEEDS]
+if not SCRAPER_FEED_MIX or _invalid_feeds:
+    allowed_feeds = ", ".join(sorted(_ALLOWED_SCRAPER_FEEDS))
+    raise ValueError(f"SCRAPER_FEED_MIX_JSON must contain only supported feeds: {allowed_feeds}")
 
-SCRAPER_SEARCH_QUERIES = parse_json_env(SCRAPER_SEARCH_QUERIES_JSON, [])
+SCRAPER_SEARCH_QUERIES = _json_list_env("SCRAPER_SEARCH_QUERIES_JSON", [])
 if not isinstance(SCRAPER_SEARCH_QUERIES, list):
     SCRAPER_SEARCH_QUERIES = []
 SCRAPER_SEARCH_QUERIES = [str(query).strip() for query in SCRAPER_SEARCH_QUERIES if str(query).strip()]

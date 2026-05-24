@@ -132,3 +132,10 @@
 - Change: Validate those documented enum environment variables during config import and raise a clear `ValueError` on invalid values.
 - Verification: Added a config test covering invalid values for all three enum env vars; full gates are run after this note.
 - Impact: Catches deployment typos before startup instead of running the collector in an unintended mode.
+
+## 2026-05-25 - Enabled source config fails fast
+
+- Reason: enabled HN/review sources with empty or malformed source configuration could silently run as successful zero-item jobs, and invalid Reddit feed names could fall back to unintended default feeds.
+- Change: Validate source JSON arrays during config import, require non-empty HN keywords when `HN_ENABLED=1`, require at least one enabled review target with `site`, `name`, and `url` when `REVIEWS_ENABLED=1`, and reject unsupported Reddit feed names.
+- Verification: Added config tests for invalid enabled-source env and valid enabled-source env; full gates are run after this note.
+- Impact: Prevents source misconfiguration from looking like normal no-data collection in deployed scheduler runs.
