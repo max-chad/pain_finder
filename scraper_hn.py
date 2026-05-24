@@ -27,11 +27,15 @@ class HackerNewsScraper:
         headers = {"User-Agent": self.user_agent}
         since_ts = int((datetime.now(UTC) - timedelta(hours=max(1, lookback_hours))).timestamp())
         hits: dict[str, Post] = {}
+        attempted_queries = 0
+        successful_queries = 0
+        failed_queries: list[str] = []
 
         async with httpx.AsyncClient(timeout=20) as client:
             for keyword in keywords:
                 if not isinstance(keyword, str) or not keyword.strip():
                     continue
+                attempted_queries += 1
                 params = {
                     "query": keyword.strip(),
                     "tags": "story",
@@ -43,8 +47,10 @@ class HackerNewsScraper:
                     response.raise_for_status()
                 except httpx.HTTPError as e:
                     logger.warning("HN fetch failed for query '%s': %s", keyword, e)
+                    failed_queries.append(keyword)
                     continue
 
+                successful_queries += 1
                 payload = response.json()
                 for hit in payload.get("hits", []):
                     object_id = str(hit.get("objectID", "")).strip()
@@ -73,5 +79,8 @@ class HackerNewsScraper:
                         break
                 if len(hits) >= max_posts:
                     break
+
+        if attempted_queries and failed_queries and successful_queries == 0:
+            raise RuntimeError(f"HN fetch failed for all {attempted_queries} keyword queries")
 
         return list(hits.values())[:max_posts]

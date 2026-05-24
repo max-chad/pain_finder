@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from scraper_hn import HackerNewsScraper
 
@@ -77,6 +78,21 @@ async def test_fetch_posts_handles_http_errors_per_keyword(respx_mock):
 
     assert len(posts) == 1
     assert posts[0].post_id == "hn:9"
+
+
+async def test_fetch_posts_raises_when_all_keyword_requests_fail(respx_mock):
+    route = respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
+        side_effect=[
+            httpx.Response(503),
+            httpx.Response(429),
+        ]
+    )
+    scraper = HackerNewsScraper()
+
+    with pytest.raises(RuntimeError, match="HN fetch failed for all 2 keyword queries"):
+        await scraper.fetch_posts(keywords=["broken", "rate limit"], lookback_hours=12, max_posts=10)
+
+    assert route.call_count == 2
 
 
 async def test_fetch_posts_returns_empty_on_invalid_input():

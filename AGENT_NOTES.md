@@ -104,3 +104,10 @@
 - Change: Add `smoke_collect.py`, a JSON-emitting read-only CLI that fetches source posts only, avoids `config.py`'s Telegram/LLM fail-fast requirements, and supports `--require-posts` for stricter deployment gates.
 - Verification: Added targeted smoke CLI tests for Reddit success, source exceptions, empty-source failure, and all-source review target handling; full gates are run after this note.
 - Impact: Improves deploy readiness and diagnostics for data collection without database writes, Telegram side effects, scheduler startup, or LLM spend.
+
+## 2026-05-25 - HN full-source failure is explicit
+
+- Reason: HN ingestion tolerated partial keyword failures, but a total HTTP failure across every valid keyword returned an empty list and looked like a successful no-op to scheduler/smoke checks.
+- Change: Track attempted, successful, and failed HN keyword queries; preserve partial-success behavior, but raise when every attempted query fails.
+- Verification: Added a targeted HN scraper test for all-keyword HTTP failure; full gates are run after this note.
+- Impact: Improves source outage observability and prevents full HN collection failures from being mistaken for no new data.
