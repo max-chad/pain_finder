@@ -46,6 +46,7 @@ class SessionState(TypedDict):
 TriageStatus = Literal["favorite", "discarded"]
 
 logger = logging.getLogger(__name__)
+SESSION_TOKEN_RE = re.compile(r"^[0-9a-f]{8}$")
 
 SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 POST_ID_RE = re.compile(r"^[A-Za-z0-9_:-]+$")
@@ -322,22 +323,35 @@ class PainFinderBot:
         ]
         keyboard_rows = [
             [
-                InlineKeyboardButton("\u2b50 Favorite", callback_data=f"triage:favorite:{signal.post.post_id}"),
-                InlineKeyboardButton("\u2717 Discard", callback_data=f"triage:discard:{signal.post.post_id}"),
+                InlineKeyboardButton("\u2b50 Favorite", callback_data=f"triage:favorite:{token}:{idx}"),
+                InlineKeyboardButton("\u2717 Discard", callback_data=f"triage:discard:{token}:{idx}"),
             ],
             [
                 InlineKeyboardButton(
                     "\U0001f48e Deep Dive",
-                    callback_data=f"deepdive:{signal.post.post_id}:{signal.post.subreddit}",
+                    callback_data=f"deepdive:{token}:{idx}",
                 ),
                 InlineKeyboardButton(
                     "\U0001f4e6 GTM",
-                    callback_data=f"gtm:{signal.post.post_id}:{signal.post.source}",
+                    callback_data=f"gtm:{token}:{idx}",
                 ),
             ],
             [InlineKeyboardButton("\u2190 Back to list", callback_data=f"back:{token}")],
         ]
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+    def _resolve_session_signal(self, token: str, idx_raw: str) -> tuple[str, "PainSignal | None"]:
+        session = self._sessions.get(token)
+        if session is None:
+            return "expired", None
+        try:
+            idx = int(idx_raw)
+        except ValueError:
+            return "malformed", None
+        signals: list[PainSignal] = session["signals"]
+        if not (0 <= idx < len(signals)):
+            return "out_of_range", None
+        return "ok", signals[idx]
 
     async def send_grouped_notification(
         self, *, chat_id: int, signals: list["PainSignal"], label: str
@@ -732,15 +746,29 @@ class PainFinderBot:
                 return
 
             if data.startswith("triage:"):
-                triage_parts = data.split(":", 2)
-                if len(triage_parts) != 3:
+                triage_parts = data.split(":", 3)
+                if len(triage_parts) < 3:
                     raise ValueError("Malformed callback data")
-                _, action, post_id = triage_parts
+                _, action = triage_parts[:2]
                 status_map: dict[str, TriageStatus] = {"favorite": "favorite", "discard": "discarded"}
                 status = status_map.get(action)
                 if not status:
                     await query.answer("Unknown action", show_alert=False)
                     return
+                if len(triage_parts) == 4 and SESSION_TOKEN_RE.match(triage_parts[2]):
+                    signal_status, signal = self._resolve_session_signal(triage_parts[2], triage_parts[3])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                else:
+                    post_id = triage_parts[2]
                 updated = await self.db.update_triage_status(post_id, status)
                 if not updated:
                     await query.answer("Post not found", show_alert=False)
@@ -749,7 +777,23 @@ class PainFinderBot:
                 return
 
             if data.startswith("deepdive:"):
-                post_id, subreddit = parse_scoped_callback_data(data, "deepdive:")
+                payload = data[len("deepdive:"):]
+                session_parts = payload.split(":", 1)
+                if len(session_parts) == 2 and SESSION_TOKEN_RE.match(session_parts[0]):
+                    signal_status, signal = self._resolve_session_signal(session_parts[0], session_parts[1])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                    subreddit = signal.post.subreddit
+                else:
+                    post_id, subreddit = parse_scoped_callback_data(data, "deepdive:")
                 if not self.deep_dive_fn:
                     await query.answer("Deep dive not configured", show_alert=False)
                     return
@@ -762,7 +806,22 @@ class PainFinderBot:
                 return
 
             if data.startswith("gtm:"):
-                post_id, _scope = parse_scoped_callback_data(data, "gtm:")
+                payload = data[len("gtm:"):]
+                session_parts = payload.split(":", 1)
+                if len(session_parts) == 2 and SESSION_TOKEN_RE.match(session_parts[0]):
+                    signal_status, signal = self._resolve_session_signal(session_parts[0], session_parts[1])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                else:
+                    post_id, _scope = parse_scoped_callback_data(data, "gtm:")
                 if not self.gtm_fn:
                     await query.answer("GTM not configured", show_alert=False)
                     return

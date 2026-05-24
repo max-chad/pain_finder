@@ -665,6 +665,20 @@ def test_render_card_view_contains_post_details():
     assert any("GTM" in b for b in buttons_flat)
 
 
+def test_render_card_view_callback_data_stays_under_telegram_limit_for_long_ids():
+    bot = _make_bot()
+    long_post_id = "review:g2:" + ("very-long-product-name-" * 4) + "abcdef1234567890"
+    signal = _make_signal(long_post_id, "complaint", "Long review id")
+    token = bot._create_session([signal], "Reviews")
+    session = bot._sessions[token]
+
+    _, keyboard = bot._render_card_view(token, session, 0)
+
+    callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+    assert all(callback is not None and len(callback.encode()) <= 64 for callback in callbacks)
+    assert all(long_post_id not in callback for callback in callbacks if callback)
+
+
 def test_sel_callback_data_format():
     """sel: callback_data stays within Telegram's 64-byte limit."""
     bot = _make_bot()
@@ -743,6 +757,45 @@ async def test_sel_callback_edits_message_to_card_view():
     update.callback_query.edit_message_text.assert_awaited_once()
     text = update.callback_query.edit_message_text.call_args.args[0]
     assert "Item 1 of 5" in text
+
+
+async def test_session_triage_callback_resolves_long_post_id():
+    db = AsyncMock()
+    db.update_triage_status.return_value = True
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+    long_post_id = "review:g2:" + ("very-long-product-name-" * 4) + "abcdef1234567890"
+    token = bot._create_session([_make_signal(long_post_id, "complaint", "Long review id")], "Reviews")
+
+    update = _make_callback_update(f"triage:favorite:{token}:0")
+    await bot.on_callback_query(update, None)
+
+    db.update_triage_status.assert_awaited_once_with(long_post_id, "favorite")
+    update.callback_query.answer.assert_awaited_once()
+
+
+async def test_session_deepdive_and_gtm_callbacks_resolve_long_post_id():
+    db = AsyncMock()
+    deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="Done", error=None))
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1",
+        hero_h2="H2",
+        mvp_features=["f1", "f2", "f3"],
+        pricing_tier="$19",
+        positioning_rationale="why",
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="placeholder", payload=gtm_payload))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db, deep_dive_fn=deep_dive_fn, gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+    long_post_id = "review:g2:" + ("very-long-product-name-" * 4) + "abcdef1234567890"
+    token = bot._create_session([_make_signal(long_post_id, "complaint", "Long review id")], "Reviews")
+
+    await bot.on_callback_query(_make_callback_update(f"deepdive:{token}:0"), None)
+    await bot.on_callback_query(_make_callback_update(f"gtm:{token}:0"), None)
+
+    deep_dive_fn.assert_awaited_once_with(long_post_id, "python", "callback")
+    gtm_fn.assert_awaited_once_with(long_post_id)
 
 
 async def test_loadmore_callback_shows_more_items():

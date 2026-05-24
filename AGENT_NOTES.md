@@ -160,3 +160,10 @@
 - Change: Sanitize pipeline report run labels and export scopes into safe filename stems before writing local artifacts.
 - Verification: Added targeted pipeline and export tests proving path-like scopes stay under the configured reports directory; full gates are run after this note.
 - Impact: Hardens local report storage against path traversal and keeps artifact names predictable for operators.
+
+## 2026-05-25 - Telegram card callbacks avoid long post IDs
+
+- Reason: Telegram callback payloads are limited to 64 bytes, but card action buttons embedded raw `post_id` values; long review-source IDs could make notifications fail to send.
+- Change: Use existing session token plus item index for triage, deep-dive, and GTM card callbacks while preserving legacy callback parsing.
+- Verification: Added bot tests proving long-ID card callbacks stay under the Telegram limit and resolve back to the original post ID; full gates are run after this note.
+- Impact: Keeps review-source and other long-ID pain cards actionable in Telegram without losing callback compatibility.
