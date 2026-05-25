@@ -48,8 +48,11 @@ async def test_run_healthcheck_does_not_initialize_database(monkeypatch, tmp_pat
     with pytest.raises(RuntimeError, match="database is not initialized"):
         await healthcheck.run_healthcheck()
 
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    finally:
+        conn.close()
     assert tables == []
 
 

@@ -363,3 +363,10 @@
 - Change: Initialize the configured database for live eval, create a `BudgetGuard`, pass it to OpenRouter and optional DSPy clients, and close the DB after prediction generation.
 - Verification: Added eval-runner tests for budget guard wiring and DB cleanup; full gates are run after this note.
 - Impact: Keeps quality-eval LLM spending under the same runtime budget controls as data collection.
+
+## 2026-05-25 - Healthcheck test closes raw SQLite probe
+
+- Reason: the healthcheck regression test used `sqlite3.Connection` as a context manager, which commits/rolls back but does not close the connection and caused intermittent `ResourceWarning` noise in full test runs.
+- Change: Explicitly close the raw SQLite connection after reading table names.
+- Verification: Warning-focused pytest and full gates are run after this note.
+- Impact: Keeps CI warning output focused on real lifecycle regressions.
