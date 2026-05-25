@@ -286,3 +286,10 @@
 - Change: Normalize HN text fields through a safe converter and fall back to the canonical HN item URL when URL fields are missing or non-text.
 - Verification: Added an HN scraper test for non-string hit fields; full gates are run after this note.
 - Impact: Improves HN collection resilience against partial upstream schema drift without accepting empty unusable hits.
+
+## 2026-05-25 - Review rating parsing is type-tolerant
+
+- Reason: review-source HTML and JSON-LD are external inputs; malformed `reviewRating` shapes or non-numeric rating values could crash a whole review target.
+- Change: Add safe rating coercion for JSON-LD parsing and final review filtering, so bad rows are skipped while valid negative reviews still collect.
+- Verification: Added review scraper tests for bad JSON-LD rating shapes and bad parsed rating rows; full gates are run after this note.
+- Impact: Makes review-source collection more robust against third-party markup drift.

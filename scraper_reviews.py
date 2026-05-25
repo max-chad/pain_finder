@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 RATING_RE = re.compile(r"([1-5](?:\.\d+)?)")
 
 
+def _coerce_rating(value: Any) -> float:
+    try:
+        rating = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if rating < 0 or rating > 5:
+        return 0.0
+    return rating
+
+
 @dataclass
 class ReviewTarget:
     site: str
@@ -60,8 +70,8 @@ class ReviewScraper:
         for row in rows:
             if len(posts) >= max_reviews:
                 break
-            rating = float(row.get("rating", 0))
-            text = (row.get("text") or "").strip()
+            rating = _coerce_rating(row.get("rating", 0))
+            text = str(row.get("text") or "").strip()
             if not text:
                 continue
             if rating <= 0 or rating > 2.0:
@@ -160,7 +170,11 @@ class ReviewScraper:
                 if node.get("@type") != "Review":
                     continue
                 review_rating = node.get("reviewRating", {})
-                rating_value = float(review_rating.get("ratingValue") or 0)
+                rating_value = (
+                    _coerce_rating(review_rating.get("ratingValue"))
+                    if isinstance(review_rating, dict)
+                    else _coerce_rating(review_rating)
+                )
                 review_text = str(node.get("reviewBody") or "").strip()
                 rows.append({"rating": rating_value, "text": review_text})
         return rows
@@ -211,7 +225,7 @@ class ReviewScraper:
             return 0.0
         try:
             value = float(match.group(1))
-        except ValueError:
+        except (TypeError, ValueError):
             return 0.0
         if value < 0 or value > 5:
             return 0.0

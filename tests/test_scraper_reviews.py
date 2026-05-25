@@ -24,6 +24,25 @@ def test_parse_appstore_reviews_from_ld_json():
     assert "Crashes" in rows[0]["text"]
 
 
+def test_parse_appstore_reviews_tolerates_bad_rating_shapes():
+    html = """
+    <html><body>
+      <script type="application/ld+json">
+      [
+        {"@type":"Review","reviewRating":"bad","reviewBody":"Bad rating shape"},
+        {"@type":"Review","reviewRating":{"ratingValue":"not-a-number"},"reviewBody":"Bad rating value"},
+        {"@type":"Review","reviewRating":{"ratingValue":"2"},"reviewBody":"Still useful"}
+      ]
+      </script>
+    </body></html>
+    """
+    scraper = ReviewScraper()
+    rows = scraper._parse_appstore_reviews(html)
+
+    assert [row["rating"] for row in rows] == [0.0, 0.0, 2.0]
+    assert rows[2]["text"] == "Still useful"
+
+
 def test_parse_generic_review_cards_extracts_ratings():
     html = """
     <article class="review-card" aria-label="2 stars">
@@ -61,6 +80,25 @@ async def test_fetch_negative_reviews_filters_to_1_and_2_star(monkeypatch):
     assert posts[0].post_id.startswith("review:g2:quickbooks-sync-tool:")
     assert all(post.source == "review:g2" for post in posts)
     assert all(post.subreddit == "reviews_g2" for post in posts)
+
+
+async def test_fetch_negative_reviews_skips_bad_rating_rows(monkeypatch):
+    scraper = ReviewScraper()
+    monkeypatch.setattr(
+        scraper,
+        "_parse_generic_review_cards",
+        lambda html: [
+            {"rating": "not-a-number", "text": "Bad row"},
+            {"rating": 2, "text": "Valid complaint"},
+        ],
+    )
+    monkeypatch.setattr(scraper, "_fetch_html", AsyncMock(return_value="<html></html>"))
+    target = ReviewTarget(site="g2", name="QuickBooks Sync Tool", url="https://example.com/reviews")
+
+    posts = await scraper.fetch_negative_reviews(target=target, max_reviews=10)
+
+    assert len(posts) == 1
+    assert posts[0].body == "Valid complaint"
 
 
 async def test_fetch_negative_reviews_uses_stable_content_ids(monkeypatch):
