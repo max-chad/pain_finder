@@ -188,3 +188,10 @@
 - Change: Reuse strict config helpers for LLM token limits, classifier concurrency, scraper retry/comment settings, WTP thresholds, digest windows, budget, clustering thresholds, and source collection limits.
 - Verification: Added config tests covering invalid runtime numeric values; full gates are run after this note.
 - Impact: Converts bad deploy configuration into clear startup errors instead of late OpenAI/OpenRouter, scheduler, clusterer, or source-collection failures.
+
+## 2026-05-25 - Source smoke checks reject bad source env
+
+- Reason: `smoke_collect.py` intentionally avoids the full app config so it can run without Telegram/LLM credentials, but it silently defaulted invalid source-related env values that the app would reject or mishandle later.
+- Change: Make smoke source env parsing strict for JSON arrays, Reddit feed names, source numeric limits, retry settings, HN lookback, and review limits; report config errors as structured smoke failures.
+- Verification: Added smoke tests proving invalid source JSON and numeric env values return a failing payload before any source fetch; full gates are run after this note.
+- Impact: Makes the pre-deploy collection smoke check a trustworthy gate instead of masking broken source configuration.

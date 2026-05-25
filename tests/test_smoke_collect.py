@@ -59,6 +59,42 @@ async def test_run_smoke_reports_source_exceptions(monkeypatch):
     assert payload["errors"] == [{"source": "reddit", "reason": "exception", "error": "network unavailable"}]
 
 
+async def test_run_smoke_rejects_invalid_source_json_env(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.setenv("SCRAPER_FEED_MIX_JSON", '["neww"]')
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reddit"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "SCRAPER_FEED_MIX_JSON must contain only supported feeds: new, rising, top",
+        }
+    ]
+
+
+async def test_run_smoke_rejects_invalid_source_numeric_env(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.setenv("SCRAPER_RETRY_MAX_ATTEMPTS", "0")
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reddit"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "SCRAPER_RETRY_MAX_ATTEMPTS must be at least 1",
+        }
+    ]
+
+
 async def test_run_smoke_require_posts_fails_empty_completed_source(monkeypatch):
     import smoke_collect
 

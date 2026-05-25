@@ -16,6 +16,7 @@ from scraper_reviews import ReviewScraper, ReviewTarget
 
 
 DEFAULT_HN_KEYWORDS = ["internal tool", "frustrating", "we built our own", "manual process"]
+ALLOWED_REDDIT_FEEDS = {"new", "rising", "top"}
 
 
 @dataclass(frozen=True)
@@ -35,28 +36,39 @@ class SourceSmokeConfig:
     reviews_max_per_target: int
 
 
-def _parse_json_list(raw: str, default: list[Any]) -> list[Any]:
+def _json_list_env(name: str, default: list[Any]) -> list[Any]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return default
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a valid JSON array") from exc
     if not isinstance(parsed, list):
-        return default
+        raise ValueError(f"{name} must be a JSON array")
     return parsed
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, minimum: int) -> int:
+    raw = os.getenv(name, str(default))
     try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return value
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(name: str, default: float, minimum: float) -> float:
+    raw = os.getenv(name, str(default))
     try:
-        return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum:g}")
+    return value
 
 
 def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
@@ -77,34 +89,38 @@ def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
 def load_source_smoke_config() -> SourceSmokeConfig:
     load_dotenv()
     scraper_feed_mix = [
-        str(feed).strip()
-        for feed in _parse_json_list(os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "top"]'), ["new", "rising", "top"])
+        str(feed).strip().lower()
+        for feed in _json_list_env("SCRAPER_FEED_MIX_JSON", ["new", "rising", "top"])
         if str(feed).strip()
     ]
+    invalid_feeds = [feed for feed in scraper_feed_mix if feed not in ALLOWED_REDDIT_FEEDS]
+    if not scraper_feed_mix or invalid_feeds:
+        allowed = ", ".join(sorted(ALLOWED_REDDIT_FEEDS))
+        raise ValueError(f"SCRAPER_FEED_MIX_JSON must contain only supported feeds: {allowed}")
     scraper_search_queries = [
         str(query).strip()
-        for query in _parse_json_list(os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]"), [])
+        for query in _json_list_env("SCRAPER_SEARCH_QUERIES_JSON", [])
         if str(query).strip()
     ]
     hn_keywords = [
         str(keyword).strip()
-        for keyword in _parse_json_list(os.getenv("HN_KEYWORDS_JSON", json.dumps(DEFAULT_HN_KEYWORDS)), DEFAULT_HN_KEYWORDS)
+        for keyword in _json_list_env("HN_KEYWORDS_JSON", DEFAULT_HN_KEYWORDS)
         if str(keyword).strip()
     ]
     return SourceSmokeConfig(
         reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
         reddit_user_agent=os.getenv("REDDIT_USER_AGENT", "pain_finder/1.0"),
-        scraper_top_comments=_env_int("SCRAPER_TOP_COMMENTS", 5),
-        scraper_comment_fetch_concurrency=_env_int("SCRAPER_COMMENT_FETCH_CONCURRENCY", 8),
-        scraper_retry_max_attempts=_env_int("SCRAPER_RETRY_MAX_ATTEMPTS", 5),
-        scraper_retry_base_delay=_env_float("SCRAPER_RETRY_BASE_DELAY", 1.0),
+        scraper_top_comments=_env_int("SCRAPER_TOP_COMMENTS", 5, 0),
+        scraper_comment_fetch_concurrency=_env_int("SCRAPER_COMMENT_FETCH_CONCURRENCY", 8, 1),
+        scraper_retry_max_attempts=_env_int("SCRAPER_RETRY_MAX_ATTEMPTS", 5, 1),
+        scraper_retry_base_delay=_env_float("SCRAPER_RETRY_BASE_DELAY", 1.0, 0.0),
         scraper_feed_mix=scraper_feed_mix,
         scraper_search_queries=scraper_search_queries,
         hn_keywords=hn_keywords,
-        hn_lookback_hours=_env_int("HN_LOOKBACK_HOURS", 72),
-        review_targets=_build_review_targets(_parse_json_list(os.getenv("REVIEW_TARGETS_JSON", "[]"), [])),
-        reviews_max_per_target=_env_int("REVIEWS_MAX_PER_TARGET", 30),
+        hn_lookback_hours=_env_int("HN_LOOKBACK_HOURS", 72, 1),
+        review_targets=_build_review_targets(_json_list_env("REVIEW_TARGETS_JSON", [])),
+        reviews_max_per_target=_env_int("REVIEWS_MAX_PER_TARGET", 30, 1),
     )
 
 
@@ -180,7 +196,18 @@ async def run_smoke(argv: Sequence[str] | None = None) -> tuple[int, dict[str, A
     parser = build_parser()
     args = parser.parse_args(argv)
     limit = max(1, min(args.limit, 100))
-    config = load_source_smoke_config()
+    try:
+        config = load_source_smoke_config()
+    except Exception as exc:
+        return (
+            1,
+            {
+                "ok": False,
+                "side_effects": "none: no LLM, Telegram, database, or export writes",
+                "sources": [],
+                "errors": [{"source": "config", "reason": "exception", "error": str(exc)}],
+            },
+        )
     sources = ["reddit", "hn", "reviews"] if args.source == "all" else [args.source]
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
