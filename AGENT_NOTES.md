@@ -370,3 +370,10 @@
 - Change: Explicitly close the raw SQLite connection after reading table names.
 - Verification: Warning-focused pytest and full gates are run after this note.
 - Impact: Keeps CI warning output focused on real lifecycle regressions.
+
+## 2026-05-25 - URL safety rejects numeric IP bypass forms
+
+- Reason: review target URL validation rejected standard private IP literals, but legacy numeric IPv4 forms such as `2130706433` or octal dotted hosts could bypass `ip_address()` parsing.
+- Change: Reject ambiguous all-numeric and hex/octal-like hostnames that are not accepted as standard public IP literals.
+- Verification: Added URL safety tests for public hosts, private hosts, credentials, unsupported schemes, and numeric localhost bypass forms; full gates are run after this note.
+- Impact: Reduces SSRF-style exposure from operator-configured review targets.
