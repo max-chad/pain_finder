@@ -478,7 +478,11 @@ class PainFinderBot:
         lines = ["Monitored subreddits:"]
         for sub in subs:
             last = sub["last_checked"] or "never"
-            lines.append(f"- r/{sub['name']} every {sub['interval_hours']}h (last: {last})")
+            line = f"- r/{sub['name']} every {sub['interval_hours']}h (last success: {last})"
+            if sub.get("last_error"):
+                attempted = sub.get("last_attempted_at") or "unknown"
+                line += f" last error at {attempted}: {sub['last_error']}"
+            lines.append(line)
         await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_status(self, update, ctx):

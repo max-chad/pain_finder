@@ -84,10 +84,23 @@ async def test_monitor_subreddit_crud(db):
 
 async def test_update_last_checked(db):
     await db.add_monitored_subreddit("python", interval_hours=12)
+    await db.mark_monitor_failed("python", "temporary failure")
     await db.update_last_checked("python")
     subs = await db.get_monitored_subreddits()
     sub = next(s for s in subs if s["name"] == "python")
     assert sub["last_checked"] is not None
+    assert sub["last_attempted_at"] is not None
+    assert sub["last_error"] is None
+
+
+async def test_mark_monitor_failed_records_attempt_and_error(db):
+    await db.add_monitored_subreddit("python", interval_hours=12)
+    await db.mark_monitor_failed("python", "x" * 1200)
+    subs = await db.get_monitored_subreddits()
+    sub = next(s for s in subs if s["name"] == "python")
+    assert sub["last_checked"] is None
+    assert sub["last_attempted_at"] is not None
+    assert sub["last_error"] == "x" * 1000
 
 
 async def test_save_and_get_latest_report(db):
@@ -478,6 +491,12 @@ async def test_init_migrates_existing_analysis_runs_with_old_migration_marker(tm
         assert latest["screen_rule_dropped_count"] == 3
         assert latest["screen_kept_count"] == 5
         assert latest["screen_capped_count"] == 1
+
+        await database.add_monitored_subreddit("ops", interval_hours=1)
+        await database.mark_monitor_failed("ops", "boom")
+        monitored = await database.get_monitored_subreddits()
+        assert monitored[0]["last_attempted_at"] is not None
+        assert monitored[0]["last_error"] == "boom"
     finally:
         await database.close()
 

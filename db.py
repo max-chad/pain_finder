@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS monitored_subreddits (
     name TEXT UNIQUE NOT NULL,
     interval_hours INTEGER NOT NULL,
     last_checked TEXT,
+    last_attempted_at TEXT,
+    last_error TEXT,
     active INTEGER DEFAULT 1
 )"""
 
@@ -281,6 +283,11 @@ ANALYSIS_RUN_COLUMNS = {
     "screen_capped_count": "INTEGER DEFAULT 0",
 }
 
+MONITORED_SUBREDDIT_COLUMNS = {
+    "last_attempted_at": "TEXT",
+    "last_error": "TEXT",
+}
+
 LLM_USAGE_EVENT_COLUMNS = {
     "prompt_hash": "TEXT",
     "fallback_reason": "TEXT",
@@ -363,6 +370,12 @@ class Database:
             for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
                 await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_screening_migration)
+
+        monitored_observability_migration = "2026_05_25_monitored_subreddit_attempt_state"
+        if not await self._is_migration_applied(monitored_observability_migration):
+            for column_name, ddl in MONITORED_SUBREDDIT_COLUMNS.items():
+                await self._ensure_column("monitored_subreddits", column_name, ddl)
+            await self._mark_migration_applied(monitored_observability_migration)
 
         llm_usage_migration = "2026_04_22_llm_usage_lineage"
         if not await self._is_migration_applied(llm_usage_migration):
@@ -1286,7 +1299,18 @@ class Database:
 
     async def update_last_checked(self, name: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        await self._conn.execute("UPDATE monitored_subreddits SET last_checked = ? WHERE name = ?", (now, name))
+        await self._conn.execute(
+            "UPDATE monitored_subreddits SET last_checked = ?, last_attempted_at = ?, last_error = NULL WHERE name = ?",
+            (now, now, name),
+        )
+        await self._conn.commit()
+
+    async def mark_monitor_failed(self, name: str, error: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "UPDATE monitored_subreddits SET last_attempted_at = ?, last_error = ? WHERE name = ?",
+            (now, error[:1000], name),
+        )
         await self._conn.commit()
 
     async def save_report(self, *, subreddit: str, post_count: int, pain_count: int, json_path: str) -> int:

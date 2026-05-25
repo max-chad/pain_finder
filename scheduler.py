@@ -154,7 +154,8 @@ class MonitoringScheduler:
             await self.analyze_fn(subreddit)
             await self.db.update_last_checked(subreddit)
             logger.info("scheduled_analysis_complete stage=scheduler subreddit=%s", subreddit)
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_monitor_failed(subreddit, str(exc))
             logger.exception("scheduled_analysis_failed stage=scheduler subreddit=%s", subreddit)
 
     async def _run_macro(self):

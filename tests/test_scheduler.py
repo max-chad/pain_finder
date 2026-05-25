@@ -94,6 +94,7 @@ async def test_run_analysis_skips_last_checked_on_failure():
 
     mock_analyze.assert_awaited_once_with("python")
     mock_db.update_last_checked.assert_not_awaited()
+    mock_db.mark_monitor_failed.assert_awaited_once_with("python", "boom")
 
 
 async def test_reload_jobs_skips_when_paused():

@@ -260,6 +260,28 @@ async def test_cmd_list_truncates_large_monitoring_output():
     assert "[truncated]" in text
 
 
+async def test_cmd_list_shows_monitor_errors():
+    db = AsyncMock()
+    db.get_monitored_subreddits.return_value = [
+        {
+            "name": "python",
+            "interval_hours": 1,
+            "last_checked": None,
+            "last_attempted_at": "2026-05-25T10:00:00+00:00",
+            "last_error": "network down",
+        }
+    ]
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+    update = _make_update()
+
+    await bot.cmd_list(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "last success: never" in text
+    assert "last error at 2026-05-25T10:00:00+00:00: network down" in text
+
+
 async def test_cmd_budget_truncates_long_pause_reason():
     status = SimpleNamespace(
         daily_cap_usd=2.0,

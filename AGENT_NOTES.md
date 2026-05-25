@@ -300,3 +300,10 @@
 - Change: Build worksheet names from sanitized prefix/scope stems and cap them to the Google Sheets title length limit.
 - Verification: Added export tests for worksheet name sanitization and Sheets upsert title usage; full gates are run after this note.
 - Impact: Keeps optional Sheets export from failing on unusual but accepted export scopes or operator-provided worksheet prefixes.
+
+## 2026-05-25 - Monitor failures are visible
+
+- Reason: scheduled subreddit failures only logged exceptions; `/list` still showed the previous successful check or `never`, hiding the most recent failed attempt from operators.
+- Change: Add `last_attempted_at` and `last_error` to monitored subreddit state, record failures in the scheduler, clear errors on success, and surface the last error in `/list`.
+- Verification: Added DB migration/state tests, scheduler failure tests, and bot list rendering tests; full gates are run after this note.
+- Impact: Improves recurring collection observability without marking failed jobs as successful.
