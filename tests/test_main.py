@@ -24,6 +24,24 @@ def test_build_dspy_parser_returns_none_when_dependency_missing(monkeypatch):
     assert main._build_dspy_parser() is None
 
 
+def test_build_review_targets_respects_string_disabled_flags(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    main.config.REVIEW_TARGETS = [
+        {"site": "g2", "name": "Disabled", "url": "https://example.com/disabled", "enabled": "false"},
+        {"site": "capterra", "name": "Off", "url": "https://example.com/off", "enabled": "off"},
+        {"site": "g2", "name": "Enabled", "url": "https://example.com/enabled", "enabled": "yes"},
+    ]
+
+    targets = main._build_review_targets()
+
+    assert [target.enabled for target in targets] == [False, False, True]
+
+
 @pytest.mark.asyncio
 async def test_build_shutdown_event_registers_sigint_and_sigterm(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")

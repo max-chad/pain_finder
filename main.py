@@ -53,11 +53,17 @@ def _build_review_targets() -> list[ReviewTarget]:
         site = str(raw.get("site", "")).strip().lower()
         name = str(raw.get("name", "")).strip()
         url = str(raw.get("url", "")).strip()
-        enabled = bool(raw.get("enabled", True))
+        enabled = _target_enabled(raw.get("enabled", True))
         if not site or not name or not url:
             continue
         targets.append(ReviewTarget(site=site, name=name, url=url, enabled=enabled))
     return targets
+
+
+def _target_enabled(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "off", "no"}
 
 
 def _build_dspy_parser():

@@ -30,6 +30,14 @@ def _required_env(name: str) -> str:
     return value.strip()
 
 
+def _required_int_env(name: str) -> int:
+    raw = _required_env(name)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
 def _default_llm_model(provider: str) -> str:
     if provider in {"codex", "openai"}:
         return "gpt-5.3-spark"
@@ -124,11 +132,16 @@ def _json_list_env(name: str, default: list[Any]) -> list[Any]:
 
 
 def _bool_env(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() not in {"0", "false", "off", "no"}
+    value = os.getenv(name, default).strip().lower()
+    if value in {"1", "true", "on", "yes"}:
+        return True
+    if value in {"0", "false", "off", "no"}:
+        return False
+    raise ValueError(f"{name} must be a boolean: 1/0, true/false, on/off, or yes/no")
 
 
 TELEGRAM_BOT_TOKEN = _required_env("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = int(_required_env("TELEGRAM_CHAT_ID"))
+TELEGRAM_CHAT_ID = _required_int_env("TELEGRAM_CHAT_ID")
 
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")

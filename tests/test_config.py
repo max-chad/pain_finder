@@ -158,6 +158,48 @@ def test_config_rejects_blank_required_credentials(monkeypatch):
         config_module = importlib.reload(config_module)
 
 
+def test_config_rejects_invalid_telegram_chat_id(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "your_chat_id_here")
+    with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID must be an integer"):
+        importlib.reload(config_module)
+
+
+def test_config_rejects_invalid_boolean_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("DSPY_REDDIT_PARSER_ENABLED", "treu"),
+        ("DIGEST_DELIVERY_ENABLED", "enabled"),
+        ("MACRO_TREND_ENABLED", ""),
+        ("HN_ENABLED", "flase"),
+        ("REVIEWS_ENABLED", "maybe"),
+        ("GTM_ENABLED", "2"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(
+            ValueError,
+            match=f"{env_name} must be a boolean: 1/0, true/false, on/off, or yes/no",
+        ):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+
+
 def test_config_rejects_invalid_enum_environment(monkeypatch):
     import pytest
 

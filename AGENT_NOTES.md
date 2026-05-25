@@ -314,3 +314,17 @@
 - Change: Document `monitored_subreddits` last success/attempt/error fields in the data model overview.
 - Verification: Full gates are run after this note.
 - Impact: Keeps deploy/runbook docs aligned with scheduler failure observability.
+
+## 2026-05-25 - Review target disabled flags match config semantics
+
+- Reason: `config.py` and smoke checks treat string disabled values such as `"false"` and `"off"` as disabled, but `main._build_review_targets()` converted non-empty strings to `True`.
+- Change: Parse review target enabled values in `main.py` with the same false-value set used by config and smoke paths.
+- Verification: Added a regression test for string disabled review target flags; full gates are run after this note.
+- Impact: Prevents explicitly disabled review targets from being fetched during scheduled review ingestion.
+
+## 2026-05-25 - Boolean and chat id env values fail clearly
+
+- Reason: deploy-critical boolean env typos such as `HN_ENABLED=flase` were treated as enabled, and non-integer `TELEGRAM_CHAT_ID` values failed with a raw cast error.
+- Change: Make boolean env parsing strict for known true/false tokens and validate `TELEGRAM_CHAT_ID` with a clear integer error.
+- Verification: Added config regression tests for invalid boolean tokens and non-integer chat ids; full gates are run after this note.
+- Impact: Turns common `.env` mistakes into explicit startup failures instead of accidental scheduled jobs or confusing first-run errors.
