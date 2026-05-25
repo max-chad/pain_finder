@@ -293,3 +293,10 @@
 - Change: Add safe rating coercion for JSON-LD parsing and final review filtering, so bad rows are skipped while valid negative reviews still collect.
 - Verification: Added review scraper tests for bad JSON-LD rating shapes and bad parsed rating rows; full gates are run after this note.
 - Impact: Makes review-source collection more robust against third-party markup drift.
+
+## 2026-05-25 - Google worksheet names are sanitized
+
+- Reason: CSV export scopes were filename-safe, but Google Sheets worksheet names still used raw prefix/subreddit values that can contain invalid title characters or exceed Sheets title limits.
+- Change: Build worksheet names from sanitized prefix/scope stems and cap them to the Google Sheets title length limit.
+- Verification: Added export tests for worksheet name sanitization and Sheets upsert title usage; full gates are run after this note.
+- Impact: Keeps optional Sheets export from failing on unusual but accepted export scopes or operator-provided worksheet prefixes.

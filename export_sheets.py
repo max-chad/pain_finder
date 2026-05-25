@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
 ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+MAX_WORKSHEET_TITLE_LENGTH = 100
 
 
 def _safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
@@ -35,6 +36,13 @@ def _safe_spreadsheet_cell(value: Any) -> Any:
     if stripped.startswith(SPREADSHEET_FORMULA_PREFIXES):
         return "'" + value
     return value
+
+
+def _safe_worksheet_name(prefix: str, scope: str | None) -> str:
+    safe_prefix = _safe_artifact_stem(prefix, default="pain_finder")
+    safe_scope = _safe_artifact_stem(scope or "all", default="all")
+    name = f"{safe_prefix}_{safe_scope}"
+    return name[:MAX_WORKSHEET_TITLE_LENGTH].rstrip("._-") or "pain_finder"
 
 
 @dataclass
@@ -155,7 +163,7 @@ class ExportService:
         client = gspread.service_account_from_dict(creds)
         spreadsheet = client.open_by_key(self.sheets_spreadsheet_id)
 
-        worksheet_name = f"{self.sheets_worksheet_prefix}_{subreddit or 'all'}"
+        worksheet_name = _safe_worksheet_name(self.sheets_worksheet_prefix, subreddit)
         try:
             worksheet = spreadsheet.worksheet(worksheet_name)
             worksheet.clear()

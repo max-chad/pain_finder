@@ -2,7 +2,7 @@ import csv
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from export_sheets import ExportService
+from export_sheets import ExportService, _safe_worksheet_name
 
 
 async def test_export_service_writes_csv_and_returns_warning_when_sheets_fails(tmp_path):
@@ -69,6 +69,13 @@ async def test_export_service_sanitizes_scope_filename(tmp_path):
     assert result.csv_path.startswith(str(tmp_path))
     assert ".." not in result.csv_path.replace(str(tmp_path), "")
     assert "bad_scope" in result.csv_path
+
+
+def test_safe_worksheet_name_sanitizes_scope_and_prefix():
+    name = _safe_worksheet_name("../bad prefix", "../bad/scope?*[]")
+
+    assert name == "bad_prefix_bad_scope"
+    assert len(_safe_worksheet_name("p" * 120, "s" * 120)) <= 100
 
 
 async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
@@ -276,3 +283,32 @@ def test_upsert_google_sheet_escapes_spreadsheet_formulas(tmp_path):
     assert data_row[5].startswith("'@")
     assert data_row[8].startswith("'-")
     assert data_row[14].startswith("'+")
+
+
+def test_upsert_google_sheet_uses_safe_worksheet_name(tmp_path):
+    db = MagicMock()
+    service = ExportService(
+        db=db,
+        reports_dir=str(tmp_path),
+        min_wtp=8,
+        sheets_credentials_json='{"type": "service_account"}',
+        sheets_spreadsheet_id="sheet-id",
+        sheets_worksheet_prefix="../bad prefix",
+    )
+    worksheet = MagicMock()
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.return_value = worksheet
+    client = MagicMock()
+    client.open_by_key.return_value = spreadsheet
+    fake_gspread = MagicMock()
+    fake_gspread.WorksheetNotFound = RuntimeError
+    fake_gspread.service_account_from_dict.return_value = client
+
+    with patch("export_sheets.gspread", fake_gspread):
+        service._upsert_google_sheet(
+            rows=[],
+            headers=["created_at"],
+            subreddit="../bad/scope?*[]",
+        )
+
+    spreadsheet.worksheet.assert_called_once_with("bad_prefix_bad_scope")
