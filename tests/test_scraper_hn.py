@@ -80,6 +80,43 @@ async def test_fetch_posts_handles_http_errors_per_keyword(respx_mock):
     assert posts[0].post_id == "hn:9"
 
 
+async def test_fetch_posts_handles_malformed_payload_per_keyword(respx_mock):
+    respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
+        side_effect=[
+            httpx.Response(200, text="not-json"),
+            httpx.Response(
+                200,
+                json={
+                    "hits": [
+                        {"objectID": "9", "title": "Need better internal tooling", "story_text": "pain", "points": "bad"}
+                    ]
+                },
+            ),
+        ]
+    )
+    scraper = HackerNewsScraper()
+    posts = await scraper.fetch_posts(keywords=["broken", "tooling"], lookback_hours=12, max_posts=10)
+
+    assert len(posts) == 1
+    assert posts[0].post_id == "hn:9"
+    assert posts[0].score == 0
+
+
+async def test_fetch_posts_raises_when_all_keyword_payloads_are_malformed(respx_mock):
+    route = respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
+        side_effect=[
+            httpx.Response(200, text="not-json"),
+            httpx.Response(200, json=[]),
+        ]
+    )
+    scraper = HackerNewsScraper()
+
+    with pytest.raises(RuntimeError, match="HN fetch failed for all 2 keyword queries"):
+        await scraper.fetch_posts(keywords=["broken", "bad payload"], lookback_hours=12, max_posts=10)
+
+    assert route.call_count == 2
+
+
 async def test_fetch_posts_raises_when_all_keyword_requests_fail(respx_mock):
     route = respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
         side_effect=[

@@ -1,4 +1,5 @@
 import logging
+from json import JSONDecodeError
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -45,14 +46,18 @@ class HackerNewsScraper:
                 try:
                     response = await client.get(self.BASE_URL, params=params, headers=headers)
                     response.raise_for_status()
-                except httpx.HTTPError as e:
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise ValueError("HN response must be a JSON object")
+                except (httpx.HTTPError, JSONDecodeError, ValueError) as e:
                     logger.warning("HN fetch failed for query '%s': %s", keyword, e)
                     failed_queries.append(keyword)
                     continue
 
                 successful_queries += 1
-                payload = response.json()
                 for hit in payload.get("hits", []):
+                    if not isinstance(hit, dict):
+                        continue
                     object_id = str(hit.get("objectID", "")).strip()
                     if not object_id:
                         continue
@@ -62,7 +67,10 @@ class HackerNewsScraper:
                     if not title and not body:
                         continue
                     url = (hit.get("url") or hit.get("story_url") or f"https://news.ycombinator.com/item?id={object_id}").strip()
-                    score = int(hit.get("points") or 0)
+                    try:
+                        score = int(hit.get("points") or 0)
+                    except (TypeError, ValueError):
+                        score = 0
 
                     hits[post_id] = Post(
                         post_id=post_id,

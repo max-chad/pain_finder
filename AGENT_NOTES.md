@@ -265,3 +265,10 @@
 - Change: Validate subreddit names inside `RedditScraper.fetch_posts` and `fetch_full_thread`, matching the public command contract.
 - Verification: Added scraper tests for malformed subreddit rejection before network calls; full gates are run after this note.
 - Impact: Keeps source collection failures explicit and prevents malformed operator inputs from triggering unnecessary external requests.
+
+## 2026-05-25 - HN malformed payloads fail per query
+
+- Reason: Hacker News ingestion only handled HTTP failures per keyword; a 200 response with malformed or non-object JSON could crash the whole source job even when later keywords would succeed.
+- Change: Treat malformed HN response payloads as per-keyword failures, keep the all-keywords-failed error, and tolerate invalid score values as zero.
+- Verification: Added HN scraper tests for malformed per-keyword payloads and all-malformed failure; full gates are run after this note.
+- Impact: Makes HN collection resilient to transient bad upstream responses without hiding complete source failure.
