@@ -356,3 +356,10 @@
 - Change: Parse review target `enabled` values with the same true/false token set in app config, smoke config, and main target construction.
 - Verification: Added config, smoke, and main regression tests for invalid per-target enabled flags; full gates are run after this note.
 - Impact: Prevents typo-enabled external review collection during deploy and smoke checks.
+
+## 2026-05-25 - Live eval uses runtime budget guard
+
+- Reason: `eval/run_eval.py --live` builds LLM clients outside the production composition root and did not attach `BudgetGuard`, so eval runs could ignore pause state and usage ledger semantics.
+- Change: Initialize the configured database for live eval, create a `BudgetGuard`, pass it to OpenRouter and optional DSPy clients, and close the DB after prediction generation.
+- Verification: Added eval-runner tests for budget guard wiring and DB cleanup; full gates are run after this note.
+- Impact: Keeps quality-eval LLM spending under the same runtime budget controls as data collection.

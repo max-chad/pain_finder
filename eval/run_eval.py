@@ -38,7 +38,7 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dspy: bool = False):
+def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dspy: bool = False, budget_guard=None):
     import config
     from classifier import Classifier
     from dspy_parser import DSPyRedditPainParser
@@ -57,6 +57,7 @@ def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dsp
         temperature=config.LLM_TEMPERATURE,
         max_tokens=config.LLM_MAX_TOKENS,
         primary_max_output_tokens=config.PRIMARY_MAX_OUTPUT_TOKENS,
+        budget_guard=budget_guard,
     )
 
     dspy_parser = None
@@ -69,6 +70,7 @@ def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dsp
             reasoning_effort=config.DSPY_REASONING_EFFORT,
             temperature=config.DSPY_TEMPERATURE,
             max_tokens=config.DSPY_MAX_TOKENS,
+            budget_guard=budget_guard,
         )
 
     return Classifier(
@@ -82,16 +84,27 @@ def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dsp
 
 
 async def _run_live_predictions(args: argparse.Namespace, reference_now_ts: int, posts):
-    classifier = _build_runtime_classifier(
-        classifier_mode=args.classifier_mode,
-        disable_dspy=args.disable_dspy,
-    )
-    return await generate_live_predictions(
-        posts=posts,
-        classifier=classifier,
-        reference_now_ts=reference_now_ts,
-        current_opportunity_max_age_days=args.current_opportunity_max_age_days,
-    )
+    import config
+    from budget import BudgetGuard
+    from db import Database
+
+    db = Database(config.DB_PATH)
+    await db.init()
+    try:
+        budget_guard = BudgetGuard(db=db, daily_cap_usd=config.DAILY_BUDGET_USD)
+        classifier = _build_runtime_classifier(
+            classifier_mode=args.classifier_mode,
+            disable_dspy=args.disable_dspy,
+            budget_guard=budget_guard,
+        )
+        return await generate_live_predictions(
+            posts=posts,
+            classifier=classifier,
+            reference_now_ts=reference_now_ts,
+            current_opportunity_max_age_days=args.current_opportunity_max_age_days,
+        )
+    finally:
+        await db.close()
 
 
 def main() -> int:

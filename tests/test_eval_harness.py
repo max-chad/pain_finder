@@ -1,3 +1,6 @@
+import argparse
+import importlib
+import importlib.util
 import json
 import runpy
 import sys
@@ -10,6 +13,16 @@ from scraper import Post
 
 
 REFERENCE_NOW_TS = 1776816000  # 2026-04-21T00:00:00Z
+
+
+def _load_run_eval_module():
+    run_eval_path = Path(__file__).resolve().parents[1] / "eval" / "run_eval.py"
+    spec = importlib.util.spec_from_file_location("run_eval_under_test", run_eval_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -317,6 +330,129 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     stdout = capsys.readouterr().out
     assert "dataset_size=1" in stdout
     assert "pain_precision=1.000" in stdout
+
+
+def test_build_runtime_classifier_wires_budget_guard(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
+
+    import classifier
+    import config
+    import dspy_parser
+    import openrouter
+
+    importlib.reload(config)
+    config.DSPY_API_KEY = "dspy-key"
+    config.DSPY_REDDIT_PARSER_ENABLED = True
+
+    class FakeOpenRouterClient:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeOpenRouterClient.instances.append(self)
+
+    class FakeDSPyRedditPainParser:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeDSPyRedditPainParser.instances.append(self)
+
+    class FakeClassifier:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(openrouter, "OpenRouterClient", FakeOpenRouterClient)
+    monkeypatch.setattr(dspy_parser, "DSPyRedditPainParser", FakeDSPyRedditPainParser)
+    monkeypatch.setattr(classifier, "Classifier", FakeClassifier)
+    budget_guard = object()
+    run_eval = _load_run_eval_module()
+
+    built = run_eval._build_runtime_classifier(budget_guard=budget_guard)
+
+    assert isinstance(built, FakeClassifier)
+    assert FakeOpenRouterClient.instances[0].kwargs["budget_guard"] is budget_guard
+    assert FakeDSPyRedditPainParser.instances[0].kwargs["budget_guard"] is budget_guard
+    assert built.kwargs["openrouter"] is FakeOpenRouterClient.instances[0]
+    assert built.kwargs["dspy_parser"] is FakeDSPyRedditPainParser.instances[0]
+
+
+@pytest.mark.asyncio
+async def test_run_live_predictions_closes_budget_db(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "eval.db"))
+
+    import budget
+    import config
+    import db
+
+    importlib.reload(config)
+
+    class FakeDatabase:
+        instances = []
+
+        def __init__(self, path):
+            self.path = path
+            self.init_called = False
+            self.close_called = False
+            FakeDatabase.instances.append(self)
+
+        async def init(self):
+            self.init_called = True
+
+        async def close(self):
+            self.close_called = True
+
+    class FakeBudgetGuard:
+        instances = []
+
+        def __init__(self, db, daily_cap_usd):
+            self.db = db
+            self.daily_cap_usd = daily_cap_usd
+            FakeBudgetGuard.instances.append(self)
+
+    run_eval = _load_run_eval_module()
+
+    captured = {}
+
+    def fake_build_runtime_classifier(*, classifier_mode=None, disable_dspy=False, budget_guard=None):
+        captured["classifier_mode"] = classifier_mode
+        captured["disable_dspy"] = disable_dspy
+        captured["budget_guard"] = budget_guard
+        return object()
+
+    async def fake_generate_live_predictions(**kwargs):
+        captured["generate_kwargs"] = kwargs
+        return [{"post_id": "reddit:one"}]
+
+    monkeypatch.setattr(db, "Database", FakeDatabase)
+    monkeypatch.setattr(budget, "BudgetGuard", FakeBudgetGuard)
+    monkeypatch.setattr(run_eval, "_build_runtime_classifier", fake_build_runtime_classifier)
+    monkeypatch.setattr(run_eval, "generate_live_predictions", fake_generate_live_predictions)
+
+    args = argparse.Namespace(
+        classifier_mode="dual",
+        disable_dspy=True,
+        current_opportunity_max_age_days=90,
+    )
+
+    result = await run_eval._run_live_predictions(args, REFERENCE_NOW_TS, [])
+
+    assert result == [{"post_id": "reddit:one"}]
+    assert FakeDatabase.instances[0].path == str(tmp_path / "eval.db")
+    assert FakeDatabase.instances[0].init_called is True
+    assert FakeDatabase.instances[0].close_called is True
+    assert FakeBudgetGuard.instances[0].db is FakeDatabase.instances[0]
+    assert captured["budget_guard"] is FakeBudgetGuard.instances[0]
+    assert captured["classifier_mode"] == "dual"
+    assert captured["disable_dspy"] is True
+    assert captured["generate_kwargs"]["reference_now_ts"] == REFERENCE_NOW_TS
+    assert captured["generate_kwargs"]["current_opportunity_max_age_days"] == 90
 
 
 def test_labels_from_jsonl_rejects_invalid_values(eval_harness_module, tmp_path):
