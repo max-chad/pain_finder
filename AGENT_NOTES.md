@@ -377,3 +377,10 @@
 - Change: Reject ambiguous all-numeric and hex/octal-like hostnames that are not accepted as standard public IP literals.
 - Verification: Added URL safety tests for public hosts, private hosts, credentials, unsupported schemes, and numeric localhost bypass forms; full gates are run after this note.
 - Impact: Reduces SSRF-style exposure from operator-configured review targets.
+
+## 2026-05-25 - LLM usage token counts are tolerant
+
+- Reason: provider `usage` payloads are external inputs; malformed or negative token counts could raise during usage accounting after a valid model response and discard the result.
+- Change: Coerce usage token counts through a non-negative safe parser for OpenRouter chat responses and OpenAI/Codex response usage objects.
+- Verification: Added OpenRouter usage tests for malformed and negative token counts; full gates are run after this note.
+- Impact: Keeps successful LLM classifications from failing because optional usage metadata drifted.

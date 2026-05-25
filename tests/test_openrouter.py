@@ -1,5 +1,7 @@
 ﻿from unittest.mock import AsyncMock
 
+from types import SimpleNamespace
+
 import httpx
 import respx
 
@@ -666,6 +668,42 @@ async def test_usage_tracking_calls_budget_guard(respx_mock):
     assert call_kwargs["provider"] == "openrouter"
     assert call_kwargs["request_path"] == "https://openrouter.ai/api/v1/chat/completions"
     assert len(call_kwargs["prompt_hash"]) == 64
+
+
+async def test_usage_tracking_tolerates_malformed_token_counts(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": "bad", "completion_tokens": -5},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
+
+    assert result is not None
+    call_kwargs = budget.record_usage.await_args.kwargs
+    assert call_kwargs["prompt_tokens"] == 0
+    assert call_kwargs["completion_tokens"] == 0
+
+
+def test_responses_usage_to_dict_tolerates_malformed_token_counts():
+    usage = SimpleNamespace(input_tokens="bad", output_tokens=-10)
+
+    assert OpenRouterClient._responses_usage_to_dict(usage) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+    }
 
 
 async def test_legacy_usage_tracking_records_fallback_reason(respx_mock):

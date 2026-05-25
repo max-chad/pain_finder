@@ -349,12 +349,20 @@ class OpenRouterClient:
     def _responses_usage_to_dict(usage: Any) -> dict[str, int] | None:
         if usage is None:
             return None
-        prompt_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-        completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        prompt_tokens = OpenRouterClient._usage_token_count(getattr(usage, "input_tokens", 0))
+        completion_tokens = OpenRouterClient._usage_token_count(getattr(usage, "output_tokens", 0))
         return {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
         }
+
+    @staticmethod
+    def _usage_token_count(value: Any) -> int:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, parsed)
 
     async def _request_codex_responses_payload(
         self,
@@ -417,8 +425,8 @@ class OpenRouterClient:
     ) -> None:
         if not usage:
             return
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        prompt_tokens = self._usage_token_count(usage.get("prompt_tokens", 0))
+        completion_tokens = self._usage_token_count(usage.get("completion_tokens", 0))
         cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
         if self.budget_guard is not None:
@@ -773,8 +781,8 @@ class OpenRouterClient:
         if not isinstance(usage, dict):
             return
 
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        prompt_tokens = self._usage_token_count(usage.get("prompt_tokens", 0))
+        completion_tokens = self._usage_token_count(usage.get("completion_tokens", 0))
         cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
         if self.budget_guard is not None:
