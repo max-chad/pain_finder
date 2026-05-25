@@ -150,7 +150,7 @@ HN ingestion:
 Review ingestion:
 
 - `REVIEWS_ENABLED`
-- `REVIEW_TARGETS_JSON`
+- `REVIEW_TARGETS_JSON` (enabled targets must have `site`, `name`, and a public `http`/`https` `url`; localhost/private IP targets are rejected)
 - `REVIEWS_MAX_PER_TARGET`
 - `REVIEWS_INTERVAL_HOURS`
 
@@ -254,7 +254,7 @@ python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
 python smoke_collect.py --source all --limit 5
 ```
 
-Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`) and does not require Telegram or LLM credentials.
+Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs.
 
 ## Quality Gates
 

@@ -272,3 +272,10 @@
 - Change: Treat malformed HN response payloads as per-keyword failures, keep the all-keywords-failed error, and tolerate invalid score values as zero.
 - Verification: Added HN scraper tests for malformed per-keyword payloads and all-malformed failure; full gates are run after this note.
 - Impact: Makes HN collection resilient to transient bad upstream responses without hiding complete source failure.
+
+## 2026-05-25 - Source validation docs match runtime
+
+- Reason: README listed review and smoke env names but did not document the runtime contract added for public review URLs and subreddit validation.
+- Change: Document that enabled review targets require public `http`/`https` URLs and that smoke checks validate subreddit/review target inputs before network calls.
+- Verification: Full gates are run after this note.
+- Impact: Keeps deployment docs aligned with the source-ingestion safety checks operators will hit.
