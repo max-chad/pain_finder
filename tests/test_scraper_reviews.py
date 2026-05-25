@@ -111,6 +111,14 @@ async def test_fetch_negative_reviews_handles_disabled_or_fetch_failure(monkeypa
     assert await scraper.fetch_negative_reviews(target=enabled_target, max_reviews=5) == []
 
 
+async def test_fetch_negative_reviews_rejects_private_target_url():
+    scraper = ReviewScraper()
+    target = ReviewTarget(site="g2", name="Internal", url="http://127.0.0.1/reviews")
+
+    with pytest.raises(ReviewFetchError, match="public http or https URL"):
+        await scraper.fetch_negative_reviews(target=target, max_reviews=5)
+
+
 async def test_fetch_many_targets_combines_results(monkeypatch):
     scraper = ReviewScraper()
     monkeypatch.setattr(

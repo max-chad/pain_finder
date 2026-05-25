@@ -172,7 +172,11 @@ def test_config_rejects_invalid_enabled_source_environment(monkeypatch):
         ),
         (
             {"REVIEWS_ENABLED": "1", "REVIEW_TARGETS_JSON": '[{"site":"g2","name":"A","url":"u1"}]'},
-            "REVIEW_TARGETS_JSON enabled target URLs must use http or https",
+            "REVIEW_TARGETS_JSON enabled target URLs must be public http or https URLs",
+        ),
+        (
+            {"REVIEWS_ENABLED": "1", "REVIEW_TARGETS_JSON": '[{"site":"g2","name":"A","url":"http://127.0.0.1/reviews"}]'},
+            "REVIEW_TARGETS_JSON enabled target URLs must be public http or https URLs",
         ),
     ]
     config_module = importlib.import_module("config")

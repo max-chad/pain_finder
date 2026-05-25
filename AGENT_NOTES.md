@@ -237,3 +237,10 @@
 - Change: Parse model pricing as a required JSON object shape when provided, normalize numeric price fields to floats, and reject malformed, non-numeric, or negative values at startup.
 - Verification: Added config tests for malformed pricing JSON and valid numeric normalization; full gates are run after this note.
 - Impact: Keeps cost accounting and budget guardrails from being disabled by a typo in pricing configuration.
+
+## 2026-05-25 - Review scraping blocks private URLs
+
+- Reason: review targets are operator-configured fetch URLs, and the scraper path itself could fetch localhost or private IP literals if called outside the main config validation path.
+- Change: Add a shared public HTTP URL validator and enforce it in app config, source smoke config, and `ReviewScraper._fetch_html`.
+- Verification: Added config, smoke, and scraper tests for malformed and private review target URLs; full gates are run after this note.
+- Impact: Reduces SSRF-style exposure from review ingestion while preserving public `http` and `https` review pages.
