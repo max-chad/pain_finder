@@ -258,3 +258,10 @@
 - Change: Make env alias lookup skip blank values and require non-empty Telegram token/chat id values at config import time.
 - Verification: Added config tests for blank primary LLM key fallback and blank required credential rejection; full gates are run after this note.
 - Impact: Converts common deployment secret wiring mistakes into clear startup failures instead of broken runtime API calls.
+
+## 2026-05-25 - Reddit scraper validates subreddit names
+
+- Reason: bot commands normalize subreddit names, but direct scraper and smoke paths could accept malformed names and build invalid Reddit URLs before failing late in network fallbacks.
+- Change: Validate subreddit names inside `RedditScraper.fetch_posts` and `fetch_full_thread`, matching the public command contract.
+- Verification: Added scraper tests for malformed subreddit rejection before network calls; full gates are run after this note.
+- Impact: Keeps source collection failures explicit and prevents malformed operator inputs from triggering unnecessary external requests.

@@ -20,6 +20,7 @@ DEFAULT_FEEDS = ("top",)
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
+SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 
 
 @dataclass
@@ -66,6 +67,7 @@ class RedditScraper:
         self._oauth_token_expires_at = 0.0
 
     async def fetch_posts(self, subreddit: str, limit: int = 100, timeframe: str = "day") -> list[Post]:
+        subreddit = self._validate_subreddit(subreddit)
         if self._use_praw:
             try:
                 return await self._fetch_praw(subreddit, limit, timeframe)
@@ -87,6 +89,7 @@ class RedditScraper:
         post_id: str,
         max_comments: int = 250,
     ) -> list[str]:
+        subreddit = self._validate_subreddit(subreddit)
         max_comments = max(1, max_comments)
         if self._use_praw:
             try:
@@ -110,6 +113,13 @@ class RedditScraper:
         if ":" in post_id:
             return post_id.split(":", 1)[1]
         return post_id
+
+    @staticmethod
+    def _validate_subreddit(raw: str) -> str:
+        subreddit = str(raw or "").strip()
+        if not SUBREDDIT_RE.fullmatch(subreddit):
+            raise ValueError("Invalid subreddit. Use letters, numbers, and underscores only.")
+        return subreddit.lower()
 
     @staticmethod
     def _normalize_feeds(feed_mix: list[str] | tuple[str, ...] | None) -> list[str]:

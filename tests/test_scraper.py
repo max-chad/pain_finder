@@ -36,6 +36,28 @@ async def test_scraper_with_credentials_sets_use_praw_true():
     assert scraper._use_praw is True
 
 
+def test_validate_subreddit_rejects_malformed_values():
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test")
+
+    assert scraper._validate_subreddit("Python") == "python"
+    for value in ("", "p", "../api", "python.json", "py-thon", "a" * 22):
+        with pytest.raises(ValueError, match="Invalid subreddit"):
+            scraper._validate_subreddit(value)
+
+
+async def test_fetch_posts_rejects_invalid_subreddit_before_network(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test")
+    fetch_mock = AsyncMock()
+    monkeypatch.setattr(scraper, "_fetch_public_json", fetch_mock)
+
+    with pytest.raises(ValueError, match="Invalid subreddit"):
+        await scraper.fetch_posts("../api", limit=5)
+
+    fetch_mock.assert_not_awaited()
+
+
 async def test_scraper_comment_fetch_concurrency_is_clamped_to_at_least_one():
     scraper = RedditScraper(
         client_id="",
