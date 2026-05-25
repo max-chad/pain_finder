@@ -202,6 +202,7 @@ Paths and source auth:
 - `macro_trend_runs`, `macro_trend_clusters`, `macro_trend_members`: macro analytics snapshots.
 - `llm_usage_events`: token/cost ledger.
 - `runtime_flags`: `llm_paused`, pause reason/day, resume override.
+- `monitored_subreddits`: active subreddit schedules plus last success, last attempt, and last error for `/list` diagnostics.
 - `gtm_assets`: generated GTM payloads.
 
 ## Budget Guardrail Behavior

@@ -307,3 +307,10 @@
 - Change: Add `last_attempted_at` and `last_error` to monitored subreddit state, record failures in the scheduler, clear errors on success, and surface the last error in `/list`.
 - Verification: Added DB migration/state tests, scheduler failure tests, and bot list rendering tests; full gates are run after this note.
 - Impact: Improves recurring collection observability without marking failed jobs as successful.
+
+## 2026-05-25 - Monitor state docs match runtime
+
+- Reason: monitored subreddit state now records last attempts and errors, but README data model highlights did not mention this operator-visible table.
+- Change: Document `monitored_subreddits` last success/attempt/error fields in the data model overview.
+- Verification: Full gates are run after this note.
+- Impact: Keeps deploy/runbook docs aligned with scheduler failure observability.
