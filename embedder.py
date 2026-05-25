@@ -26,7 +26,10 @@ _TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 def _embed_url_for_provider(provider: str, api_base: str) -> str:
     normalized = provider.strip().lower() or "openrouter"
     if api_base:
-        return f"{api_base.rstrip('/')}/embeddings"
+        normalized_base = api_base.rstrip("/")
+        if normalized_base.endswith("/embeddings"):
+            return normalized_base
+        return f"{normalized_base}/embeddings"
     return _DEFAULT_EMBED_BASE_URLS.get(normalized, _DEFAULT_EMBED_BASE_URLS["openai"])
 
 

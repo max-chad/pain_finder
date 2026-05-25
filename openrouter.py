@@ -265,9 +265,12 @@ class OpenRouterClient:
 
     def _resolve_base_url(self) -> str:
         if self.api_base:
+            api_base = self.api_base.rstrip("/")
             if self.provider == "openai-codex":
-                return self.api_base.rstrip("/")
-            return f"{self.api_base.rstrip('/')}/chat/completions"
+                return api_base.removesuffix("/responses")
+            if api_base.endswith("/chat/completions"):
+                return api_base
+            return f"{api_base}/chat/completions"
         return self.DEFAULT_BASE_URLS.get(self.provider, self.DEFAULT_BASE_URLS["openai"])
 
     def _uses_openai_codex_backend(self) -> bool:

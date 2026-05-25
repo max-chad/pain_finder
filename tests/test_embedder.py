@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import respx
 
-from embedder import Embedder, _bow_embed, _stable_token_bucket
+from embedder import Embedder, _bow_embed, _embed_url_for_provider, _stable_token_bucket
 
 
 def _make_embedder(**kwargs):
@@ -21,6 +21,14 @@ def _make_embedder(**kwargs):
 def _unit_vector(dim: int) -> list[float]:
     """Return a simple L2-normalised vector for testing."""
     return [1.0 / math.sqrt(dim)] * dim
+
+
+def test_full_embeddings_api_base_is_not_double_suffixed():
+    assert (
+        _embed_url_for_provider("openai", "https://gateway.example/v1/embeddings")
+        == "https://gateway.example/v1/embeddings"
+    )
+    assert _embed_url_for_provider("openai", "https://gateway.example/v1") == "https://gateway.example/v1/embeddings"
 
 
 class TestOpenRouterEmbed:

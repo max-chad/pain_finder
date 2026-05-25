@@ -216,3 +216,10 @@
 - Change: Apply the shared Telegram text limiter to remaining multi-line operator status replies.
 - Verification: Added bot tests proving large monitoring output and long pause reasons stay within the Telegram text limit; full gates are run after this note.
 - Impact: Keeps core operational diagnostics usable under large deployments and unusual runtime state.
+
+## 2026-05-25 - Provider API bases accept endpoint URLs
+
+- Reason: `LLM_API_BASE` and `EMBED_API_BASE` were treated only as root API URLs, so operators pasting full `/chat/completions`, `/responses`, or `/embeddings` endpoints produced invalid doubled request URLs.
+- Change: Normalize LLM and embedding API base URLs to accept either root API bases or full endpoint URLs without duplicating suffixes.
+- Verification: Added OpenRouter and embedder URL normalization tests; full gates are run after this note.
+- Impact: Makes provider/gateway deployments less fragile and prevents late request failures caused by common endpoint-style env values.

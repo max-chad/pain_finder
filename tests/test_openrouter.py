@@ -241,6 +241,30 @@ async def test_openrouter_provider_uses_primary_max_output_tokens_in_request_bod
     assert req_body["max_tokens"] == 321
 
 
+def test_full_chat_completions_api_base_is_not_double_suffixed():
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="m1",
+        provider="openrouter",
+        api_base="https://gateway.example/v1/chat/completions",
+    )
+
+    assert client.base_url == "https://gateway.example/v1/chat/completions"
+    assert client._request_path() == "https://gateway.example/v1/chat/completions"
+
+
+def test_openai_codex_responses_api_base_is_normalized_to_backend_root():
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        api_base="https://chatgpt.com/backend-api/codex/responses",
+    )
+
+    assert client.base_url == "https://chatgpt.com/backend-api/codex"
+    assert client._request_path() == "https://chatgpt.com/backend-api/codex/responses"
+
+
 async def test_codex_provider_uses_openai_compatible_endpoint_and_reasoning_effort(respx_mock):
     captured_requests = []
 
