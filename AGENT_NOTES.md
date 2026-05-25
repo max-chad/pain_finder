@@ -328,3 +328,10 @@
 - Change: Make boolean env parsing strict for known true/false tokens and validate `TELEGRAM_CHAT_ID` with a clear integer error.
 - Verification: Added config regression tests for invalid boolean tokens and non-integer chat ids; full gates are run after this note.
 - Impact: Turns common `.env` mistakes into explicit startup failures instead of accidental scheduled jobs or confusing first-run errors.
+
+## 2026-05-25 - Docker healthcheck is read-only against SQLite
+
+- Reason: the container healthcheck called `Database.init()`, so a periodic liveness probe could run DDL, migrations, index creation, and seed writes against the live database.
+- Change: Open the configured SQLite database in read-only mode for health checks, verify required tables exist, and read runtime/monitoring summary without initializing schema.
+- Verification: Added healthcheck tests for initialized DB success, missing DB failure, and uninitialized DB staying untouched; full gates are run after this note.
+- Impact: Keeps startup migrations owned by the application path and prevents health probes from mutating production SQLite state.

@@ -237,7 +237,7 @@ pip install -r requirements-ml.txt
 docker compose up -d --build
 ```
 
-The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, SQLite storage, and report-directory writability without calling external APIs.
+The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, report-directory writability, and read-only access to an already initialized SQLite database without calling external APIs or running migrations.
 The runtime handles `SIGTERM`/`SIGINT` through the asyncio loop so Docker stops and manual interrupts drain through scheduler/database cleanup.
 
 Persisted mounts in `docker-compose.yml`:
