@@ -11,6 +11,8 @@ load_dotenv()
 LLM_PROVIDERS = {"openrouter", "codex", "openai", "openai-codex"}
 EMBED_PROVIDERS = {"openrouter", "codex", "openai", "bow", "hash", "disabled", "none"}
 DSPY_PROVIDERS = {"openrouter", "codex", "openai"}
+TRUE_VALUES = {"1", "true", "on", "yes"}
+FALSE_VALUES = {"0", "false", "off", "no"}
 
 
 def _first_env(*names: str, default: str | None = None, required: bool = False) -> str:
@@ -132,10 +134,14 @@ def _json_list_env(name: str, default: list[Any]) -> list[Any]:
 
 
 def _bool_env(name: str, default: str = "0") -> bool:
-    value = os.getenv(name, default).strip().lower()
-    if value in {"1", "true", "on", "yes"}:
+    return _bool_value(name, os.getenv(name, default))
+
+
+def _bool_value(name: str, raw: Any) -> bool:
+    value = str(raw).strip().lower()
+    if value in TRUE_VALUES:
         return True
-    if value in {"0", "false", "off", "no"}:
+    if value in FALSE_VALUES:
         return False
     raise ValueError(f"{name} must be a boolean: 1/0, true/false, on/off, or yes/no")
 
@@ -295,15 +301,18 @@ if HN_ENABLED and not HN_KEYWORDS:
 REVIEW_TARGETS = _json_list_env("REVIEW_TARGETS_JSON", [])
 if not isinstance(REVIEW_TARGETS, list):
     REVIEW_TARGETS = []
-_enabled_review_targets = [
-    target
-    for target in REVIEW_TARGETS
-    if isinstance(target, dict)
-    and str(target.get("site") or "").strip()
-    and str(target.get("name") or "").strip()
-    and str(target.get("url") or "").strip()
-    and str(target.get("enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
-]
+_enabled_review_targets = []
+for target in REVIEW_TARGETS:
+    if not isinstance(target, dict):
+        continue
+    enabled = _bool_value("REVIEW_TARGETS_JSON target enabled", target.get("enabled", "1"))
+    if (
+        enabled
+        and str(target.get("site") or "").strip()
+        and str(target.get("name") or "").strip()
+        and str(target.get("url") or "").strip()
+    ):
+        _enabled_review_targets.append(target)
 _invalid_review_urls = [
     target for target in _enabled_review_targets if not is_public_http_url(str(target.get("url") or ""))
 ]

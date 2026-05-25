@@ -131,6 +131,27 @@ async def test_run_smoke_rejects_private_review_target_url(monkeypatch):
     ]
 
 
+async def test_run_smoke_rejects_invalid_review_target_enabled_flag(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.setenv(
+        "REVIEW_TARGETS_JSON",
+        '[{"site":"g2","name":"A","url":"https://example.com/reviews","enabled":"flase"}]',
+    )
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reviews"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "REVIEW_TARGETS_JSON target enabled must be a boolean: 1/0, true/false, on/off, or yes/no",
+        }
+    ]
+
+
 async def test_run_smoke_require_posts_fails_empty_completed_source(monkeypatch):
     import smoke_collect
 

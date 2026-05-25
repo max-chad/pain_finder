@@ -349,3 +349,10 @@
 - Change: Add `docker compose config -q` to GitHub Actions and the README quality gate command list.
 - Verification: Full gates are run after this note.
 - Impact: Catches broken container wiring before merge instead of only during local/deploy checks.
+
+## 2026-05-25 - Review target enabled flags are strict
+
+- Reason: global boolean env values were strict, but `REVIEW_TARGETS_JSON[*].enabled` still treated typos such as `"flase"` as enabled and could fetch targets operators intended to disable.
+- Change: Parse review target `enabled` values with the same true/false token set in app config, smoke config, and main target construction.
+- Verification: Added config, smoke, and main regression tests for invalid per-target enabled flags; full gates are run after this note.
+- Impact: Prevents typo-enabled external review collection during deploy and smoke checks.

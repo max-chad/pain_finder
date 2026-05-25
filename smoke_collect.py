@@ -18,6 +18,8 @@ from url_safety import is_public_http_url
 
 DEFAULT_HN_KEYWORDS = ["internal tool", "frustrating", "we built our own", "manual process"]
 ALLOWED_REDDIT_FEEDS = {"new", "rising", "top"}
+TRUE_VALUES = {"1", "true", "on", "yes"}
+FALSE_VALUES = {"0", "false", "off", "no"}
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,15 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     return value
 
 
+def _bool_value(name: str, raw: Any) -> bool:
+    value = str(raw).strip().lower()
+    if value in TRUE_VALUES:
+        return True
+    if value in FALSE_VALUES:
+        return False
+    raise ValueError(f"{name} must be a boolean: 1/0, true/false, on/off, or yes/no")
+
+
 def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
     targets: list[ReviewTarget] = []
     for raw in raw_targets:
@@ -82,7 +93,7 @@ def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
         url = str(raw.get("url") or "").strip()
         if not site or not name or not url:
             continue
-        enabled = str(raw.get("enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
+        enabled = _bool_value("REVIEW_TARGETS_JSON target enabled", raw.get("enabled", "1"))
         if enabled and not is_public_http_url(url):
             raise ValueError("REVIEW_TARGETS_JSON enabled target URLs must be public http or https URLs")
         targets.append(ReviewTarget(site=site, name=name, url=url, enabled=enabled))

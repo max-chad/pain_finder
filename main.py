@@ -63,7 +63,12 @@ def _build_review_targets() -> list[ReviewTarget]:
 def _target_enabled(value) -> bool:
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() not in {"0", "false", "off", "no"}
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "on", "yes"}:
+        return True
+    if normalized in {"0", "false", "off", "no"}:
+        return False
+    raise ValueError("REVIEW_TARGETS_JSON target enabled must be a boolean: 1/0, true/false, on/off, or yes/no")
 
 
 def _build_dspy_parser(*, budget_guard=None):

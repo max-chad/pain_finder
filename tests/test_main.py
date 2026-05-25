@@ -42,6 +42,23 @@ def test_build_review_targets_respects_string_disabled_flags(monkeypatch):
     assert [target.enabled for target in targets] == [False, False, True]
 
 
+def test_build_review_targets_rejects_invalid_enabled_flag(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    main.config.REVIEW_TARGETS = [
+        {"site": "g2", "name": "Typo", "url": "https://example.com/reviews", "enabled": "flase"},
+    ]
+
+    with pytest.raises(ValueError, match="REVIEW_TARGETS_JSON target enabled must be a boolean"):
+        main._build_review_targets()
+
+
 @pytest.mark.asyncio
 async def test_build_shutdown_event_registers_sigint_and_sigterm(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
