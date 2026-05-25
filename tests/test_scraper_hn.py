@@ -102,6 +102,40 @@ async def test_fetch_posts_handles_malformed_payload_per_keyword(respx_mock):
     assert posts[0].score == 0
 
 
+async def test_fetch_posts_tolerates_non_string_hit_fields(respx_mock):
+    respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "hits": [
+                    {
+                        "objectID": "10",
+                        "title": 12345,
+                        "story_text": None,
+                        "url": None,
+                        "points": None,
+                    },
+                    {
+                        "objectID": "11",
+                        "title": "",
+                        "story_text": "",
+                        "url": ["not", "a", "url"],
+                        "points": 2,
+                    },
+                ]
+            },
+        )
+    )
+    scraper = HackerNewsScraper()
+
+    posts = await scraper.fetch_posts(keywords=["tooling"], lookback_hours=12, max_posts=10)
+
+    assert len(posts) == 1
+    assert posts[0].post_id == "hn:10"
+    assert posts[0].title == "12345"
+    assert posts[0].url == "https://news.ycombinator.com/item?id=10"
+
+
 async def test_fetch_posts_raises_when_all_keyword_payloads_are_malformed(respx_mock):
     route = respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
         side_effect=[

@@ -9,6 +9,14 @@ from scraper import Post
 logger = logging.getLogger(__name__)
 
 
+def _clean_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
 class HackerNewsScraper:
     BASE_URL = "https://hn.algolia.com/api/v1/search_by_date"
 
@@ -62,11 +70,11 @@ class HackerNewsScraper:
                     if not object_id:
                         continue
                     post_id = f"hn:{object_id}"
-                    title = (hit.get("title") or hit.get("story_title") or "").strip()
-                    body = (hit.get("story_text") or hit.get("comment_text") or "").strip()
+                    title = _clean_text(hit.get("title") or hit.get("story_title"))
+                    body = _clean_text(hit.get("story_text") or hit.get("comment_text"))
                     if not title and not body:
                         continue
-                    url = (hit.get("url") or hit.get("story_url") or f"https://news.ycombinator.com/item?id={object_id}").strip()
+                    url = _clean_text(hit.get("url") or hit.get("story_url")) or f"https://news.ycombinator.com/item?id={object_id}"
                     try:
                         score = int(hit.get("points") or 0)
                     except (TypeError, ValueError):

@@ -279,3 +279,10 @@
 - Change: Document that enabled review targets require public `http`/`https` URLs and that smoke checks validate subreddit/review target inputs before network calls.
 - Verification: Full gates are run after this note.
 - Impact: Keeps deployment docs aligned with the source-ingestion safety checks operators will hit.
+
+## 2026-05-25 - HN hit fields are type-tolerant
+
+- Reason: HN ingestion still assumed individual hit fields were strings; a valid JSON response with numeric/null title, body, or URL fields could crash the whole source job.
+- Change: Normalize HN text fields through a safe converter and fall back to the canonical HN item URL when URL fields are missing or non-text.
+- Verification: Added an HN scraper test for non-string hit fields; full gates are run after this note.
+- Impact: Improves HN collection resilience against partial upstream schema drift without accepting empty unusable hits.
