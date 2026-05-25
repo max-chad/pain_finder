@@ -1,6 +1,7 @@
 import json
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -116,6 +117,11 @@ def _json_list_env(name: str, default: list[Any]) -> list[Any]:
 
 def _bool_env(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -254,7 +260,7 @@ if HN_ENABLED and not HN_KEYWORDS:
 REVIEW_TARGETS = _json_list_env("REVIEW_TARGETS_JSON", [])
 if not isinstance(REVIEW_TARGETS, list):
     REVIEW_TARGETS = []
-_valid_review_targets = [
+_enabled_review_targets = [
     target
     for target in REVIEW_TARGETS
     if isinstance(target, dict)
@@ -262,6 +268,14 @@ _valid_review_targets = [
     and str(target.get("name") or "").strip()
     and str(target.get("url") or "").strip()
     and str(target.get("enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
+]
+_invalid_review_urls = [
+    target for target in _enabled_review_targets if not _is_http_url(str(target.get("url") or ""))
+]
+if _invalid_review_urls:
+    raise ValueError("REVIEW_TARGETS_JSON enabled target URLs must use http or https")
+_valid_review_targets = [
+    target for target in _enabled_review_targets if _is_http_url(str(target.get("url") or ""))
 ]
 if REVIEWS_ENABLED and not _valid_review_targets:
     raise ValueError("REVIEW_TARGETS_JSON must contain at least one enabled target with site, name, and url when REVIEWS_ENABLED=1")

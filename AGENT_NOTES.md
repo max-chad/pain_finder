@@ -223,3 +223,10 @@
 - Change: Normalize LLM and embedding API base URLs to accept either root API bases or full endpoint URLs without duplicating suffixes.
 - Verification: Added OpenRouter and embedder URL normalization tests; full gates are run after this note.
 - Impact: Makes provider/gateway deployments less fragile and prevents late request failures caused by common endpoint-style env values.
+
+## 2026-05-25 - Review target URLs fail fast
+
+- Reason: enabled `REVIEW_TARGETS_JSON` entries only required a non-empty `url`, so malformed values such as `u1` or unsupported schemes reached the review fetcher and failed late during source collection.
+- Change: Validate enabled review targets as absolute `http` or `https` URLs in the main app config and the source smoke config.
+- Verification: Added config and smoke tests for invalid review target URLs; full gates are run after this note.
+- Impact: Turns review-source deployment mistakes into clear startup/smoke failures before scheduled collection runs.

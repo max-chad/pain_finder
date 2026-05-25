@@ -7,6 +7,7 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Sequence
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -71,6 +72,11 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     return value
 
 
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
     targets: list[ReviewTarget] = []
     for raw in raw_targets:
@@ -82,6 +88,8 @@ def _build_review_targets(raw_targets: list[Any]) -> list[ReviewTarget]:
         if not site or not name or not url:
             continue
         enabled = str(raw.get("enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
+        if enabled and not _is_http_url(url):
+            raise ValueError("REVIEW_TARGETS_JSON enabled target URLs must use http or https")
         targets.append(ReviewTarget(site=site, name=name, url=url, enabled=enabled))
     return targets
 

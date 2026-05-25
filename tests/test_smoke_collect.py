@@ -95,6 +95,24 @@ async def test_run_smoke_rejects_invalid_source_numeric_env(monkeypatch):
     ]
 
 
+async def test_run_smoke_rejects_invalid_review_target_url(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.setenv("REVIEW_TARGETS_JSON", '[{"site":"g2","name":"A","url":"u1"}]')
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reviews"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "REVIEW_TARGETS_JSON enabled target URLs must use http or https",
+        }
+    ]
+
+
 async def test_run_smoke_require_posts_fails_empty_completed_source(monkeypatch):
     import smoke_collect
 
