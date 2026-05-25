@@ -66,7 +66,7 @@ def _target_enabled(value) -> bool:
     return str(value).strip().lower() not in {"0", "false", "off", "no"}
 
 
-def _build_dspy_parser():
+def _build_dspy_parser(*, budget_guard=None):
     if not config.DSPY_REDDIT_PARSER_ENABLED:
         return None
     if not config.DSPY_API_KEY:
@@ -84,6 +84,7 @@ def _build_dspy_parser():
         reasoning_effort=config.DSPY_REASONING_EFFORT,
         temperature=config.DSPY_TEMPERATURE,
         max_tokens=config.DSPY_MAX_TOKENS,
+        budget_guard=budget_guard,
     )
 
 
@@ -179,7 +180,7 @@ async def run() -> None:
         max_tokens=config.LLM_MAX_TOKENS,
         primary_max_output_tokens=config.PRIMARY_MAX_OUTPUT_TOKENS,
     )
-    dspy_parser = _build_dspy_parser()
+    dspy_parser = _build_dspy_parser(budget_guard=budget_guard)
 
     classifier = Classifier(
         openrouter=openrouter,

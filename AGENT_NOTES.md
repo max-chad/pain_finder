@@ -335,3 +335,10 @@
 - Change: Open the configured SQLite database in read-only mode for health checks, verify required tables exist, and read runtime/monitoring summary without initializing schema.
 - Verification: Added healthcheck tests for initialized DB success, missing DB failure, and uninitialized DB staying untouched; full gates are run after this note.
 - Impact: Keeps startup migrations owned by the application path and prevents health probes from mutating production SQLite state.
+
+## 2026-05-25 - DSPy parser checks budget before LLM calls
+
+- Reason: the optional DSPy parser can make LLM calls outside `OpenRouterClient`; the pipeline checked budget only once before a batch, so long DSPy batches did not enforce pause semantics per request.
+- Change: Inject the existing `BudgetGuard` into `DSPyRedditPainParser` and call `ensure_can_spend()` before each DSPy analysis call.
+- Verification: Added DSPy parser tests for per-call budget checks and pause propagation, plus a main wiring assertion; full gates are run after this note.
+- Impact: Keeps the optional DSPy LLM path aligned with project budget-pause guardrails.

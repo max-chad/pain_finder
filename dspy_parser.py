@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openrouter import AnalysisResult, VALID_CATEGORIES, VALID_SEVERITIES
 from scraper import Post
+
+if TYPE_CHECKING:
+    from budget import BudgetGuard
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ class DSPyRedditPainParser:
         reasoning_effort: str = "high",
         temperature: float = 1.0,
         max_tokens: int = 16000,
+        budget_guard: "BudgetGuard | None" = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.provider = provider.strip().lower() or "codex"
@@ -34,6 +38,7 @@ class DSPyRedditPainParser:
         self.reasoning_effort = reasoning_effort.strip().lower() or "high"
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.budget_guard = budget_guard
         self._dspy: Any | None = None
         self._lm: Any | None = None
         self._program: Any | None = None
@@ -99,6 +104,9 @@ class DSPyRedditPainParser:
         if not self.api_key:
             logger.warning("DSPy Reddit parser is enabled but no API key was provided")
             return None
+
+        if self.budget_guard is not None:
+            await self.budget_guard.ensure_can_spend("dspy_analyze_post")
 
         try:
             program = self._ensure_program()

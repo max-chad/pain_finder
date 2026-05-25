@@ -424,6 +424,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert bot.classifier.screen_min_rule_score == main.config.SCREEN_MIN_RULE_SCORE
     assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)
     assert bot.classifier.dspy_parser.kwargs["provider"] == main.config.DSPY_PROVIDER
+    assert bot.classifier.dspy_parser.kwargs["budget_guard"] is not None
     assert FakeEmbedder.instances[0].kwargs["provider"] == main.config.EMBED_PROVIDER
     assert FakeOpenRouterClient.instances[0].kwargs["provider"] == main.config.LLM_PROVIDER
     assert FakeOpenRouterClient.instances[0].kwargs["reasoning_effort"] == main.config.LLM_REASONING_EFFORT
