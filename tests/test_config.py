@@ -110,6 +110,54 @@ def test_dspy_parser_is_disabled_by_default(monkeypatch):
     assert config_module.DSPY_REDDIT_PARSER_ENABLED is False
 
 
+def test_config_uses_legacy_llm_key_when_primary_key_is_blank(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", " ")
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.LLM_API_KEY == "legacy-key"
+    assert config_module.EMBED_API_KEY == "legacy-key"
+
+
+def test_config_rejects_blank_required_credentials(monkeypatch):
+    import pytest
+
+    cases = [
+        (
+            {"TELEGRAM_BOT_TOKEN": " ", "TELEGRAM_CHAT_ID": "123", "LLM_API_KEY": "test-key"},
+            "TELEGRAM_BOT_TOKEN",
+        ),
+        (
+            {
+                "TELEGRAM_BOT_TOKEN": "test-token",
+                "TELEGRAM_CHAT_ID": "123",
+                "LLM_API_KEY": " ",
+                "OPENAI_API_KEY": " ",
+                "OPENROUTER_API_KEY": " ",
+            },
+            "LLM_API_KEY",
+        ),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_values, expected_key in cases:
+        for env_name, env_value in env_values.items():
+            monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(KeyError, match=expected_key):
+            importlib.reload(config_module)
+        for env_name in env_values:
+            monkeypatch.delenv(env_name, raising=False)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        config_module = importlib.reload(config_module)
+
+
 def test_config_rejects_invalid_enum_environment(monkeypatch):
     import pytest
 

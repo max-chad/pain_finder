@@ -251,3 +251,10 @@
 - Change: Add `url_safety.py` to the GitHub Actions, README, and AGENTS mypy commands; also update AGENTS required-key wording to the current LLM env aliases.
 - Verification: Full gates are run after this note.
 - Impact: Keeps local agent guidance, docs, and CI aligned with the deploy-critical security helper.
+
+## 2026-05-25 - Required credentials ignore blank env values
+
+- Reason: required credential lookup treated an explicitly blank `LLM_API_KEY` as present and ignored valid legacy aliases, causing late provider failures with an empty bearer token.
+- Change: Make env alias lookup skip blank values and require non-empty Telegram token/chat id values at config import time.
+- Verification: Added config tests for blank primary LLM key fallback and blank required credential rejection; full gates are run after this note.
+- Impact: Converts common deployment secret wiring mistakes into clear startup failures instead of broken runtime API calls.

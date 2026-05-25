@@ -16,11 +16,18 @@ DSPY_PROVIDERS = {"openrouter", "codex", "openai"}
 def _first_env(*names: str, default: str | None = None, required: bool = False) -> str:
     for name in names:
         value = os.getenv(name)
-        if value is not None:
+        if value is not None and value.strip():
             return value
     if required:
         raise KeyError(names[0])
     return default or ""
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise KeyError(name)
+    return value.strip()
 
 
 def _default_llm_model(provider: str) -> str:
@@ -120,8 +127,8 @@ def _bool_env(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() not in {"0", "false", "off", "no"}
 
 
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
+TELEGRAM_BOT_TOKEN = _required_env("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = int(_required_env("TELEGRAM_CHAT_ID"))
 
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
