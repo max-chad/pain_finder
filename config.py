@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+LLM_PROVIDERS = {"openrouter", "codex", "openai", "openai-codex"}
+EMBED_PROVIDERS = {"openrouter", "codex", "openai", "bow", "hash", "disabled", "none"}
+DSPY_PROVIDERS = {"openrouter", "codex", "openai"}
+
 
 def _first_env(*names: str, default: str | None = None, required: bool = False) -> str:
     for name in names:
@@ -42,7 +46,11 @@ def _default_max_tokens(provider: str, model: str) -> str:
 
 
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
-    value = os.getenv(name, default).strip().lower() or default
+    return _choice_value(name, os.getenv(name, default), default, choices)
+
+
+def _choice_value(name: str, raw: str | None, default: str, choices: set[str]) -> str:
+    value = (raw if raw is not None else default).strip().lower() or default
     if value not in choices:
         allowed = ", ".join(sorted(choices))
         raise ValueError(f"{name} must be one of: {allowed}")
@@ -117,7 +125,7 @@ REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "pain_finder/1.0")
 
-LLM_PROVIDER = _first_env("LLM_PROVIDER", default="codex").strip().lower() or "codex"
+LLM_PROVIDER = _choice_value("LLM_PROVIDER", _first_env("LLM_PROVIDER", default="codex"), "codex", LLM_PROVIDERS)
 LLM_API_KEY = _first_env("LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", required=True).strip()
 LLM_API_BASE = _first_env("LLM_API_BASE", "OPENROUTER_API_BASE", default="").strip()
 LLM_MODEL = _first_env("LLM_MODEL", "OPENROUTER_MODEL", default=_default_llm_model(LLM_PROVIDER)).strip() or _default_llm_model(LLM_PROVIDER)
@@ -137,7 +145,13 @@ OPENROUTER_CLUSTER_MODEL = LLM_CLUSTER_MODEL
 OPENROUTER_GTM_MODEL = LLM_GTM_MODEL
 OPENROUTER_MODEL_PRICING_JSON = LLM_MODEL_PRICING_JSON
 
-EMBED_PROVIDER = _first_env("EMBED_PROVIDER", default=LLM_PROVIDER).strip().lower() or LLM_PROVIDER
+_default_embed_provider = LLM_PROVIDER if LLM_PROVIDER in EMBED_PROVIDERS else "codex"
+EMBED_PROVIDER = _choice_value(
+    "EMBED_PROVIDER",
+    _first_env("EMBED_PROVIDER", default=_default_embed_provider),
+    _default_embed_provider,
+    EMBED_PROVIDERS,
+)
 EMBED_API_KEY = _first_env("EMBED_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", default=LLM_API_KEY).strip() or LLM_API_KEY
 EMBED_API_BASE = _first_env("EMBED_API_BASE", "LLM_API_BASE", "OPENROUTER_API_BASE", default=LLM_API_BASE).strip()
 EMBED_MODEL = _first_env("EMBED_MODEL", default=_default_embed_model(EMBED_PROVIDER)).strip() or _default_embed_model(EMBED_PROVIDER)
@@ -165,7 +179,13 @@ SCRAPER_FEED_MIX_JSON = os.getenv("SCRAPER_FEED_MIX_JSON", '["new", "rising", "t
 SCRAPER_SEARCH_QUERIES_JSON = os.getenv("SCRAPER_SEARCH_QUERIES_JSON", "[]")
 
 DSPY_REDDIT_PARSER_ENABLED = _bool_env("DSPY_REDDIT_PARSER_ENABLED")
-DSPY_PROVIDER = _first_env("DSPY_PROVIDER", default=LLM_PROVIDER).strip().lower() or LLM_PROVIDER
+_default_dspy_provider = LLM_PROVIDER if LLM_PROVIDER in DSPY_PROVIDERS else "codex"
+DSPY_PROVIDER = _choice_value(
+    "DSPY_PROVIDER",
+    _first_env("DSPY_PROVIDER", default=_default_dspy_provider),
+    _default_dspy_provider,
+    DSPY_PROVIDERS,
+)
 DSPY_MODEL = _first_env("DSPY_MODEL", default=LLM_MODEL).strip() or LLM_MODEL
 DSPY_REASONING_EFFORT = _first_env("DSPY_REASONING_EFFORT", default=LLM_REASONING_EFFORT).strip().lower() or LLM_REASONING_EFFORT
 DSPY_API_KEY = _first_env("DSPY_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", default=LLM_API_KEY).strip() or LLM_API_KEY

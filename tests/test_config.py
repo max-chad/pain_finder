@@ -117,6 +117,9 @@ def test_config_rejects_invalid_enum_environment(monkeypatch):
         ("APP_MODE", "telegrm", "APP_MODE must be one of: hermes, telegram"),
         ("CLASSIFIER_MODE", "strict", "CLASSIFIER_MODE must be one of: b2b, dual, legacy"),
         ("DIGEST_GROUP_BY", "team", "DIGEST_GROUP_BY must be one of: category, niche, source"),
+        ("LLM_PROVIDER", "opena1", "LLM_PROVIDER must be one of: codex, openai, openai-codex, openrouter"),
+        ("EMBED_PROVIDER", "opena1", "EMBED_PROVIDER must be one of: bow, codex, disabled, hash, none, openai, openrouter"),
+        ("DSPY_PROVIDER", "opena1", "DSPY_PROVIDER must be one of: codex, openai, openrouter"),
     ]
     config_module = importlib.import_module("config")
 
@@ -129,6 +132,22 @@ def test_config_rejects_invalid_enum_environment(monkeypatch):
             importlib.reload(config_module)
         monkeypatch.delenv(env_name)
         config_module = importlib.reload(config_module)
+
+
+def test_openai_codex_llm_defaults_embedding_and_dspy_to_codex(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "openai-codex")
+    monkeypatch.delenv("EMBED_PROVIDER", raising=False)
+    monkeypatch.delenv("DSPY_PROVIDER", raising=False)
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.LLM_PROVIDER == "openai-codex"
+    assert config_module.EMBED_PROVIDER == "codex"
+    assert config_module.DSPY_PROVIDER == "codex"
 
 
 def test_config_rejects_invalid_enabled_source_environment(monkeypatch):

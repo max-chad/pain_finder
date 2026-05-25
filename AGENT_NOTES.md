@@ -202,3 +202,10 @@
 - Change: Write export CSVs to a `.tmp` file, replace atomically with `os.replace`, and clean temporary files on failure.
 - Verification: Added an export test proving an atomic replace failure removes the temporary file and leaves no final CSV; full gates are run after this note.
 - Impact: Keeps operator export artifacts consistent with the project-wide atomic report-write contract.
+
+## 2026-05-25 - Provider env values are validated
+
+- Reason: Unknown `LLM_PROVIDER`, `EMBED_PROVIDER`, or `DSPY_PROVIDER` values could silently fall through to generic OpenAI-compatible defaults, causing requests to hit the wrong endpoint or use the wrong token semantics.
+- Change: Add explicit provider allowlists and make `openai-codex` default embedding/DSPy providers to `codex`, since the ChatGPT Codex backend is not an embeddings or DSPy provider.
+- Verification: Added config tests for invalid provider values and `openai-codex` defaults; full gates are run after this note.
+- Impact: Turns provider typos into startup errors and avoids accidental routing of embedding/DSPy traffic to unsupported backends.
