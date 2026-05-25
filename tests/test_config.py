@@ -260,3 +260,41 @@ def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
         monkeypatch.delenv(env_name)
         config_module = importlib.reload(config_module)
 
+
+def test_config_rejects_invalid_model_pricing_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("{", "LLM_MODEL_PRICING_JSON must be a valid JSON object"),
+        ("[]", "LLM_MODEL_PRICING_JSON must be a JSON object"),
+        ('{"m1": 1}', "LLM_MODEL_PRICING_JSON must map model names to pricing objects"),
+        ('{"m1": {"prompt_per_1k": "free"}}', "LLM_MODEL_PRICING_JSON price values must be numbers"),
+        ('{"m1": {"completion_per_1k": -0.01}}', "LLM_MODEL_PRICING_JSON price values must be non-negative"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("LLM_MODEL_PRICING_JSON", env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv("LLM_MODEL_PRICING_JSON")
+        config_module = importlib.reload(config_module)
+
+
+def test_config_normalizes_model_pricing_environment(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "LLM_MODEL_PRICING_JSON",
+        '{"m1": {"prompt_per_1k": "0.002", "completion_per_1k": 0.004}}',
+    )
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.LLM_MODEL_PRICING == {"m1": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}}
+

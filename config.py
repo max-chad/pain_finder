@@ -241,14 +241,33 @@ REVIEWS_INTERVAL_HOURS = _int_min_env("REVIEWS_INTERVAL_HOURS", 24, 1)
 GTM_ENABLED = _bool_env("GTM_ENABLED", "1")
 
 
-def parse_json_env(raw: str, default):
+def _model_pricing_env(raw: str) -> dict[str, dict[str, float]]:
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return default
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("LLM_MODEL_PRICING_JSON must be a valid JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM_MODEL_PRICING_JSON must be a JSON object")
+
+    normalized: dict[str, dict[str, float]] = {}
+    for model, pricing in parsed.items():
+        if not isinstance(model, str) or not isinstance(pricing, dict):
+            raise ValueError("LLM_MODEL_PRICING_JSON must map model names to pricing objects")
+        normalized[model] = {}
+        for key in ("prompt_per_1k", "completion_per_1k"):
+            if key not in pricing:
+                continue
+            try:
+                value = float(pricing[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("LLM_MODEL_PRICING_JSON price values must be numbers") from exc
+            if value < 0:
+                raise ValueError("LLM_MODEL_PRICING_JSON price values must be non-negative")
+            normalized[model][key] = value
+    return normalized
 
 
-LLM_MODEL_PRICING = parse_json_env(LLM_MODEL_PRICING_JSON, {})
+LLM_MODEL_PRICING = _model_pricing_env(LLM_MODEL_PRICING_JSON)
 OPENROUTER_MODEL_PRICING = LLM_MODEL_PRICING
 HN_KEYWORDS = _json_list_env("HN_KEYWORDS_JSON", ["internal tool", "frustrating", "we built our own", "manual process"])
 if not isinstance(HN_KEYWORDS, list):

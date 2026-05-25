@@ -230,3 +230,10 @@
 - Change: Validate enabled review targets as absolute `http` or `https` URLs in the main app config and the source smoke config.
 - Verification: Added config and smoke tests for invalid review target URLs; full gates are run after this note.
 - Impact: Turns review-source deployment mistakes into clear startup/smoke failures before scheduled collection runs.
+
+## 2026-05-25 - Model pricing config is strict
+
+- Reason: invalid `LLM_MODEL_PRICING_JSON` silently fell back to `{}`, which could make token usage record zero cost and weaken daily budget pause semantics.
+- Change: Parse model pricing as a required JSON object shape when provided, normalize numeric price fields to floats, and reject malformed, non-numeric, or negative values at startup.
+- Verification: Added config tests for malformed pricing JSON and valid numeric normalization; full gates are run after this note.
+- Impact: Keeps cost accounting and budget guardrails from being disabled by a typo in pricing configuration.
