@@ -34,6 +34,9 @@ jobs:
       - name: Mypy
         run: mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py
 
+      - name: Docker Compose config
+        run: docker compose config -q
+
       - name: Run tests with coverage gate
         run: pytest --cov=. --cov-report=term-missing --cov-fail-under=80 -q
 

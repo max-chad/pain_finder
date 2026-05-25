@@ -342,3 +342,10 @@
 - Change: Inject the existing `BudgetGuard` into `DSPyRedditPainParser` and call `ensure_can_spend()` before each DSPy analysis call.
 - Verification: Added DSPy parser tests for per-call budget checks and pause propagation, plus a main wiring assertion; full gates are run after this note.
 - Impact: Keeps the optional DSPy LLM path aligned with project budget-pause guardrails.
+
+## 2026-05-25 - CI validates Docker Compose config
+
+- Reason: Docker Compose config validation is part of the local deploy gate, but CI and README quality gates did not include it.
+- Change: Add `docker compose config -q` to GitHub Actions and the README quality gate command list.
+- Verification: Full gates are run after this note.
+- Impact: Catches broken container wiring before merge instead of only during local/deploy checks.
