@@ -209,3 +209,10 @@
 - Change: Add explicit provider allowlists and make `openai-codex` default embedding/DSPy providers to `codex`, since the ChatGPT Codex backend is not an embeddings or DSPy provider.
 - Verification: Added config tests for invalid provider values and `openai-codex` defaults; full gates are run after this note.
 - Impact: Turns provider typos into startup errors and avoids accidental routing of embedding/DSPy traffic to unsupported backends.
+
+## 2026-05-25 - Operator status replies are capped
+
+- Reason: `/list`, `/status`, and `/budget` could build unbounded Telegram messages from monitored subreddit rows or runtime pause reasons, causing diagnostic commands to fail when operators most need them.
+- Change: Apply the shared Telegram text limiter to remaining multi-line operator status replies.
+- Verification: Added bot tests proving large monitoring output and long pause reasons stay within the Telegram text limit; full gates are run after this note.
+- Impact: Keeps core operational diagnostics usable under large deployments and unusual runtime state.

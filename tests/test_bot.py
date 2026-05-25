@@ -243,6 +243,47 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
     assert "Last run: r/python posts=100 pain=20 monetizable=5 skipped_existing=12 dedup_merged=3" in text
 
 
+async def test_cmd_list_truncates_large_monitoring_output():
+    db = AsyncMock()
+    db.get_monitored_subreddits.return_value = [
+        {"name": f"subreddit_{idx}", "interval_hours": 1, "last_checked": "never"}
+        for idx in range(500)
+    ]
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_list(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
+
+
+async def test_cmd_budget_truncates_long_pause_reason():
+    status = SimpleNamespace(
+        daily_cap_usd=2.0,
+        spent_today_usd=1.125,
+        llm_paused=True,
+        pause_reason="budget_cap_reached:" + ("x" * 6000),
+        resume_override_until=None,
+    )
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        budget_status_fn=AsyncMock(return_value=status),
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_budget(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
+
+
 async def test_cmd_export_usage_for_too_many_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
     bot._is_authorized = lambda update: True

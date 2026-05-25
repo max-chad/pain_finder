@@ -479,7 +479,7 @@ class PainFinderBot:
         for sub in subs:
             last = sub["last_checked"] or "never"
             lines.append(f"- r/{sub['name']} every {sub['interval_hours']}h (last: {last})")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_status(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -502,7 +502,7 @@ class PainFinderBot:
                 f"skipped_existing={latest_run.get('skipped_existing_count', 0)} "
                 f"dedup_merged={latest_run.get('dedup_merged_count', 0)}"
             )
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_export(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -659,7 +659,7 @@ class PainFinderBot:
             lines.append(f"Pause reason: {status.pause_reason}")
         if status.resume_override_until:
             lines.append(f"Resume override until: {status.resume_override_until}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_resume(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
