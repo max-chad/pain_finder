@@ -6,13 +6,13 @@ This file provides guidance to agents when working with code in this repository.
 - `pip install -r requirements.txt`
 - `python main.py`
 - `ruff check .`
-- `mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py`
+- `mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py`
 - `pytest --cov=. --cov-fail-under=80 -q`
 - `pytest tests/test_pipeline.py -q`
 - `pytest tests/test_pipeline.py::test_name -q`
 
 ## Project-specific guardrails
-- `config.py` reads required env at import time (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `OPENROUTER_API_KEY`); missing values fail early during import.
+- `config.py` reads required env at import time (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `LLM_API_KEY` or compatible legacy key); missing values fail early during import.
 - Keep `main.py` as the composition root; inject callbacks/services into `bot.py`, `pipeline.py`, and `scheduler.py` instead of creating hidden globals.
 - Database evolution is additive-only: extend `PAIN_POINT_COLUMNS` and migration names in `db.py`; do not drop/rename existing columns.
 - Preserve SQLite reliability PRAGMAs in DB init: `WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `foreign_keys=ON`.

@@ -244,3 +244,10 @@
 - Change: Add a shared public HTTP URL validator and enforce it in app config, source smoke config, and `ReviewScraper._fetch_html`.
 - Verification: Added config, smoke, and scraper tests for malformed and private review target URLs; full gates are run after this note.
 - Impact: Reduces SSRF-style exposure from review ingestion while preserving public `http` and `https` review pages.
+
+## 2026-05-25 - Quality gates include URL safety helper
+
+- Reason: `url_safety.py` became a shared security helper, but CI and documented mypy commands did not include it, leaving the new guard outside the explicit typecheck surface.
+- Change: Add `url_safety.py` to the GitHub Actions, README, and AGENTS mypy commands; also update AGENTS required-key wording to the current LLM env aliases.
+- Verification: Full gates are run after this note.
+- Impact: Keeps local agent guidance, docs, and CI aligned with the deploy-critical security helper.
