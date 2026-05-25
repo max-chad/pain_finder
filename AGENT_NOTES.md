@@ -195,3 +195,10 @@
 - Change: Make smoke source env parsing strict for JSON arrays, Reddit feed names, source numeric limits, retry settings, HN lookback, and review limits; report config errors as structured smoke failures.
 - Verification: Added smoke tests proving invalid source JSON and numeric env values return a failing payload before any source fetch; full gates are run after this note.
 - Impact: Makes the pre-deploy collection smoke check a trustworthy gate instead of masking broken source configuration.
+
+## 2026-05-25 - CSV exports are written atomically
+
+- Reason: `/export` CSV artifacts were written directly to their final path, so a process interruption or write/replace failure could leave a partial `.csv` in `REPORTS_DIR`.
+- Change: Write export CSVs to a `.tmp` file, replace atomically with `os.replace`, and clean temporary files on failure.
+- Verification: Added an export test proving an atomic replace failure removes the temporary file and leaves no final CSV; full gates are run after this note.
+- Impact: Keeps operator export artifacts consistent with the project-wide atomic report-write contract.

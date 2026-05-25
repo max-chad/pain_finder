@@ -105,6 +105,46 @@ async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
     assert row["deep_dive_summary"].startswith("'-")
 
 
+async def test_export_service_cleans_tmp_file_on_atomic_replace_error(tmp_path, monkeypatch):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "python",
+            "source": "reddit",
+            "post_id": "abc",
+            "title": "Need better sync",
+            "summary": "Summary",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "DevOps",
+            "competitor_tags": "[]",
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "",
+            "url": "https://reddit.com/abc",
+        }
+    ]
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    def fail_replace(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("export_sheets.os.replace", fail_replace)
+
+    try:
+        await service.export()
+    except OSError as exc:
+        assert "replace failed" in str(exc)
+    else:
+        raise AssertionError("Expected export to propagate atomic replace failure")
+
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.csv")) == []
+
+
 async def test_export_service_returns_sheet_url_on_success(tmp_path):
     """Happy path: _upsert_google_sheet runs in asyncio.to_thread and returns URL."""
     db = AsyncMock()
