@@ -848,7 +848,7 @@ class RedditScraper:
             )
         except Exception as e:
             logger.debug("Unable to fetch top comments via JSON for %s: %s", post_id, e)
-            return []
+            return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
 
         comments_listing = self._listing_children(payload)
         comments: list[str] = []
@@ -863,6 +863,54 @@ class RedditScraper:
             body = data.get("body", "")
             if isinstance(body, str) and body.strip():
                 comments.append(body.strip())
+            if len(comments) >= limit:
+                break
+        if comments:
+            return comments
+        return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
+
+    async def _fetch_comments_rss(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        post_id: str,
+        limit: int,
+    ) -> list[str]:
+        raw_post_id = self._raw_post_id(post_id)
+        try:
+            response = await self._request_with_response_limit(
+                client=client,
+                method="GET",
+                url=f"https://old.reddit.com/comments/{raw_post_id}/.rss",
+                params={"limit": limit, "sort": "top"},
+                headers={"User-Agent": self.user_agent},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = self._decode_response_content(response)
+        except Exception as e:
+            logger.debug("Unable to fetch comments via RSS for %s: %s", post_id, e)
+            return []
+
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError as e:
+            logger.debug("Unable to parse comments RSS for %s: %s", post_id, e)
+            return []
+
+        comments: list[str] = []
+        for entry in root.findall("atom:entry", ATOM_NS):
+            entry_id = (entry.findtext("atom:id", default="", namespaces=ATOM_NS) or "").strip()
+            if not entry_id.startswith("t1_"):
+                continue
+            content = entry.findtext("atom:content", default="", namespaces=ATOM_NS) or entry.findtext(
+                "atom:summary",
+                default="",
+                namespaces=ATOM_NS,
+            )
+            text = " ".join(html.unescape(HTML_TAG_RE.sub(" ", content or "")).split())
+            if text:
+                comments.append(text)
             if len(comments) >= limit:
                 break
         return comments
@@ -911,12 +959,16 @@ class RedditScraper:
         headers = {"User-Agent": self.user_agent}
 
         async with httpx.AsyncClient() as client:
-            payload = await self._request_json_with_retries(
-                client=client,
-                url=url,
-                params=params,
-                headers=headers,
-            )
+            try:
+                payload = await self._request_json_with_retries(
+                    client=client,
+                    url=url,
+                    params=params,
+                    headers=headers,
+                )
+            except Exception as e:
+                logger.debug("Unable to fetch full thread via JSON for %s: %s", post_id, e)
+                return await self._fetch_comments_rss(client=client, post_id=post_id, limit=max_comments)
 
         comment_nodes = self._listing_children(payload)
         comments: list[str] = []

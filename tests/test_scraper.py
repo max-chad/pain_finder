@@ -967,6 +967,41 @@ async def test_fetch_top_comments_json_tolerates_malformed_listing(respx_mock):
     assert comments == []
 
 
+async def test_fetch_top_comments_json_falls_back_to_rss_when_json_is_blocked(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(return_value=httpx.Response(403))
+    respx_mock.get("https://old.reddit.com/comments/abc1/.rss").mock(
+        return_value=httpx.Response(
+            200,
+            text="""<?xml version='1.0' encoding='UTF-8'?>
+            <feed xmlns='http://www.w3.org/2005/Atom'>
+              <entry>
+                <id>t3_abc1</id>
+                <content>Original post body</content>
+              </entry>
+              <entry>
+                <id>t1_comment1</id>
+                <content>&lt;div&gt;&lt;p&gt;same issue every week&lt;/p&gt;&lt;/div&gt;</content>
+              </entry>
+              <entry>
+                <id>t1_comment2</id>
+                <content>&lt;div&gt;&lt;p&gt;we built our own workaround&lt;/p&gt;&lt;/div&gt;</content>
+              </entry>
+            </feed>
+            """,
+        )
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    async with httpx.AsyncClient() as client:
+        comments = await scraper._fetch_top_comments_json(
+            client=client,
+            post_id="abc1",
+            limit=2,
+        )
+
+    assert comments == ["same issue every week", "we built our own workaround"]
+
+
 async def test_fetch_full_thread_json_skips_malformed_comment_nodes(respx_mock):
     respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
         return_value=httpx.Response(
@@ -1003,6 +1038,36 @@ async def test_fetch_full_thread_json_skips_malformed_comment_nodes(respx_mock):
     comments = await scraper.fetch_full_thread("python", "abc1", max_comments=10)
 
     assert comments == ["parent", "child"]
+
+
+async def test_fetch_full_thread_json_falls_back_to_rss_when_json_is_blocked(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(return_value=httpx.Response(403))
+    respx_mock.get("https://old.reddit.com/comments/abc1/.rss").mock(
+        return_value=httpx.Response(
+            200,
+            text="""<?xml version='1.0' encoding='UTF-8'?>
+            <feed xmlns='http://www.w3.org/2005/Atom'>
+              <entry>
+                <id>t3_abc1</id>
+                <content>Original post body</content>
+              </entry>
+              <entry>
+                <id>t1_comment1</id>
+                <content>&lt;p&gt;parent pain&lt;/p&gt;</content>
+              </entry>
+              <entry>
+                <id>t1_comment2</id>
+                <content>&lt;p&gt;child workaround&lt;/p&gt;</content>
+              </entry>
+            </feed>
+            """,
+        )
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    comments = await scraper.fetch_full_thread("python", "abc1", max_comments=10)
+
+    assert comments == ["parent pain", "child workaround"]
 
 
 async def test_post_id_helpers_and_append_comments():

@@ -601,3 +601,10 @@
 - Change: Parse `created_at_i` or fallback ISO `created_at` from HN hits into `Post.source_created_at` and `Post.source_created_ts`.
 - Verification: Added HN scraper timestamp tests and reran live HN smoke to confirm non-null source timestamps; full gates are run after this note.
 - Impact: Restores recency-aware scoring for HN-sourced pain signals.
+
+## 2026-06-01 - Reddit comments have RSS fallback
+
+- Reason: live probes showed unauthenticated `www.reddit.com/comments/*.json` returns 403 while `old.reddit.com/comments/{id}/.rss` works, so RSS-based collection and deep dives could lose all comment context without OAuth credentials.
+- Change: Add comments RSS fallback for top-comment hydration and full-thread extraction, skipping the original post entry and parsing comment entries into plain text.
+- Verification: Added scraper tests for top-comment and full-thread JSON-blocked fallbacks; full gates are run after this note.
+- Impact: Preserves consensus/workaround/comment evidence for default no-OAuth Reddit collection and reduces deep-dive failures.
