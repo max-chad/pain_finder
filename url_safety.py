@@ -41,6 +41,8 @@ def _normalized_hostname(value: str) -> str | None:
     if not hostname:
         return None
     normalized_host = hostname.rstrip(".").lower()
+    if "%" in normalized_host:
+        return None
     if normalized_host in PRIVATE_HOSTNAMES or normalized_host.endswith(".localhost"):
         return None
     if NUMERIC_HOST_RE.fullmatch(normalized_host):

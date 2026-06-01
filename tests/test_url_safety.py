@@ -17,6 +17,8 @@ def test_public_http_url_rejects_private_and_ambiguous_numeric_hosts():
         "http://2130706433/reviews",
         "http://0177.0.0.1/reviews",
         "http://0x7f.0.0.1/reviews",
+        "http://%31%32%37.0.0.1/reviews",
+        "http://[fe80::1%25eth0]/reviews",
     ]
 
     for url in cases:

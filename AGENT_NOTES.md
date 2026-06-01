@@ -489,3 +489,10 @@
 - Change: Add an optional total cap to review target collection and pass the CLI limit as the reviews source total during smoke checks.
 - Verification: Added review scraper tests for total-limit allocation and smoke tests asserting the reviews source limit is forwarded as `max_total`; full gates are run after this note.
 - Impact: Keeps deploy smoke checks bounded and predictable when multiple review targets are configured.
+
+## 2026-06-01 - URL safety rejects encoded hostnames
+
+- Reason: percent-encoded hostnames can obscure private or link-local targets from syntactic checks while being normalized differently by downstream HTTP clients or proxies.
+- Change: Reject hostnames containing `%` before public-host or DNS checks.
+- Verification: Added URL safety tests for percent-encoded localhost-style hostnames and scoped IPv6 link-local hosts; full gates are run after this note.
+- Impact: Reduces SSRF bypass risk for operator-configured review target URLs.
