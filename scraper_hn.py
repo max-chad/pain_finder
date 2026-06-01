@@ -19,6 +19,44 @@ def _clean_text(value: object) -> str:
     return str(value).strip()
 
 
+def _parse_source_timestamp(hit: dict[str, object]) -> tuple[str | None, int | None]:
+    raw_ts = hit.get("created_at_i")
+    ts = 0
+    if isinstance(raw_ts, str | int | float) and not isinstance(raw_ts, bool):
+        try:
+            ts = int(raw_ts)
+        except ValueError:
+            ts = 0
+    if ts > 0:
+        dt = datetime.fromtimestamp(ts, tz=UTC)
+        return dt.isoformat(), ts
+
+    raw_created_at = _clean_text(hit.get("created_at"))
+    if not raw_created_at:
+        return None, None
+    try:
+        dt = datetime.fromisoformat(raw_created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    else:
+        dt = dt.astimezone(UTC)
+    return dt.isoformat(), int(dt.timestamp())
+
+
+def _merge_duplicate_post(existing: Post, incoming: Post) -> None:
+    if existing.source_created_ts is None and incoming.source_created_ts is not None:
+        existing.source_created_ts = incoming.source_created_ts
+        existing.source_created_at = incoming.source_created_at
+    elif existing.source_created_at is None and incoming.source_created_at is not None:
+        existing.source_created_at = incoming.source_created_at
+    if not existing.body and incoming.body:
+        existing.body = incoming.body
+    if existing.score == 0 and incoming.score:
+        existing.score = incoming.score
+
+
 class HackerNewsScraper:
     BASE_URL = "https://hn.algolia.com/api/v1/search_by_date"
 
@@ -96,8 +134,9 @@ class HackerNewsScraper:
                         score = int(hit.get("points") or 0)
                     except (TypeError, ValueError):
                         score = 0
+                    source_created_at, source_created_ts = _parse_source_timestamp(hit)
 
-                    hits[post_id] = Post(
+                    post = Post(
                         post_id=post_id,
                         subreddit="hackernews",
                         title=title or f"HN {object_id}",
@@ -107,7 +146,14 @@ class HackerNewsScraper:
                         permalink=f"https://news.ycombinator.com/item?id={object_id}",
                         top_comments=[],
                         source="hn",
+                        source_created_at=source_created_at,
+                        source_created_ts=source_created_ts,
                     )
+                    existing = hits.get(post_id)
+                    if existing is not None:
+                        _merge_duplicate_post(existing, post)
+                    else:
+                        hits[post_id] = post
                     if len(hits) >= max_posts:
                         break
                 if len(hits) >= max_posts:

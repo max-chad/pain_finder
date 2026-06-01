@@ -17,6 +17,7 @@ async def test_fetch_posts_dedups_and_prefixes_ids(respx_mock):
                             "story_text": "Our billing sync is fragile",
                             "url": "",
                             "points": 15,
+                            "created_at_i": 1713772800,
                         }
                     ]
                 },
@@ -57,6 +58,34 @@ async def test_fetch_posts_dedups_and_prefixes_ids(respx_mock):
     ids = {post.post_id for post in posts}
     assert ids == {"hn:1", "hn:2"}
     assert all(post.source == "hn" for post in posts)
+    first = next(post for post in posts if post.post_id == "hn:1")
+    assert first.source_created_ts == 1713772800
+    assert first.source_created_at == "2024-04-22T08:00:00+00:00"
+
+
+async def test_fetch_posts_parses_iso_created_at_fallback(respx_mock):
+    respx_mock.get("https://hn.algolia.com/api/v1/search_by_date").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "hits": [
+                    {
+                        "objectID": "3",
+                        "title": "Ask HN: workflow pain",
+                        "story_text": "Manual reconciliation hurts",
+                        "created_at": "2024-04-22T08:00:00Z",
+                    }
+                ]
+            },
+        )
+    )
+    scraper = HackerNewsScraper(user_agent="test-agent")
+
+    posts = await scraper.fetch_posts(keywords=["workflow"], lookback_hours=24, max_posts=5)
+
+    assert len(posts) == 1
+    assert posts[0].source_created_ts == 1713772800
+    assert posts[0].source_created_at == "2024-04-22T08:00:00+00:00"
 
 
 async def test_fetch_posts_handles_http_errors_per_keyword(respx_mock):

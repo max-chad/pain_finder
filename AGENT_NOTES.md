@@ -594,3 +594,10 @@
 - Change: Document that operators should run the optional DSPy audit and keep DSPy disabled in production unless that audit is clean or the residual optional-dependency risk is accepted.
 - Verification: Added a README regression test for the optional DSPy audit warning; full gates are run after this note.
 - Impact: Prevents the optional parser path from looking production-safe just because the default dependency audit is clean.
+
+## 2026-06-01 - HN posts preserve source timestamps
+
+- Reason: live HN smoke returned posts with `source_created_at=null`, so HN rows flowed into recency scoring and opportunity buckets as `unknown_age` even though Algolia provides creation timestamps.
+- Change: Parse `created_at_i` or fallback ISO `created_at` from HN hits into `Post.source_created_at` and `Post.source_created_ts`.
+- Verification: Added HN scraper timestamp tests and reran live HN smoke to confirm non-null source timestamps; full gates are run after this note.
+- Impact: Restores recency-aware scoring for HN-sourced pain signals.
