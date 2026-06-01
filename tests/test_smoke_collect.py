@@ -95,6 +95,24 @@ async def test_run_smoke_rejects_invalid_source_numeric_env(monkeypatch):
     ]
 
 
+async def test_run_smoke_rejects_empty_hn_keywords_env(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.setenv("HN_KEYWORDS_JSON", "[]")
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "hn"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "HN_KEYWORDS_JSON must contain at least one non-empty keyword",
+        }
+    ]
+
+
 async def test_run_smoke_rejects_invalid_review_target_url(monkeypatch):
     import smoke_collect
 

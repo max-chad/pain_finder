@@ -391,3 +391,10 @@
 - Change: Apply the shared Telegram text limiter to export sheet URL and warning replies.
 - Verification: Added a bot regression test for long export warnings; full gates are run after this note.
 - Impact: Keeps operator export diagnostics deliverable even when optional Sheets export fails noisily.
+
+## 2026-06-01 - HN smoke rejects empty keyword config
+
+- Reason: source smoke checks parsed `HN_KEYWORDS_JSON=[]` as an empty list and then fell back to built-in default keywords, masking an explicit broken source configuration.
+- Change: Treat an explicitly provided empty HN keyword list as a smoke config error before any network fetch.
+- Verification: Added a smoke regression test for empty HN keyword env; full gates are run after this note.
+- Impact: Keeps pre-deploy HN smoke aligned with app startup validation and prevents false-positive collection readiness.

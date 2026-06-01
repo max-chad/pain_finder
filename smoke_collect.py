@@ -121,6 +121,8 @@ def load_source_smoke_config() -> SourceSmokeConfig:
         for keyword in _json_list_env("HN_KEYWORDS_JSON", DEFAULT_HN_KEYWORDS)
         if str(keyword).strip()
     ]
+    if os.getenv("HN_KEYWORDS_JSON") is not None and not hn_keywords:
+        raise ValueError("HN_KEYWORDS_JSON must contain at least one non-empty keyword")
     return SourceSmokeConfig(
         reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
