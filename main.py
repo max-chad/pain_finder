@@ -169,6 +169,7 @@ async def run() -> None:
         retry_base_delay=config.SCRAPER_RETRY_BASE_DELAY,
         feed_mix=config.SCRAPER_FEED_MIX,
         search_queries=config.SCRAPER_SEARCH_QUERIES,
+        max_response_bytes=config.SCRAPER_MAX_RESPONSE_BYTES,
     )
     openrouter = OpenRouterClient(
         api_key=config.LLM_API_KEY,
@@ -218,8 +219,8 @@ async def run() -> None:
     )
     gtm_generator = GTMGenerator(db=db, openrouter=openrouter)
 
-    hn_scraper = HackerNewsScraper(user_agent=config.REDDIT_USER_AGENT)
-    review_scraper = ReviewScraper(user_agent=config.REDDIT_USER_AGENT)
+    hn_scraper = HackerNewsScraper(user_agent=config.REDDIT_USER_AGENT, max_response_bytes=config.HN_MAX_RESPONSE_BYTES)
+    review_scraper = ReviewScraper(user_agent=config.REDDIT_USER_AGENT, max_html_bytes=config.REVIEWS_MAX_HTML_BYTES)
     review_targets = _build_review_targets()
 
     export_service = ExportService(

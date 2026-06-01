@@ -524,3 +524,10 @@
 - Change: Stream Reddit JSON/RSS and HN JSON responses through collector-level byte limits before decoding/parsing.
 - Verification: Added scraper tests for oversized Reddit JSON, oversized Reddit RSS, and oversized HN payload handling; full gates are run after this note.
 - Impact: Reduces data-collection DoS risk from external sources while keeping existing retry/fallback behavior.
+
+## 2026-06-01 - Collector byte caps are configurable
+
+- Reason: response-size caps were fixed code defaults, leaving deploy operators unable to tune collector limits for constrained containers or known large source responses.
+- Change: Add strict env-configured byte caps for Reddit, HN, and review collectors, wire them through main and smoke collection, and document the settings.
+- Verification: Added config/main/smoke coverage for response-byte env wiring; full gates are run after this note.
+- Impact: Makes source collection limits operationally visible and adjustable without code changes.

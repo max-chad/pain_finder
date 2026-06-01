@@ -437,6 +437,7 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert pipeline.calls[-1] == ("python", 100)
     assert bot.scraper.kwargs["feed_mix"] == main.config.SCRAPER_FEED_MIX
     assert bot.scraper.kwargs["comment_fetch_concurrency"] == main.config.SCRAPER_COMMENT_FETCH_CONCURRENCY
+    assert bot.scraper.kwargs["max_response_bytes"] == main.config.SCRAPER_MAX_RESPONSE_BYTES
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
     assert bot.classifier.screen_min_rule_score == main.config.SCREEN_MIN_RULE_SCORE
     assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)

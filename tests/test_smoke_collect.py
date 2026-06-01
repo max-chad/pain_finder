@@ -209,8 +209,9 @@ async def test_run_smoke_require_posts_fails_empty_completed_source(monkeypatch)
     import smoke_collect
 
     class EmptyHackerNewsScraper:
-        def __init__(self, user_agent: str):
+        def __init__(self, user_agent: str, max_response_bytes: int):
             self.user_agent = user_agent
+            self.max_response_bytes = max_response_bytes
 
         async def fetch_posts(self, *, keywords: list[str], lookback_hours: int = 72, max_posts: int = 100):
             assert keywords == ["manual process"]
@@ -240,15 +241,15 @@ async def test_run_smoke_all_sources_includes_review_target_count(monkeypatch):
             return [_post("reddit:one")]
 
     class FakeHackerNewsScraper:
-        def __init__(self, user_agent: str):
-            pass
+        def __init__(self, user_agent: str, max_response_bytes: int):
+            self.max_response_bytes = max_response_bytes
 
         async def fetch_posts(self, *, keywords: list[str], lookback_hours: int = 72, max_posts: int = 100):
             return [_post("hn:one")]
 
     class FakeReviewScraper:
-        def __init__(self, user_agent: str):
-            pass
+        def __init__(self, user_agent: str, max_html_bytes: int):
+            self.max_html_bytes = max_html_bytes
 
         async def fetch_many_targets(self, *, targets, max_per_target: int, max_total: int | None = None):
             assert len(targets) == 1
@@ -274,8 +275,8 @@ async def test_run_smoke_reviews_passes_source_limit_as_total_limit(monkeypatch)
     import smoke_collect
 
     class FakeReviewScraper:
-        def __init__(self, user_agent: str):
-            pass
+        def __init__(self, user_agent: str, max_html_bytes: int):
+            self.max_html_bytes = max_html_bytes
 
         async def fetch_many_targets(self, *, targets, max_per_target: int, max_total: int | None = None):
             assert len(targets) == 2
@@ -310,7 +311,7 @@ async def test_run_smoke_all_fails_when_reviews_have_no_enabled_targets(monkeypa
             return [_post("reddit:one")]
 
     class FakeHackerNewsScraper:
-        def __init__(self, user_agent: str):
+        def __init__(self, user_agent: str, max_response_bytes: int):
             pass
 
         async def fetch_posts(self, *, keywords: list[str], lookback_hours: int = 72, max_posts: int = 100):

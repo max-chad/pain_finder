@@ -110,6 +110,7 @@ Scraper controls:
 - `SCRAPER_COMMENT_FETCH_CONCURRENCY` (default `8`)
 - `SCRAPER_RETRY_MAX_ATTEMPTS` (default `5`)
 - `SCRAPER_RETRY_BASE_DELAY` (default `1.0`)
+- `SCRAPER_MAX_RESPONSE_BYTES` (default `5000000`, minimum `1024`)
 - `SCRAPER_FEED_MIX_JSON` (default `["new", "rising", "top"]`)
 - `SCRAPER_SEARCH_QUERIES_JSON` (optional pain-intent subreddit search queries merged with feed results)
 
@@ -146,6 +147,7 @@ HN ingestion:
 - `HN_LOOKBACK_HOURS`
 - `HN_MAX_POSTS`
 - `HN_INTERVAL_HOURS`
+- `HN_MAX_RESPONSE_BYTES` (default `2000000`, minimum `1024`)
 
 Review ingestion:
 
@@ -153,6 +155,7 @@ Review ingestion:
 - `REVIEW_TARGETS_JSON` (enabled targets must have `site`, `name`, and a public `http`/`https` `url`; localhost/private IP targets are rejected)
 - `REVIEWS_MAX_PER_TARGET`
 - `REVIEWS_INTERVAL_HOURS`
+- `REVIEWS_MAX_HTML_BYTES` (default `2000000`, minimum `1024`)
 
 Budget and runtime guardrails:
 
@@ -255,7 +258,7 @@ python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
 python smoke_collect.py --source all --limit 5
 ```
 
-Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs that resolve to public addresses before fetch.
+Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`, `REVIEWS_MAX_HTML_BYTES`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs that resolve to public addresses before fetch.
 
 ## Quality Gates
 

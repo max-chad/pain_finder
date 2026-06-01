@@ -26,8 +26,11 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("SCRAPER_COMMENT_FETCH_CONCURRENCY", "3")
     monkeypatch.setenv("SCRAPER_RETRY_MAX_ATTEMPTS", "6")
     monkeypatch.setenv("SCRAPER_RETRY_BASE_DELAY", "1.5")
+    monkeypatch.setenv("SCRAPER_MAX_RESPONSE_BYTES", "4096")
     monkeypatch.setenv("SCRAPER_FEED_MIX_JSON", '["new", "top"]')
     monkeypatch.setenv("SCRAPER_SEARCH_QUERIES_JSON", '["manual process", "spreadsheet workaround"]')
+    monkeypatch.setenv("HN_MAX_RESPONSE_BYTES", "8192")
+    monkeypatch.setenv("REVIEWS_MAX_HTML_BYTES", "16384")
     monkeypatch.setenv("EXPORT_MIN_WTP", "7")
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "{}")
     monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
@@ -75,8 +78,11 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.SCRAPER_COMMENT_FETCH_CONCURRENCY == 3
     assert config_module.SCRAPER_RETRY_MAX_ATTEMPTS == 6
     assert config_module.SCRAPER_RETRY_BASE_DELAY == 1.5
+    assert config_module.SCRAPER_MAX_RESPONSE_BYTES == 4096
     assert config_module.SCRAPER_FEED_MIX == ["new", "top"]
     assert config_module.SCRAPER_SEARCH_QUERIES == ["manual process", "spreadsheet workaround"]
+    assert config_module.HN_MAX_RESPONSE_BYTES == 8192
+    assert config_module.REVIEWS_MAX_HTML_BYTES == 16384
     assert config_module.EXPORT_MIN_WTP == 7
     assert config_module.GOOGLE_SHEETS_CREDENTIALS_JSON == "{}"
     assert config_module.GOOGLE_SHEETS_SPREADSHEET_ID == "sheet-id"
@@ -344,6 +350,9 @@ def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
         ("TREND_CLUSTER_SIMILARITY", "-0.1", "TREND_CLUSTER_SIMILARITY must be between 0 and 1"),
         ("DIGEST_HOURS", "169", "DIGEST_HOURS must be between 1 and 168"),
         ("REVIEWS_MAX_PER_TARGET", "0", "REVIEWS_MAX_PER_TARGET must be at least 1"),
+        ("SCRAPER_MAX_RESPONSE_BYTES", "1023", "SCRAPER_MAX_RESPONSE_BYTES must be at least 1024"),
+        ("HN_MAX_RESPONSE_BYTES", "1023", "HN_MAX_RESPONSE_BYTES must be at least 1024"),
+        ("REVIEWS_MAX_HTML_BYTES", "1023", "REVIEWS_MAX_HTML_BYTES must be at least 1024"),
         ("DAILY_BUDGET_USD", "-0.01", "DAILY_BUDGET_USD must be at least 0"),
     ]
     config_module = importlib.import_module("config")

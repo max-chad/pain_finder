@@ -31,12 +31,15 @@ class SourceSmokeConfig:
     scraper_comment_fetch_concurrency: int
     scraper_retry_max_attempts: int
     scraper_retry_base_delay: float
+    scraper_max_response_bytes: int
     scraper_feed_mix: list[str]
     scraper_search_queries: list[str]
     hn_keywords: list[str]
     hn_lookback_hours: int
+    hn_max_response_bytes: int
     review_targets: list[ReviewTarget]
     reviews_max_per_target: int
+    reviews_max_html_bytes: int
 
 
 def _json_list_env(name: str, default: list[Any]) -> list[Any]:
@@ -131,12 +134,15 @@ def load_source_smoke_config() -> SourceSmokeConfig:
         scraper_comment_fetch_concurrency=_env_int("SCRAPER_COMMENT_FETCH_CONCURRENCY", 8, 1),
         scraper_retry_max_attempts=_env_int("SCRAPER_RETRY_MAX_ATTEMPTS", 5, 1),
         scraper_retry_base_delay=_env_float("SCRAPER_RETRY_BASE_DELAY", 1.0, 0.0),
+        scraper_max_response_bytes=_env_int("SCRAPER_MAX_RESPONSE_BYTES", 5_000_000, 1024),
         scraper_feed_mix=scraper_feed_mix,
         scraper_search_queries=scraper_search_queries,
         hn_keywords=hn_keywords,
         hn_lookback_hours=_env_int("HN_LOOKBACK_HOURS", 72, 1),
+        hn_max_response_bytes=_env_int("HN_MAX_RESPONSE_BYTES", 2_000_000, 1024),
         review_targets=_build_review_targets(_json_list_env("REVIEW_TARGETS_JSON", [])),
         reviews_max_per_target=_env_int("REVIEWS_MAX_PER_TARGET", 30, 1),
+        reviews_max_html_bytes=_env_int("REVIEWS_MAX_HTML_BYTES", 2_000_000, 1024),
     )
 
 
@@ -184,12 +190,13 @@ async def _fetch_reddit(config: SourceSmokeConfig, *, subreddit: str, limit: int
         retry_base_delay=config.scraper_retry_base_delay,
         feed_mix=config.scraper_feed_mix,
         search_queries=config.scraper_search_queries,
+        max_response_bytes=config.scraper_max_response_bytes,
     )
     return await scraper.fetch_posts(subreddit, limit=limit)
 
 
 async def _fetch_hn(config: SourceSmokeConfig, *, keywords: list[str], limit: int) -> list[Post]:
-    scraper = HackerNewsScraper(user_agent=config.reddit_user_agent)
+    scraper = HackerNewsScraper(user_agent=config.reddit_user_agent, max_response_bytes=config.hn_max_response_bytes)
     active_keywords = keywords or config.hn_keywords or DEFAULT_HN_KEYWORDS
     return await scraper.fetch_posts(
         keywords=active_keywords,
@@ -201,7 +208,7 @@ async def _fetch_hn(config: SourceSmokeConfig, *, keywords: list[str], limit: in
 async def _fetch_reviews(config: SourceSmokeConfig, *, limit: int) -> list[Post]:
     if not any(target.enabled for target in config.review_targets):
         return []
-    scraper = ReviewScraper(user_agent=config.reddit_user_agent)
+    scraper = ReviewScraper(user_agent=config.reddit_user_agent, max_html_bytes=config.reviews_max_html_bytes)
     return await scraper.fetch_many_targets(
         targets=config.review_targets,
         max_per_target=min(limit, max(1, config.reviews_max_per_target)),
