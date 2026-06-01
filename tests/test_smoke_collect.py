@@ -186,6 +186,25 @@ async def test_run_smoke_rejects_invalid_review_target_enabled_flag(monkeypatch)
     ]
 
 
+async def test_run_smoke_reviews_requires_enabled_targets(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.delenv("REVIEW_TARGETS_JSON", raising=False)
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reviews"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["sources"] == []
+    assert payload["errors"] == [
+        {
+            "source": "reviews",
+            "reason": "config",
+            "error": "REVIEW_TARGETS_JSON must contain at least one enabled review target for reviews smoke",
+        }
+    ]
+
+
 async def test_run_smoke_require_posts_fails_empty_completed_source(monkeypatch):
     import smoke_collect
 
@@ -248,3 +267,38 @@ async def test_run_smoke_all_sources_includes_review_target_count(monkeypatch):
     assert exit_code == 0
     assert [source["source"] for source in payload["sources"]] == ["reddit", "hn", "reviews"]
     assert payload["sources"][2]["targets_configured"] == 1
+
+
+async def test_run_smoke_all_fails_when_reviews_have_no_enabled_targets(monkeypatch):
+    import smoke_collect
+
+    class FakeRedditScraper:
+        def __init__(self, **kwargs):
+            pass
+
+        async def fetch_posts(self, subreddit: str, limit: int = 100, timeframe: str = "day"):
+            return [_post("reddit:one")]
+
+    class FakeHackerNewsScraper:
+        def __init__(self, user_agent: str):
+            pass
+
+        async def fetch_posts(self, *, keywords: list[str], lookback_hours: int = 72, max_posts: int = 100):
+            return [_post("hn:one")]
+
+    monkeypatch.delenv("REVIEW_TARGETS_JSON", raising=False)
+    monkeypatch.setattr(smoke_collect, "RedditScraper", FakeRedditScraper)
+    monkeypatch.setattr(smoke_collect, "HackerNewsScraper", FakeHackerNewsScraper)
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "all", "--limit", "1"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert [source["source"] for source in payload["sources"]] == ["reddit", "hn"]
+    assert payload["errors"] == [
+        {
+            "source": "reviews",
+            "reason": "config",
+            "error": "REVIEW_TARGETS_JSON must contain at least one enabled review target for reviews smoke",
+        }
+    ]

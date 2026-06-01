@@ -412,3 +412,10 @@
 - Change: Apply the existing Telegram text limiter to user-controlled post-id replies and list-view rendering while keeping post-id parsing and keyboard callbacks compatible with existing source-prefixed IDs.
 - Verification: Added bot regression tests for long post IDs in deep-dive not-found and GTM progress replies, plus a many-item list rendering limit test; full gates are run after this note.
 - Impact: Prevents authorized operator input or large grouped notifications from breaking Telegram reply/edit delivery before the expensive action or diagnostic response can complete.
+
+## 2026-06-01 - Reviews smoke requires enabled targets
+
+- Reason: `smoke_collect.py --source reviews` returned success with zero configured review targets, so a deploy/source-readiness check could pass without exercising reviews ingestion.
+- Change: Treat an explicitly requested reviews smoke, including `--source all`, as a config error when no enabled review targets exist.
+- Verification: Added smoke regression tests for explicit reviews and all-source runs with no enabled review targets; full gates are run after this note.
+- Impact: Prevents false-positive reviews readiness before data collection.

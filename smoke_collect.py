@@ -199,7 +199,7 @@ async def _fetch_hn(config: SourceSmokeConfig, *, keywords: list[str], limit: in
 
 
 async def _fetch_reviews(config: SourceSmokeConfig, *, limit: int) -> list[Post]:
-    if not config.review_targets:
+    if not any(target.enabled for target in config.review_targets):
         return []
     scraper = ReviewScraper(user_agent=config.reddit_user_agent)
     return await scraper.fetch_many_targets(
@@ -248,8 +248,18 @@ async def run_smoke(argv: Sequence[str] | None = None) -> tuple[int, dict[str, A
                 posts = await _fetch_hn(config, keywords=keywords, limit=limit)
                 context = {"keywords": keywords or config.hn_keywords or DEFAULT_HN_KEYWORDS}
             else:
+                enabled_review_target_count = sum(1 for target in config.review_targets if target.enabled)
+                if enabled_review_target_count == 0:
+                    errors.append(
+                        {
+                            "source": "reviews",
+                            "reason": "config",
+                            "error": "REVIEW_TARGETS_JSON must contain at least one enabled review target for reviews smoke",
+                        }
+                    )
+                    continue
                 posts = await _fetch_reviews(config, limit=limit)
-                context = {"targets_configured": len(config.review_targets)}
+                context = {"targets_configured": enabled_review_target_count}
         except Exception as exc:
             errors.append({"source": source, "reason": "exception", "error": str(exc)})
             continue
