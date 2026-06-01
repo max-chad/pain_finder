@@ -2,6 +2,7 @@ import logging
 import math
 import re
 import hashlib
+import json
 import sys
 from typing import Any
 
@@ -21,6 +22,7 @@ _DEFAULT_EMBED_BASE_URLS = {
 }
 _EMBED_DIM = 96  # bag-of-words fallback dimension (matches clusterer.py)
 _TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
+MAX_EMBED_RESPONSE_BYTES = 2_000_000
 
 
 def _embed_url_for_provider(provider: str, api_base: str) -> str:
@@ -40,6 +42,7 @@ async def _provider_embed_raw(
     text: str,
     provider: str,
     api_base: str = "",
+    max_response_bytes: int = MAX_EMBED_RESPONSE_BYTES,
 ) -> list[float]:
     """POST to the configured embeddings endpoint. Raises on non-200 or parse failure."""
     url = _embed_url_for_provider(provider, api_base)
@@ -55,14 +58,21 @@ async def _provider_embed_raw(
             }
         )
 
+    max_response_bytes = max(1, max_response_bytes)
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
+        async with client.stream(
+            "POST",
             url,
             headers=headers,
             json={"model": model, "input": text},
-        )
+        ) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > max_response_bytes:
+                    raise RuntimeError(f"Embedding response exceeded {max_response_bytes} bytes")
         response.raise_for_status()
-    return response.json()["data"][0]["embedding"]
+    return json.loads(bytes(body).decode(response.encoding or "utf-8", errors="replace"))["data"][0]["embedding"]
 
 
 def _bow_embed(text: str) -> list[float]:
@@ -88,11 +98,20 @@ class Embedder:
     embed() never raises; it always returns a list[float].
     """
 
-    def __init__(self, *, api_key: str, model: str, provider: str = "openrouter", api_base: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        provider: str = "openrouter",
+        api_base: str = "",
+        max_response_bytes: int = MAX_EMBED_RESPONSE_BYTES,
+    ) -> None:
         self._api_key = api_key
         self._model = model
         self._provider = provider.strip().lower() or "openrouter"
         self._api_base = api_base.strip()
+        self._max_response_bytes = max(1, max_response_bytes)
         self._st_model: Any = None  # lazy-loaded SentenceTransformer instance
 
     async def embed(self, text: str) -> list[float]:
@@ -107,6 +126,7 @@ class Embedder:
                 text=text,
                 provider=self._provider,
                 api_base=self._api_base,
+                max_response_bytes=self._max_response_bytes,
             )
         except Exception as exc:
             logger.warning("Provider embed failed (%s), trying sentence-transformers", exc)

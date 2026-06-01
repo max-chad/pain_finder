@@ -538,3 +538,10 @@
 - Change: Reuse the bounded response reader for OAuth token POST requests before parsing the token JSON.
 - Verification: Added a scraper regression test for oversized OAuth token responses; full gates are run after this note.
 - Impact: Completes Reddit collector response-size hardening for both content and token endpoints.
+
+## 2026-06-01 - Embedding provider responses are bounded
+
+- Reason: remote embedding calls read provider responses without a byte cap before parsing JSON, even though embedding failures are expected to degrade to local fallbacks.
+- Change: Stream embedding provider responses through a byte limit and let oversized responses fall through the existing sentence-transformers/BOW fallback path.
+- Verification: Added an embedder regression test proving oversized provider responses fall back to BOW; full gates are run after this note.
+- Impact: Reduces runtime memory risk from embedding providers without breaking the embedder's never-raise contract.
