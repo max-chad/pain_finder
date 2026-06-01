@@ -357,19 +357,27 @@ class OpenRouterClient:
         bounded_response.raise_for_status()
         return json.loads(bounded_response.content.decode(bounded_response.encoding or "utf-8", errors="replace"))
 
-    @staticmethod
-    def _extract_responses_text(final_response: Any, streamed_parts: list[str]) -> str:
+    def _ensure_responses_text_within_limit(self, text: str) -> None:
+        if len(text.encode("utf-8")) > self.max_response_bytes:
+            raise RuntimeError(f"OpenAI Responses text exceeded {self.max_response_bytes} bytes")
+
+    def _extract_responses_text(self, final_response: Any, streamed_parts: list[str]) -> str:
         text = "".join(part for part in streamed_parts if part).strip()
         if text:
+            self._ensure_responses_text_within_limit(text)
             return text
         direct = getattr(final_response, "output_text", "")
         if isinstance(direct, str) and direct.strip():
-            return direct.strip()
+            stripped = direct.strip()
+            self._ensure_responses_text_within_limit(stripped)
+            return stripped
         for item in getattr(final_response, "output", []) or []:
             for content in getattr(item, "content", []) or []:
                 maybe_text = getattr(content, "text", "")
                 if isinstance(maybe_text, str) and maybe_text.strip():
-                    return maybe_text.strip()
+                    stripped = maybe_text.strip()
+                    self._ensure_responses_text_within_limit(stripped)
+                    return stripped
         return ""
 
     @staticmethod
@@ -421,12 +429,16 @@ class OpenRouterClient:
                 stream_kwargs["max_output_tokens"] = token_limit
             if self.reasoning_effort:
                 stream_kwargs["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
+            streamed_bytes = 0
             with client.responses.stream(**stream_kwargs) as stream:
                 for event in stream:
                     event_type = getattr(event, "type", "")
                     if event_type in {"response.output_text.delta", "output_text.delta"}:
                         delta = getattr(event, "delta", "")
                         if delta:
+                            streamed_bytes += len(delta.encode("utf-8"))
+                            if streamed_bytes > self.max_response_bytes:
+                                raise RuntimeError(f"OpenAI Responses stream exceeded {self.max_response_bytes} bytes")
                             streamed_parts.append(delta)
                 final_response = stream.get_final_response()
             raw_text = self._extract_responses_text(final_response, streamed_parts)

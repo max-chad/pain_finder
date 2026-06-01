@@ -559,3 +559,10 @@
 - Change: Add regression coverage for legacy DB healthcheck behavior without `scheduled_job_status` and for `Database.init()` creating usable scheduled-job status storage on an older schema.
 - Verification: Added healthcheck and DB migration compatibility tests; full gates are run after this note.
 - Impact: Reduces migration risk for existing deployments adopting scheduler diagnostics.
+
+## 2026-06-01 - Codex Responses streams are bounded
+
+- Reason: chat-completions responses were byte-capped, but the OpenAI Responses/Codex backend accumulated streamed output text without enforcing the same LLM response limit.
+- Change: Track UTF-8 bytes while reading Responses stream deltas and validate fallback final-response text before JSON parsing.
+- Verification: Added an OpenRouter regression test for oversized Codex streamed output returning `None`; full gates are run after this note.
+- Impact: Closes the remaining LLM provider response-size gap and keeps Codex backend failures on the existing safe fallback path.

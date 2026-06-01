@@ -414,6 +414,45 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
     assert usage_kwargs["completion_tokens"] == 45
 
 
+async def test_openai_codex_provider_rejects_oversized_streamed_response(monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield SimpleNamespace(type="response.output_text.delta", delta="x" * 17)
+
+        def get_final_response(self):
+            return SimpleNamespace(output=[], output_text="", usage=None, status="completed")
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("openrouter.OpenAI", FakeClient)
+
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        api_base="https://chatgpt.com/backend-api/codex",
+        max_response_bytes=16,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert result is None
+
+
 async def test_analyze_retries_transient_http_errors(respx_mock):
     from unittest.mock import AsyncMock, patch
 
