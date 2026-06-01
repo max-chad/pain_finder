@@ -530,9 +530,9 @@ class PainFinderBot:
                     caption=f"Export rows: {result.row_count}",
                 )
             if result.sheet_url:
-                await update.message.reply_text(f"Google Sheet updated: {result.sheet_url}")
+                await update.message.reply_text(limit_telegram_text(f"Google Sheet updated: {result.sheet_url}"))
             if result.warning:
-                await update.message.reply_text(f"Warning: {result.warning}")
+                await update.message.reply_text(limit_telegram_text(f"Warning: {result.warning}"))
             return
 
         report = await self.db.get_latest_report(subreddit=subreddit)

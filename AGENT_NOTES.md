@@ -384,3 +384,10 @@
 - Change: Coerce usage token counts through a non-negative safe parser for OpenRouter chat responses and OpenAI/Codex response usage objects.
 - Verification: Added OpenRouter usage tests for malformed and negative token counts; full gates are run after this note.
 - Impact: Keeps successful LLM classifications from failing because optional usage metadata drifted.
+
+## 2026-06-01 - Export warnings fit Telegram replies
+
+- Reason: `/export` limited the CSV document itself, but auxiliary Google Sheets URL and warning replies could exceed Telegram text limits when upstream errors were verbose.
+- Change: Apply the shared Telegram text limiter to export sheet URL and warning replies.
+- Verification: Added a bot regression test for long export warnings; full gates are run after this note.
+- Impact: Keeps operator export diagnostics deliverable even when optional Sheets export fails noisily.
