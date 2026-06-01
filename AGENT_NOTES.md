@@ -482,3 +482,10 @@
 - Change: Add an async resolved-URL safety check and require review target hostnames to resolve only to public addresses immediately before fetching.
 - Verification: Added URL safety tests for public/private DNS results and scraper tests for resolved-private review targets; full gates are run after this note.
 - Impact: Reduces SSRF risk from review collection without adding DNS lookups to import-time configuration parsing.
+
+## 2026-06-01 - Review smoke honors source limit
+
+- Reason: `smoke_collect --limit` is documented as a per-source limit, but review smoke passed it as a per-target limit, so multiple configured review targets could trigger more external collection work than the deploy gate requested.
+- Change: Add an optional total cap to review target collection and pass the CLI limit as the reviews source total during smoke checks.
+- Verification: Added review scraper tests for total-limit allocation and smoke tests asserting the reviews source limit is forwarded as `max_total`; full gates are run after this note.
+- Impact: Keeps deploy smoke checks bounded and predictable when multiple review targets are configured.

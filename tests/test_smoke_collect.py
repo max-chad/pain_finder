@@ -250,8 +250,9 @@ async def test_run_smoke_all_sources_includes_review_target_count(monkeypatch):
         def __init__(self, user_agent: str):
             pass
 
-        async def fetch_many_targets(self, *, targets, max_per_target: int):
+        async def fetch_many_targets(self, *, targets, max_per_target: int, max_total: int | None = None):
             assert len(targets) == 1
+            assert max_total == 1
             return [_post("review:g2:test:one")]
 
     monkeypatch.setenv(
@@ -267,6 +268,35 @@ async def test_run_smoke_all_sources_includes_review_target_count(monkeypatch):
     assert exit_code == 0
     assert [source["source"] for source in payload["sources"]] == ["reddit", "hn", "reviews"]
     assert payload["sources"][2]["targets_configured"] == 1
+
+
+async def test_run_smoke_reviews_passes_source_limit_as_total_limit(monkeypatch):
+    import smoke_collect
+
+    class FakeReviewScraper:
+        def __init__(self, user_agent: str):
+            pass
+
+        async def fetch_many_targets(self, *, targets, max_per_target: int, max_total: int | None = None):
+            assert len(targets) == 2
+            assert max_per_target == 4
+            assert max_total == 4
+            return [_post(f"review:g2:test:{index}") for index in range(4)]
+
+    monkeypatch.setenv(
+        "REVIEW_TARGETS_JSON",
+        "["
+        '{"site":"g2","name":"A","url":"https://example.com/a","enabled":true},'
+        '{"site":"g2","name":"B","url":"https://example.com/b","enabled":true}'
+        "]",
+    )
+    monkeypatch.setenv("REVIEWS_MAX_PER_TARGET", "30")
+    monkeypatch.setattr(smoke_collect, "ReviewScraper", FakeReviewScraper)
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reviews", "--limit", "4"])
+
+    assert exit_code == 0
+    assert payload["sources"][0]["post_count"] == 4
 
 
 async def test_run_smoke_all_fails_when_reviews_have_no_enabled_targets(monkeypatch):

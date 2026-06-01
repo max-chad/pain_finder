@@ -212,6 +212,34 @@ async def test_fetch_many_targets_combines_results(monkeypatch):
     assert len(rows) == 2
 
 
+async def test_fetch_many_targets_honors_total_limit(monkeypatch):
+    scraper = ReviewScraper()
+    fetch_mock = AsyncMock(
+        side_effect=[
+            [
+                type("P", (), {"post_id": "review:g2:a:1"})(),
+                type("P", (), {"post_id": "review:g2:a:2"})(),
+            ],
+            [
+                type("P", (), {"post_id": "review:g2:b:1"})(),
+            ],
+        ]
+    )
+    monkeypatch.setattr(scraper, "fetch_negative_reviews", fetch_mock)
+    targets = [
+        ReviewTarget(site="g2", name="A", url="u1"),
+        ReviewTarget(site="g2", name="B", url="u2"),
+        ReviewTarget(site="g2", name="C", url="u3"),
+    ]
+
+    rows = await scraper.fetch_many_targets(targets=targets, max_per_target=2, max_total=3)
+
+    assert [row.post_id for row in rows] == ["review:g2:a:1", "review:g2:a:2", "review:g2:b:1"]
+    assert fetch_mock.await_count == 2
+    assert fetch_mock.await_args_list[0].kwargs["max_reviews"] == 2
+    assert fetch_mock.await_args_list[1].kwargs["max_reviews"] == 1
+
+
 async def test_fetch_many_targets_tolerates_partial_target_failure(monkeypatch):
     scraper = ReviewScraper()
     monkeypatch.setattr(

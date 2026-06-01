@@ -98,23 +98,30 @@ class ReviewScraper:
         *,
         targets: list[ReviewTarget],
         max_per_target: int,
+        max_total: int | None = None,
     ) -> list[Post]:
         all_posts: list[Post] = []
         attempted_targets = 0
         successful_targets = 0
         failed_targets: list[str] = []
+        remaining_total = max_total
         for target in targets:
             if not target.enabled or max_per_target <= 0:
                 continue
+            if remaining_total is not None and remaining_total <= 0:
+                break
             attempted_targets += 1
+            target_limit = max_per_target if remaining_total is None else min(max_per_target, remaining_total)
             try:
-                target_posts = await self.fetch_negative_reviews(target=target, max_reviews=max_per_target)
+                target_posts = await self.fetch_negative_reviews(target=target, max_reviews=target_limit)
             except ReviewFetchError as exc:
                 failed_targets.append(target.name)
                 logger.warning("Review target failed for %s: %s", target.name, exc)
                 continue
             successful_targets += 1
             all_posts.extend(target_posts)
+            if remaining_total is not None:
+                remaining_total = max(0, remaining_total - len(target_posts))
         if attempted_targets and failed_targets and successful_targets == 0:
             raise RuntimeError(f"Review fetch failed for all {attempted_targets} enabled targets")
         return all_posts

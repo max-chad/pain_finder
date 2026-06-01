@@ -205,6 +205,7 @@ async def _fetch_reviews(config: SourceSmokeConfig, *, limit: int) -> list[Post]
     return await scraper.fetch_many_targets(
         targets=config.review_targets,
         max_per_target=min(limit, max(1, config.reviews_max_per_target)),
+        max_total=limit,
     )
 
 
