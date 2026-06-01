@@ -531,3 +531,10 @@
 - Change: Add strict env-configured byte caps for Reddit, HN, and review collectors, wire them through main and smoke collection, and document the settings.
 - Verification: Added config/main/smoke coverage for response-byte env wiring; full gates are run after this note.
 - Impact: Makes source collection limits operationally visible and adjustable without code changes.
+
+## 2026-06-01 - Reddit OAuth token responses are bounded
+
+- Reason: Reddit OAuth token acquisition still used an unbounded POST response read, leaving one external Reddit API response outside the collector byte cap.
+- Change: Reuse the bounded response reader for OAuth token POST requests before parsing the token JSON.
+- Verification: Added a scraper regression test for oversized OAuth token responses; full gates are run after this note.
+- Impact: Completes Reddit collector response-size hardening for both content and token endpoints.

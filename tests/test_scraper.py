@@ -343,6 +343,22 @@ async def test_request_oauth_json_refreshes_token_on_401():
     assert request_mock.await_count == 2
 
 
+async def test_get_oauth_token_rejects_oversized_response(respx_mock):
+    respx_mock.post("https://www.reddit.com/api/v1/access_token").mock(
+        return_value=httpx.Response(200, content=b"123456789")
+    )
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        max_response_bytes=8,
+    )
+
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(RuntimeError, match="Reddit response exceeded 8 bytes"):
+            await scraper._get_oauth_token(client=client)
+
+
 async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_mock):
     respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
         return_value=httpx.Response(

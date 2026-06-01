@@ -233,10 +233,20 @@ class RedditScraper:
         method: str,
         url: str,
         params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        auth: tuple[str, str] | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 20,
     ) -> httpx.Response:
-        async with client.stream(method, url, params=params, headers=headers, timeout=timeout) as response:
+        async with client.stream(
+            method,
+            url,
+            params=params,
+            data=data,
+            auth=auth,
+            headers=headers,
+            timeout=timeout,
+        ) as response:
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 body.extend(chunk)
@@ -763,15 +773,17 @@ class RedditScraper:
         if self._oauth_access_token and self._oauth_token_expires_at > time.time() + 30:
             return self._oauth_access_token
 
-        response = await client.post(
-            "https://www.reddit.com/api/v1/access_token",
+        response = await self._request_with_response_limit(
+            client=client,
+            method="POST",
+            url="https://www.reddit.com/api/v1/access_token",
             data={"grant_type": "client_credentials"},
             auth=(self.client_id, self.client_secret),
             headers={"User-Agent": self.user_agent},
             timeout=20,
         )
         response.raise_for_status()
-        payload = response.json()
+        payload = json.loads(self._decode_response_content(response))
         token = payload.get("access_token", "")
         if not token:
             raise RuntimeError("Reddit OAuth token response missing access_token")
