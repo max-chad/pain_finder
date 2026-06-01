@@ -843,6 +843,60 @@ async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
     assert comments == ["parent", "child"]
 
 
+async def test_fetch_top_comments_json_tolerates_malformed_listing(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
+        return_value=httpx.Response(200, json=[{}, "not-a-listing"])
+    )
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    async with httpx.AsyncClient() as client:
+        comments = await scraper._fetch_top_comments_json(
+            client=client,
+            post_id="abc1",
+            limit=5,
+        )
+
+    assert comments == []
+
+
+async def test_fetch_full_thread_json_skips_malformed_comment_nodes(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {},
+                {
+                    "data": {
+                        "children": [
+                            "bad-child",
+                            {"kind": "t1", "data": "bad-data"},
+                            {
+                                "kind": "t1",
+                                "data": {
+                                    "body": "parent",
+                                    "replies": {
+                                        "data": {
+                                            "children": [
+                                                "bad-reply",
+                                                {"kind": "t1", "data": {"body": "child"}},
+                                            ]
+                                        }
+                                    },
+                                },
+                            },
+                        ]
+                    }
+                },
+            ],
+        )
+    )
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    comments = await scraper.fetch_full_thread("python", "abc1", max_comments=10)
+
+    assert comments == ["parent", "child"]
+
+
 async def test_post_id_helpers_and_append_comments():
     scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
     assert scraper._external_post_id("abc") == "reddit:abc"

@@ -461,3 +461,10 @@
 - Change: Stream review HTML responses and abort collection when the response exceeds the scraper's configured byte limit.
 - Verification: Added scraper review tests for normal bounded HTML fetches and oversized responses; full gates are run after this note.
 - Impact: Reduces deploy-time DoS risk from review-source collection while preserving existing parsing behavior for normal pages.
+
+## 2026-06-01 - Reddit comment payloads are shape-tolerant
+
+- Reason: Reddit comment payloads are external JSON inputs, and top-comment/full-thread parsing assumed the listing and child nodes were dictionaries, so malformed payload shapes could crash comment hydration or deep-dive collection.
+- Change: Add a shared listing-child extractor and skip malformed comment nodes while preserving valid sibling and nested comments.
+- Verification: Added scraper tests for malformed comment listings and malformed nested comment nodes; full gates are run after this note.
+- Impact: Keeps Reddit collection resilient to upstream schema drift and partial malformed responses.

@@ -219,6 +219,19 @@ class RedditScraper:
             return default
 
     @staticmethod
+    def _listing_children(payload: Any, index: int = 1) -> list[Any]:
+        if not isinstance(payload, list) or len(payload) <= index:
+            return []
+        listing = payload[index]
+        if not isinstance(listing, dict):
+            return []
+        data = listing.get("data", {})
+        if not isinstance(data, dict):
+            return []
+        children = data.get("children", [])
+        return children if isinstance(children, list) else []
+
+    @staticmethod
     def _parse_datetime_text(raw_text: str) -> tuple[str | None, int | None]:
         text = (raw_text or "").strip()
         if not text:
@@ -740,15 +753,17 @@ class RedditScraper:
             logger.debug("Unable to fetch top comments via OAuth for %s: %s", post_id, e)
             return []
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comments_listing = payload[1].get("data", {}).get("children", [])
+        comments_listing = self._listing_children(payload)
         comments: list[str] = []
         for child in comments_listing:
+            if not isinstance(child, dict):
+                continue
             if child.get("kind") != "t1":
                 continue
-            body = child.get("data", {}).get("body", "")
+            data = child.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            body = data.get("body", "")
             if isinstance(body, str) and body.strip():
                 comments.append(body.strip())
             if len(comments) >= limit:
@@ -777,15 +792,17 @@ class RedditScraper:
             logger.debug("Unable to fetch top comments via JSON for %s: %s", post_id, e)
             return []
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comments_listing = payload[1].get("data", {}).get("children", [])
+        comments_listing = self._listing_children(payload)
         comments: list[str] = []
         for child in comments_listing:
+            if not isinstance(child, dict):
+                continue
             if child.get("kind") != "t1":
                 continue
-            body = child.get("data", {}).get("body", "")
+            data = child.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            body = data.get("body", "")
             if isinstance(body, str) and body.strip():
                 comments.append(body.strip())
             if len(comments) >= limit:
@@ -803,19 +820,20 @@ class RedditScraper:
                 params=params,
             )
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comment_nodes = payload[1].get("data", {}).get("children", [])
+        comment_nodes = self._listing_children(payload)
         comments: list[str] = []
 
-        def walk(nodes: list[dict[str, Any]]) -> None:
+        def walk(nodes: list[Any]) -> None:
             for node in nodes:
                 if len(comments) >= max_comments:
                     return
+                if not isinstance(node, dict):
+                    continue
                 if node.get("kind") != "t1":
                     continue
                 data = node.get("data", {})
+                if not isinstance(data, dict):
+                    continue
                 body = data.get("body", "")
                 if isinstance(body, str) and body.strip():
                     comments.append(body.strip())
@@ -842,19 +860,20 @@ class RedditScraper:
                 headers=headers,
             )
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comment_nodes = payload[1].get("data", {}).get("children", [])
+        comment_nodes = self._listing_children(payload)
         comments: list[str] = []
 
-        def walk(nodes: list[dict[str, Any]]) -> None:
+        def walk(nodes: list[Any]) -> None:
             for node in nodes:
                 if len(comments) >= max_comments:
                     return
+                if not isinstance(node, dict):
+                    continue
                 if node.get("kind") != "t1":
                     continue
                 data = node.get("data", {})
+                if not isinstance(data, dict):
+                    continue
                 body = data.get("body", "")
                 if isinstance(body, str) and body.strip():
                     comments.append(body.strip())
