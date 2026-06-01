@@ -734,6 +734,7 @@ class Database:
             JOIN pain_point_competitors c ON c.post_id = p.post_id
             WHERE c.competitor_tag = ?
               AND datetime(p.created_at) >= datetime('now', ?)
+              AND p.triage_status NOT IN ('discarded', 'merged')
             ORDER BY p.willingness_to_pay DESC, p.pain_level DESC
             LIMIT ?
             """,
@@ -749,6 +750,7 @@ class Database:
             FROM pain_point_competitors c
             JOIN pain_points p ON p.post_id = c.post_id
             WHERE datetime(p.created_at) >= datetime('now', ?)
+              AND p.triage_status NOT IN ('discarded', 'merged')
             GROUP BY c.competitor_tag
             ORDER BY mention_count DESC
             LIMIT ?

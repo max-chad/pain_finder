@@ -419,3 +419,10 @@
 - Change: Treat an explicitly requested reviews smoke, including `--source all`, as a config error when no enabled review targets exist.
 - Verification: Added smoke regression tests for explicit reviews and all-source runs with no enabled review targets; full gates are run after this note.
 - Impact: Prevents false-positive reviews readiness before data collection.
+
+## 2026-06-01 - Competitor lookups exclude inactive rows
+
+- Reason: competitor pain lookup helpers still counted `discarded` and `merged` pain points, unlike export, digest, and recent-pain queries.
+- Change: Filter competitor drilldown and top-tag queries to active canonical rows only.
+- Verification: Added a DB regression test for discarded and merged competitor-tag rows; full gates are run after this note.
+- Impact: Keeps competitor analysis from being inflated by rejected or deduplicated records.

@@ -530,6 +530,36 @@ async def test_competitor_tags_are_normalized_and_queryable(db):
     assert any(item["tag"] == "shopify" for item in top_tags)
 
 
+async def test_competitor_queries_exclude_discarded_and_merged_rows(db):
+    for post_id, status in [
+        ("reddit:active", "new"),
+        ("reddit:discarded", "discarded"),
+        ("hn:merged", "merged"),
+    ]:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url="",
+            title=f"{status} competitor pain",
+            body="",
+            category="complaint",
+            summary="Shopify API breaks often",
+            severity="high",
+            competitor_tags=["shopify"],
+            willingness_to_pay=9,
+            pain_level=8,
+            is_monetizable=True,
+            triage_status=status,
+        )
+
+    by_tag = await db.get_competitor_pain("shopify", days=30, limit=10)
+    assert [row["post_id"] for row in by_tag] == ["reddit:active"]
+
+    top_tags = await db.get_top_competitor_tags(days=30, limit=10)
+    shopify = next(item for item in top_tags if item["tag"] == "shopify")
+    assert shopify["mention_count"] == 1
+
+
 async def test_macro_tables_persist_and_query(db):
     await db.insert_pain_point(
         subreddit="python",
