@@ -566,3 +566,10 @@
 - Change: Track UTF-8 bytes while reading Responses stream deltas and validate fallback final-response text before JSON parsing.
 - Verification: Added an OpenRouter regression test for oversized Codex streamed output returning `None`; full gates are run after this note.
 - Impact: Closes the remaining LLM provider response-size gap and keeps Codex backend failures on the existing safe fallback path.
+
+## 2026-06-01 - DSPy primary parser has a timeout
+
+- Reason: the optional DSPy primary parser runs in a worker thread before legacy fallback, but had no explicit timeout, so a stuck provider call could block classification progress.
+- Change: Add `DSPY_TIMEOUT_SECONDS`, pass it into `dspy.LM`, and wrap the threaded DSPy call in `asyncio.wait_for`.
+- Verification: Added config/main/DSPy parser tests for timeout wiring and timeout fallback; full gates are run after this note.
+- Impact: Improves runtime reliability when DSPy is enabled without changing the default disabled state.

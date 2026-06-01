@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +20,12 @@ def test_model_name_for_codex_provider_uses_openai_prefix():
     parser = DSPyRedditPainParser(api_key="test-key", provider="codex", model="gpt-5.3-spark")
 
     assert parser._model_name_for_provider() == "openai/gpt-5.3-spark"
+
+
+def test_lm_kwargs_include_timeout():
+    parser = DSPyRedditPainParser(api_key="test-key", provider="codex", model="gpt-5.3-spark", timeout_seconds=12.5)
+
+    assert parser._lm_kwargs()["timeout"] == 12.5
 
 
 def test_coerce_prediction_normalizes_strings_into_analysis_result():
@@ -162,6 +169,37 @@ async def test_analyze_post_skips_dspy_when_budget_guard_has_no_pricing(monkeypa
     budget_guard.ensure_can_spend.assert_not_awaited()
     budget_guard.record_usage.assert_not_called()
     ensure_program.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_post_times_out_slow_dspy_program(monkeypatch):
+    parser = DSPyRedditPainParser(
+        api_key="test-key",
+        provider="codex",
+        model="gpt-5.3-spark",
+        timeout_seconds=0.1,
+    )
+    parser._dspy = SimpleNamespace(settings=SimpleNamespace(context=lambda lm: _NullContext()))
+    parser._lm = object()
+
+    def slow_program(**kwargs):
+        time.sleep(0.25)
+        return SimpleNamespace(
+            category="complaint",
+            severity="high",
+            summary="Teams reconcile invoices manually",
+            is_monetizable="true",
+            pain_level="9",
+            willingness_to_pay="8",
+            niche_category="Finance Ops",
+            competitor_tags_csv="quickbooks",
+        )
+
+    monkeypatch.setattr(parser, "_ensure_program", lambda: slow_program)
+
+    result = await parser.analyze_post(_post())
+
+    assert result is None
 
 
 class _NullContext:

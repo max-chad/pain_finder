@@ -31,6 +31,7 @@ class DSPyRedditPainParser:
         reasoning_effort: str = "high",
         temperature: float = 1.0,
         max_tokens: int = 16000,
+        timeout_seconds: float = 60.0,
         budget_guard: "BudgetGuard | None" = None,
         pricing_map: dict[str, dict[str, float]] | None = None,
     ) -> None:
@@ -41,6 +42,7 @@ class DSPyRedditPainParser:
         self.reasoning_effort = reasoning_effort.strip().lower() or "high"
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.timeout_seconds = max(0.1, float(timeout_seconds))
         self.budget_guard = budget_guard
         self.pricing_map = pricing_map or {}
         self._dspy: Any | None = None
@@ -58,6 +60,7 @@ class DSPyRedditPainParser:
             "api_key": self.api_key,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "timeout": self.timeout_seconds,
         }
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
@@ -136,7 +139,7 @@ class DSPyRedditPainParser:
                         discovery_query=post.discovery_query,
                     )
 
-            prediction = await asyncio.to_thread(_run_program)
+            prediction = await asyncio.wait_for(asyncio.to_thread(_run_program), timeout=self.timeout_seconds)
             await self._record_usage(post=post, prompt_text=prompt_text, prediction=prediction)
             return self._coerce_prediction(prediction)
         except Exception as exc:

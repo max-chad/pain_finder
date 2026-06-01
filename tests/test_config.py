@@ -102,6 +102,7 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.DSPY_MODEL == "gpt-5.3-spark"
     assert config_module.DSPY_REASONING_EFFORT == "high"
     assert config_module.DSPY_API_KEY == "test-key"
+    assert config_module.DSPY_TIMEOUT_SECONDS == 60.0
 
 
 def test_dspy_parser_is_disabled_by_default(monkeypatch):
@@ -353,6 +354,7 @@ def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
         ("SCRAPER_MAX_RESPONSE_BYTES", "1023", "SCRAPER_MAX_RESPONSE_BYTES must be at least 1024"),
         ("HN_MAX_RESPONSE_BYTES", "1023", "HN_MAX_RESPONSE_BYTES must be at least 1024"),
         ("REVIEWS_MAX_HTML_BYTES", "1023", "REVIEWS_MAX_HTML_BYTES must be at least 1024"),
+        ("DSPY_TIMEOUT_SECONDS", "0", "DSPY_TIMEOUT_SECONDS must be at least 0.1"),
         ("DAILY_BUDGET_USD", "-0.01", "DAILY_BUDGET_USD must be at least 0"),
     ]
     config_module = importlib.import_module("config")

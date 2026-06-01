@@ -124,6 +124,7 @@ Optional DSPy Reddit parser:
 - `DSPY_API_BASE` (defaults to `LLM_API_BASE`)
 - `DSPY_TEMPERATURE`
 - `DSPY_MAX_TOKENS`
+- `DSPY_TIMEOUT_SECONDS` (default `60`)
 
 The DSPy dependency is intentionally optional and is not installed by the base requirements. Install it only when this parser path is needed:
 

@@ -89,6 +89,7 @@ def _build_dspy_parser(*, budget_guard=None):
         reasoning_effort=config.DSPY_REASONING_EFFORT,
         temperature=config.DSPY_TEMPERATURE,
         max_tokens=config.DSPY_MAX_TOKENS,
+        timeout_seconds=config.DSPY_TIMEOUT_SECONDS,
         budget_guard=budget_guard,
         pricing_map=config.LLM_MODEL_PRICING,
     )
