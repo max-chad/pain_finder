@@ -230,6 +230,18 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
         "skipped_existing_count": 12,
         "dedup_merged_count": 3,
     }
+    db.get_scheduled_job_statuses.return_value = [
+        {
+            "job_name": "hn_ingest",
+            "last_attempted_at": "2026-06-01T10:00:00+00:00",
+            "last_error": "HN fetch failed",
+        },
+        {
+            "job_name": "reviews_ingest",
+            "last_attempted_at": "2026-06-01T11:00:00+00:00",
+            "last_error": None,
+        },
+    ]
 
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
     bot._is_authorized = lambda update: True
@@ -241,6 +253,9 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
     assert "pain_finder running" in text
     assert "Monitored subreddits: 2" in text
     assert "Last run: r/python posts=100 pain=20 monetizable=5 skipped_existing=12 dedup_merged=3" in text
+    assert "Scheduled job errors:" in text
+    assert "- hn_ingest last error at 2026-06-01T10:00:00+00:00: HN fetch failed" in text
+    assert "reviews_ingest" not in text
 
 
 async def test_cmd_list_truncates_large_monitoring_output():

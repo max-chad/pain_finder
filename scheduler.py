@@ -163,8 +163,10 @@ class MonitoringScheduler:
         try:
             if self.macro_fn:
                 await self.macro_fn()
+            await self.db.mark_scheduled_job_success("macro_weekly")
             logger.info("scheduled_macro_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("macro_weekly", str(exc))
             logger.exception("scheduled_macro_failed stage=scheduler")
 
     async def _run_hn(self):
@@ -172,8 +174,10 @@ class MonitoringScheduler:
         try:
             if self.hn_fn:
                 await self.hn_fn()
+            await self.db.mark_scheduled_job_success("hn_ingest")
             logger.info("scheduled_hn_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("hn_ingest", str(exc))
             logger.exception("scheduled_hn_failed stage=scheduler")
 
     async def _run_reviews(self):
@@ -181,8 +185,10 @@ class MonitoringScheduler:
         try:
             if self.reviews_fn:
                 await self.reviews_fn()
+            await self.db.mark_scheduled_job_success("reviews_ingest")
             logger.info("scheduled_reviews_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("reviews_ingest", str(exc))
             logger.exception("scheduled_reviews_failed stage=scheduler")
 
     async def _run_digest(self):
@@ -190,6 +196,8 @@ class MonitoringScheduler:
         try:
             if self.digest_fn:
                 await self.digest_fn()
+            await self.db.mark_scheduled_job_success("daily_digest")
             logger.info("scheduled_digest_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("daily_digest", str(exc))
             logger.exception("scheduled_digest_failed stage=scheduler")

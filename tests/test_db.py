@@ -103,6 +103,22 @@ async def test_mark_monitor_failed_records_attempt_and_error(db):
     assert sub["last_error"] == "x" * 1000
 
 
+async def test_scheduled_job_status_records_failure_and_clears_on_success(db):
+    await db.mark_scheduled_job_failure("hn_ingest", "x" * 1200)
+    statuses = await db.get_scheduled_job_statuses()
+    status = next(item for item in statuses if item["job_name"] == "hn_ingest")
+    assert status["last_attempted_at"] is not None
+    assert status["last_success_at"] is None
+    assert status["last_error"] == "x" * 1000
+
+    await db.mark_scheduled_job_success("hn_ingest")
+    statuses = await db.get_scheduled_job_statuses()
+    status = next(item for item in statuses if item["job_name"] == "hn_ingest")
+    assert status["last_attempted_at"] is not None
+    assert status["last_success_at"] is not None
+    assert status["last_error"] is None
+
+
 async def test_save_and_get_latest_report(db):
     await db.save_report(
         subreddit="python",

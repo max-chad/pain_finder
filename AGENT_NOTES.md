@@ -496,3 +496,10 @@
 - Change: Reject hostnames containing `%` before public-host or DNS checks.
 - Verification: Added URL safety tests for percent-encoded localhost-style hostnames and scoped IPv6 link-local hosts; full gates are run after this note.
 - Impact: Reduces SSRF bypass risk for operator-configured review target URLs.
+
+## 2026-06-01 - Scheduled job failures are persisted
+
+- Reason: subreddit monitor failures were persisted in `monitored_subreddits`, but macro, Hacker News, review, and digest scheduled jobs only logged failures, leaving operators blind after log rotation or restart.
+- Change: Add `scheduled_job_status`, record success/failure for non-subreddit scheduled jobs, and surface active scheduled-job errors in `/status`.
+- Verification: Added DB, scheduler, and bot status tests for scheduled-job failure persistence and clearing; full gates are run after this note.
+- Impact: Improves deploy observability for source collection and digest jobs without changing collector behavior.

@@ -175,6 +175,38 @@ async def test_run_macro_hn_reviews_execute_callbacks():
     reviews_fn.assert_awaited_once()
 
 
+async def test_run_hn_records_scheduled_job_success():
+    mock_db = AsyncMock()
+    hn_fn = AsyncMock()
+    sched = MonitoringScheduler(
+        db=mock_db,
+        analyze_fn=AsyncMock(),
+        hn_fn=hn_fn,
+    )
+
+    await sched._run_hn()
+
+    hn_fn.assert_awaited_once()
+    mock_db.mark_scheduled_job_success.assert_awaited_once_with("hn_ingest")
+    mock_db.mark_scheduled_job_failure.assert_not_awaited()
+
+
+async def test_run_reviews_records_scheduled_job_failure():
+    mock_db = AsyncMock()
+    reviews_fn = AsyncMock(side_effect=RuntimeError("reviews down"))
+    sched = MonitoringScheduler(
+        db=mock_db,
+        analyze_fn=AsyncMock(),
+        reviews_fn=reviews_fn,
+    )
+
+    await sched._run_reviews()
+
+    reviews_fn.assert_awaited_once()
+    mock_db.mark_scheduled_job_success.assert_not_awaited()
+    mock_db.mark_scheduled_job_failure.assert_awaited_once_with("reviews_ingest", "reviews down")
+
+
 async def test_run_digest_executes_callback():
     mock_db = AsyncMock()
     mock_db.is_llm_paused.return_value = False

@@ -490,6 +490,7 @@ class PainFinderBot:
             return
         summary = await self.db.get_monitoring_summary()
         latest_run = await self.db.get_latest_analysis_run()
+        scheduled_jobs = await self.db.get_scheduled_job_statuses()
         lines = [
             "pain_finder running",
             f"Monitored subreddits: {summary['monitored']}",
@@ -506,6 +507,12 @@ class PainFinderBot:
                 f"skipped_existing={latest_run.get('skipped_existing_count', 0)} "
                 f"dedup_merged={latest_run.get('dedup_merged_count', 0)}"
             )
+        failed_jobs = [job for job in scheduled_jobs if job.get("last_error")]
+        if failed_jobs:
+            lines.append("Scheduled job errors:")
+            for job in failed_jobs:
+                attempted = job.get("last_attempted_at") or "unknown"
+                lines.append(f"- {job['job_name']} last error at {attempted}: {job['last_error']}")
         await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_export(self, update, ctx):

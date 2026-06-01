@@ -206,6 +206,15 @@ CREATE TABLE IF NOT EXISTS gtm_assets (
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_SCHEDULED_JOB_STATUS = """
+CREATE TABLE IF NOT EXISTS scheduled_job_status (
+    job_name TEXT PRIMARY KEY,
+    last_attempted_at TEXT,
+    last_success_at TEXT,
+    last_error TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+)"""
+
 CREATE_SCHEMA_MIGRATIONS = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
@@ -331,6 +340,7 @@ class Database:
         await self._conn.execute(CREATE_RUNTIME_FLAGS)
         await self._conn.execute(CREATE_LLM_RESPONSE_CACHE)
         await self._conn.execute(CREATE_GTM_ASSETS)
+        await self._conn.execute(CREATE_SCHEDULED_JOB_STATUS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
         await self._run_migrations()
@@ -1314,6 +1324,46 @@ class Database:
             (now, error[:1000], name),
         )
         await self._conn.commit()
+
+    async def mark_scheduled_job_success(self, job_name: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            """
+            INSERT INTO scheduled_job_status (
+                job_name, last_attempted_at, last_success_at, last_error, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?)
+            ON CONFLICT(job_name) DO UPDATE SET
+                last_attempted_at = excluded.last_attempted_at,
+                last_success_at = excluded.last_success_at,
+                last_error = NULL,
+                updated_at = excluded.updated_at
+            """,
+            (job_name, now, now, now),
+        )
+        await self._conn.commit()
+
+    async def mark_scheduled_job_failure(self, job_name: str, error: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            """
+            INSERT INTO scheduled_job_status (
+                job_name, last_attempted_at, last_success_at, last_error, updated_at
+            )
+            VALUES (?, ?, NULL, ?, ?)
+            ON CONFLICT(job_name) DO UPDATE SET
+                last_attempted_at = excluded.last_attempted_at,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            (job_name, now, error[:1000], now),
+        )
+        await self._conn.commit()
+
+    async def get_scheduled_job_statuses(self) -> list[dict[str, Any]]:
+        async with self._conn.execute("SELECT * FROM scheduled_job_status ORDER BY job_name") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def save_report(self, *, subreddit: str, post_count: int, pain_count: int, json_path: str) -> int:
         async with self._conn.execute(
