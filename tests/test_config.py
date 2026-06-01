@@ -1,4 +1,5 @@
 ﻿import importlib
+from pathlib import Path
 
 
 def test_config_loads_required_environment(monkeypatch):
@@ -406,4 +407,16 @@ def test_config_normalizes_model_pricing_environment(monkeypatch):
     config_module = importlib.reload(config_module)
 
     assert config_module.LLM_MODEL_PRICING == {"m1": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}}
+
+
+def test_env_example_lists_operational_limit_knobs():
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+
+    for key in [
+        "SCRAPER_MAX_RESPONSE_BYTES=",
+        "HN_MAX_RESPONSE_BYTES=",
+        "REVIEWS_MAX_HTML_BYTES=",
+        "DSPY_TIMEOUT_SECONDS=",
+    ]:
+        assert key in env_example
 

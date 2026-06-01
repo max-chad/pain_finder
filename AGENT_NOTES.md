@@ -580,3 +580,10 @@
 - Change: Pass `DSPY_TIMEOUT_SECONDS` into the eval runtime `DSPyRedditPainParser` builder.
 - Verification: Extended eval runtime builder tests to assert DSPy timeout wiring; full gates are run after this note.
 - Impact: Keeps live evaluation runs under the same bounded-DSPy contract as production runtime.
+
+## 2026-06-01 - Env example lists safety limit knobs
+
+- Reason: `.env.example` omitted deploy-visible byte caps and the new DSPy timeout, so operators copying it would miss important collection/runtime safety controls.
+- Change: Add Reddit/HN/review response byte caps and `DSPY_TIMEOUT_SECONDS` to `.env.example`.
+- Verification: Added a config test asserting the env example lists these operational limit knobs; full gates are run after this note.
+- Impact: Improves deployment DX and makes safety limits discoverable before first run.
