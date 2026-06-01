@@ -14,6 +14,7 @@ from url_safety import is_public_http_url
 logger = logging.getLogger(__name__)
 
 RATING_RE = re.compile(r"([1-5](?:\.\d+)?)")
+MAX_REVIEW_HTML_BYTES = 2_000_000
 
 
 def _coerce_rating(value: Any) -> float:
@@ -39,8 +40,9 @@ class ReviewFetchError(RuntimeError):
 
 
 class ReviewScraper:
-    def __init__(self, user_agent: str = "pain_finder/1.0"):
+    def __init__(self, user_agent: str = "pain_finder/1.0", max_html_bytes: int = MAX_REVIEW_HTML_BYTES):
         self.user_agent = user_agent
+        self.max_html_bytes = max_html_bytes
 
     async def fetch_negative_reviews(
         self,
@@ -140,9 +142,17 @@ class ReviewScraper:
         headers = {"User-Agent": self.user_agent}
         try:
             async with httpx.AsyncClient(timeout=25) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
+                async with client.stream("GET", url, headers=headers) as response:
+                    response.raise_for_status()
+                    encoding = response.encoding or "utf-8"
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > self.max_html_bytes:
+                            raise ReviewFetchError(
+                                f"Review target response exceeded {self.max_html_bytes} bytes"
+                            )
+                    return bytes(body).decode(encoding, errors="replace")
         except httpx.HTTPError as e:
             logger.warning("Review scraper failed for %s: %s", url, e)
             raise ReviewFetchError(f"Review scraper failed for {url}") from e

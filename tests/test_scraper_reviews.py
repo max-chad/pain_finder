@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from scraper_reviews import ReviewFetchError, ReviewScraper, ReviewTarget
@@ -155,6 +156,26 @@ async def test_fetch_negative_reviews_rejects_private_target_url():
 
     with pytest.raises(ReviewFetchError, match="public http or https URL"):
         await scraper.fetch_negative_reviews(target=target, max_reviews=5)
+
+
+async def test_fetch_html_streams_review_response_with_size_limit(respx_mock):
+    scraper = ReviewScraper(max_html_bytes=64)
+    route = respx_mock.get("https://example.com/reviews").mock(
+        return_value=httpx.Response(200, content=b"<html>ok</html>")
+    )
+
+    html = await scraper._fetch_html("https://example.com/reviews")
+
+    assert route.called
+    assert html == "<html>ok</html>"
+
+
+async def test_fetch_html_rejects_oversized_review_response(respx_mock):
+    scraper = ReviewScraper(max_html_bytes=8)
+    respx_mock.get("https://example.com/reviews").mock(return_value=httpx.Response(200, content=b"123456789"))
+
+    with pytest.raises(ReviewFetchError, match="exceeded 8 bytes"):
+        await scraper._fetch_html("https://example.com/reviews")
 
 
 async def test_fetch_many_targets_combines_results(monkeypatch):

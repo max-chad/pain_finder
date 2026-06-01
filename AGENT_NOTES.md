@@ -454,3 +454,10 @@
 - Change: Align the documented and CI mypy command with the full local gate used during audit.
 - Verification: Targeted mypy and full gates are run after this note.
 - Impact: Prevents future parser/eval type regressions from passing CI while failing the local deploy gate.
+
+## 2026-06-01 - Review HTML fetches are bounded
+
+- Reason: configured review pages are external inputs, and the scraper previously read `response.text` without an application-level byte limit, allowing a misconfigured or hostile target to consume unbounded memory during collection.
+- Change: Stream review HTML responses and abort collection when the response exceeds the scraper's configured byte limit.
+- Verification: Added scraper review tests for normal bounded HTML fetches and oversized responses; full gates are run after this note.
+- Impact: Reduces deploy-time DoS risk from review-source collection while preserving existing parsing behavior for normal pages.
