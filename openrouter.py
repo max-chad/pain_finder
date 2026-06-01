@@ -430,20 +430,29 @@ class OpenRouterClient:
         cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
         if self.budget_guard is not None:
-            await self.budget_guard.record_usage(
-                model=model,
-                operation=operation,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=cost_usd,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                provider=self.provider,
-                request_path=self._request_path(),
-                candidate_stage=candidate_stage,
-            )
+            try:
+                await self.budget_guard.record_usage(
+                    model=model,
+                    operation=operation,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    post_id=post_id,
+                    prompt_hash=prompt_hash,
+                    fallback_reason=fallback_reason,
+                    schema_version=schema_version,
+                    provider=self.provider,
+                    request_path=self._request_path(),
+                    candidate_stage=candidate_stage,
+                )
+            except Exception as e:
+                logger.warning(
+                    "llm_usage_record_failed model=%s operation=%s post_id=%s error=%s",
+                    model,
+                    operation,
+                    post_id,
+                    e,
+                )
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -694,7 +703,7 @@ class OpenRouterClient:
                             await asyncio.sleep(delay)
                             continue
                         raise
-        except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError) as e:
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError) as e:
             logger.warning("OpenRouter request failed: %s", e)
             return None
 
@@ -786,20 +795,29 @@ class OpenRouterClient:
         cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
         if self.budget_guard is not None:
-            await self.budget_guard.record_usage(
-                model=model,
-                operation=operation,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=cost_usd,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                provider=self.provider,
-                request_path=self._request_path(),
-                candidate_stage=candidate_stage,
-            )
+            try:
+                await self.budget_guard.record_usage(
+                    model=model,
+                    operation=operation,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    post_id=post_id,
+                    prompt_hash=prompt_hash,
+                    fallback_reason=fallback_reason,
+                    schema_version=schema_version,
+                    provider=self.provider,
+                    request_path=self._request_path(),
+                    candidate_stage=candidate_stage,
+                )
+            except Exception as e:
+                logger.warning(
+                    "llm_usage_record_failed model=%s operation=%s post_id=%s error=%s",
+                    model,
+                    operation,
+                    post_id,
+                    e,
+                )
 
     def _estimate_cost_usd(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         pricing = self.pricing_map.get(model, {})

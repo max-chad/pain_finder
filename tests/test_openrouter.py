@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import httpx
+import pytest
 import respx
 
 from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient
@@ -129,6 +130,25 @@ async def test_analyze_handles_malformed_json(respx_mock):
 
     client = OpenRouterClient(api_key="test-key", model="test-model")
     result = await client.analyze_post(title="Test", body="Test body")
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"choices": None},
+        {"choices": [{"message": {"content": None}}]},
+    ],
+)
+async def test_analyze_handles_malformed_provider_payload_shape(respx_mock, payload):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    client = OpenRouterClient(api_key="test-key", model="test-model")
+    result = await client.analyze_post(title="Test", body="Test body")
+
     assert result is None
 
 
@@ -695,6 +715,54 @@ async def test_usage_tracking_tolerates_malformed_token_counts(respx_mock):
     call_kwargs = budget.record_usage.await_args.kwargs
     assert call_kwargs["prompt_tokens"] == 0
     assert call_kwargs["completion_tokens"] == 0
+
+
+async def test_usage_tracking_failure_does_not_drop_valid_result(respx_mock, caplog):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 300},
+            },
+        )
+    )
+    budget = AsyncMock()
+    budget.record_usage.side_effect = RuntimeError("db locked")
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
+
+    assert result is not None
+    assert result.summary == "Need retry flow"
+    budget.record_usage.assert_awaited_once()
+    assert "llm_usage_record_failed" in caplog.text
+
+
+async def test_usage_dict_tracking_failure_is_logged_not_raised(caplog):
+    budget = AsyncMock()
+    budget.record_usage.side_effect = RuntimeError("db locked")
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
+
+    await client._record_usage_from_usage_dict(
+        usage={"prompt_tokens": 10, "completion_tokens": 5},
+        model="m1",
+        operation="classify_primary",
+        post_id="reddit:abc",
+        prompt_hash="a" * 64,
+        fallback_reason=None,
+        schema_version="primary_v2",
+        candidate_stage="primary",
+    )
+
+    budget.record_usage.assert_awaited_once()
+    assert "llm_usage_record_failed" in caplog.text
 
 
 def test_responses_usage_to_dict_tolerates_malformed_token_counts():

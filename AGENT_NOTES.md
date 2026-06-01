@@ -426,3 +426,10 @@
 - Change: Filter competitor drilldown and top-tag queries to active canonical rows only.
 - Verification: Added a DB regression test for discarded and merged competitor-tag rows; full gates are run after this note.
 - Impact: Keeps competitor analysis from being inflated by rejected or deduplicated records.
+
+## 2026-06-01 - OpenRouter provider failures are contained
+
+- Reason: malformed provider response shapes could escape as `TypeError`/`AttributeError`, and usage-ledger write failures after a successful paid response could discard the valid result.
+- Change: Treat malformed provider payload shapes as request failures returning `None`, and log usage-recording failures without raising after a valid provider result.
+- Verification: Added OpenRouter regression tests for malformed payload shapes and ledger-write failures on both chat-completion and usage-dict accounting paths; full gates are run after this note.
+- Impact: Keeps external provider drift and transient accounting writes from crashing classification or wasting paid results.
