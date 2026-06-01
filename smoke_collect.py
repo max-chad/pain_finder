@@ -211,7 +211,17 @@ async def _fetch_reviews(config: SourceSmokeConfig, *, limit: int) -> list[Post]
 async def run_smoke(argv: Sequence[str] | None = None) -> tuple[int, dict[str, Any]]:
     parser = build_parser()
     args = parser.parse_args(argv)
-    limit = max(1, min(args.limit, 100))
+    if args.limit < 1:
+        return (
+            1,
+            {
+                "ok": False,
+                "side_effects": "none: no LLM, Telegram, database, or export writes",
+                "sources": [],
+                "errors": [{"source": "config", "reason": "exception", "error": "--limit must be at least 1"}],
+            },
+        )
+    limit = min(args.limit, 100)
     try:
         config = load_source_smoke_config()
     except Exception as exc:

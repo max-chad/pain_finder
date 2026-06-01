@@ -95,6 +95,22 @@ async def test_run_smoke_rejects_invalid_source_numeric_env(monkeypatch):
     ]
 
 
+async def test_run_smoke_rejects_non_positive_cli_limit(monkeypatch):
+    import smoke_collect
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reddit", "--limit", "0"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "--limit must be at least 1",
+        }
+    ]
+
+
 async def test_run_smoke_rejects_empty_hn_keywords_env(monkeypatch):
     import smoke_collect
 

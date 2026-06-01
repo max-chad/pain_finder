@@ -398,3 +398,10 @@
 - Change: Treat an explicitly provided empty HN keyword list as a smoke config error before any network fetch.
 - Verification: Added a smoke regression test for empty HN keyword env; full gates are run after this note.
 - Impact: Keeps pre-deploy HN smoke aligned with app startup validation and prevents false-positive collection readiness.
+
+## 2026-06-01 - Source smoke rejects zero limits
+
+- Reason: source smoke CLI accepted `--limit 0` and silently normalized it to `1`, so a broken operator preflight command could pass with parameters different from the requested run.
+- Change: Return a structured config error for non-positive smoke limits while preserving the existing upper safety cap.
+- Verification: Added a smoke regression test for `--limit 0`; full gates are run after this note.
+- Impact: Makes deploy/source-readiness checks fail clearly on invalid operator input instead of masking it.
