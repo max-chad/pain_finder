@@ -71,6 +71,7 @@ def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dsp
             temperature=config.DSPY_TEMPERATURE,
             max_tokens=config.DSPY_MAX_TOKENS,
             budget_guard=budget_guard,
+            pricing_map=config.LLM_MODEL_PRICING,
         )
 
     return Classifier(

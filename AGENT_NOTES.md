@@ -433,3 +433,10 @@
 - Change: Treat malformed provider payload shapes as request failures returning `None`, and log usage-recording failures without raising after a valid provider result.
 - Verification: Added OpenRouter regression tests for malformed payload shapes and ledger-write failures on both chat-completion and usage-dict accounting paths; full gates are run after this note.
 - Impact: Keeps external provider drift and transient accounting writes from crashing classification or wasting paid results.
+
+## 2026-06-01 - DSPy parser spend is accounted
+
+- Reason: optional DSPy classification checked budget before provider calls but did not record usage afterward, so DSPy spend could bypass the daily cap ledger.
+- Change: Pass runtime pricing into the DSPy parser, record DSPy usage from LM history when available, fall back to a token estimate when priced, and skip DSPy when budget enforcement is active but pricing is missing.
+- Verification: Added DSPy parser regression tests for usage recording, exact LM-history usage, and fail-closed missing-pricing behavior; full gates are run after this note.
+- Impact: Keeps the optional DSPy path aligned with the same budget-cap semantics as the primary OpenRouter client.

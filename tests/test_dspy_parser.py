@@ -54,6 +54,7 @@ async def test_analyze_post_checks_budget_guard_before_dspy_call(monkeypatch):
         provider="codex",
         model="gpt-5.3-spark",
         budget_guard=budget_guard,
+        pricing_map={"gpt-5.3-spark": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}},
     )
     parser._dspy = SimpleNamespace(settings=SimpleNamespace(context=lambda lm: _NullContext()))
     parser._lm = object()
@@ -76,6 +77,13 @@ async def test_analyze_post_checks_budget_guard_before_dspy_call(monkeypatch):
 
     assert result is not None
     budget_guard.ensure_can_spend.assert_awaited_once_with("dspy_analyze_post")
+    budget_guard.record_usage.assert_awaited_once()
+    usage_kwargs = budget_guard.record_usage.await_args.kwargs
+    assert usage_kwargs["operation"] == "dspy_analyze_post"
+    assert usage_kwargs["model"] == "gpt-5.3-spark"
+    assert usage_kwargs["cost_usd"] > 0
+    assert usage_kwargs["schema_version"] == "dspy_primary_v1"
+    assert usage_kwargs["candidate_stage"] == "primary_dspy"
 
 
 @pytest.mark.asyncio
@@ -87,6 +95,7 @@ async def test_analyze_post_propagates_budget_pause_before_dspy_call(monkeypatch
         provider="codex",
         model="gpt-5.3-spark",
         budget_guard=budget_guard,
+        pricing_map={"gpt-5.3-spark": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}},
     )
     ensure_program = AsyncMock()
     monkeypatch.setattr(parser, "_ensure_program", ensure_program)
@@ -94,6 +103,64 @@ async def test_analyze_post_propagates_budget_pause_before_dspy_call(monkeypatch
     with pytest.raises(BudgetCapReachedError, match="paused"):
         await parser.analyze_post(_post())
 
+    ensure_program.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_post_records_dspy_lm_history_usage(monkeypatch):
+    budget_guard = AsyncMock()
+    parser = DSPyRedditPainParser(
+        api_key="test-key",
+        provider="codex",
+        model="gpt-5.3-spark",
+        budget_guard=budget_guard,
+        pricing_map={"gpt-5.3-spark": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}},
+    )
+    parser._dspy = SimpleNamespace(settings=SimpleNamespace(context=lambda lm: _NullContext()))
+    parser._lm = SimpleNamespace(history=[])
+
+    def fake_program(**kwargs):
+        parser._lm.history.append({"usage": {"prompt_tokens": 50, "completion_tokens": 12}})
+        return SimpleNamespace(
+            category="complaint",
+            severity="high",
+            summary="Teams reconcile invoices manually",
+            is_monetizable="true",
+            pain_level="9",
+            willingness_to_pay="8",
+            niche_category="Finance Ops",
+            competitor_tags_csv="quickbooks",
+        )
+
+    monkeypatch.setattr(parser, "_ensure_program", lambda: fake_program)
+
+    result = await parser.analyze_post(_post())
+
+    assert result is not None
+    usage_kwargs = budget_guard.record_usage.await_args.kwargs
+    assert usage_kwargs["prompt_tokens"] == 50
+    assert usage_kwargs["completion_tokens"] == 12
+    assert usage_kwargs["cost_usd"] == 0.000148
+
+
+@pytest.mark.asyncio
+async def test_analyze_post_skips_dspy_when_budget_guard_has_no_pricing(monkeypatch):
+    budget_guard = AsyncMock()
+    parser = DSPyRedditPainParser(
+        api_key="test-key",
+        provider="codex",
+        model="gpt-5.3-spark",
+        budget_guard=budget_guard,
+        pricing_map={},
+    )
+    ensure_program = AsyncMock()
+    monkeypatch.setattr(parser, "_ensure_program", ensure_program)
+
+    result = await parser.analyze_post(_post())
+
+    assert result is None
+    budget_guard.ensure_can_spend.assert_not_awaited()
+    budget_guard.record_usage.assert_not_called()
     ensure_program.assert_not_called()
 
 
