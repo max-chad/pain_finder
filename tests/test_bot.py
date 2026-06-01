@@ -410,6 +410,20 @@ async def test_cmd_deepdive_truncates_long_summary_reply():
     assert "[truncated]" in sent_text
 
 
+async def test_cmd_deepdive_truncates_long_post_id_not_found_reply():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_deepdive(update, _make_ctx(["reddit:" + ("a" * 6000)]))
+
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
 async def test_cmd_deepdive_usage_on_bad_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -633,6 +647,27 @@ async def test_cmd_gtm_truncates_long_generated_reply():
     assert "[truncated]" in sent_text
 
 
+async def test_cmd_gtm_truncates_long_post_id_progress_reply():
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1",
+        hero_h2="H2",
+        mvp_features=["feature"],
+        pricing_tier="$19",
+        positioning_rationale="why",
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="placeholder", payload=gtm_payload))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["reddit:" + ("a" * 6000)]))
+
+    sent_text = update.message.reply_text.await_args_list[0].args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
 async def test_cmd_gtm_usage_on_bad_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -770,6 +805,26 @@ def test_render_list_view_no_load_more_when_all_shown():
     text, keyboard = bot._render_list_view(token, session)
     buttons_flat = [btn.text for row in keyboard.inline_keyboard for btn in row]
     assert not any("Load more" in b for b in buttons_flat)
+
+
+def test_render_list_view_text_stays_under_telegram_limit_for_many_items():
+    bot = _make_bot()
+    signals = [
+        _make_signal(
+            f"p{i}",
+            "complaint",
+            f"Very long source complaint summary number {i} " + ("x" * 200),
+        )
+        for i in range(100)
+    ]
+    token = bot._create_session(signals, "r/python")
+    session = bot._sessions[token]
+    session["shown_count"] = len(signals)
+
+    text, _ = bot._render_list_view(token, session)
+
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
 
 
 def test_render_card_view_contains_post_details():

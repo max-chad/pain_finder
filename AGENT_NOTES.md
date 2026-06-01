@@ -405,3 +405,10 @@
 - Change: Return a structured config error for non-positive smoke limits while preserving the existing upper safety cap.
 - Verification: Added a smoke regression test for `--limit 0`; full gates are run after this note.
 - Impact: Makes deploy/source-readiness checks fail clearly on invalid operator input instead of masking it.
+
+## 2026-06-01 - Telegram operator replies are bounded
+
+- Reason: manual `/deepdive` and `/gtm` commands accepted valid but arbitrarily long post IDs, and grouped list views could grow past Telegram's text limit after repeated `Load more`.
+- Change: Apply the existing Telegram text limiter to user-controlled post-id replies and list-view rendering while keeping post-id parsing and keyboard callbacks compatible with existing source-prefixed IDs.
+- Verification: Added bot regression tests for long post IDs in deep-dive not-found and GTM progress replies, plus a many-item list rendering limit test; full gates are run after this note.
+- Impact: Prevents authorized operator input or large grouped notifications from breaking Telegram reply/edit delivery before the expensive action or diagnostic response can complete.

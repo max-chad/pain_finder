@@ -309,7 +309,7 @@ class PainFinderBot:
                     callback_data=f"loadmore:{token}",
                 )
             ])
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        return limit_telegram_text("\n".join(lines)), InlineKeyboardMarkup(keyboard_rows)
 
     def _render_card_view(self, token: str, session: SessionState, idx: int) -> tuple[str, "InlineKeyboardMarkup"]:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -561,12 +561,12 @@ class PainFinderBot:
             return
         row = await self.db.get_pain_point(post_id)
         if not row:
-            await update.message.reply_text(f"Post {post_id} was not found in the database.")
+            await update.message.reply_text(limit_telegram_text(f"Post {post_id} was not found in the database."))
             return
         if not self.deep_dive_fn:
             await update.message.reply_text("Deep dive is not configured.")
             return
-        await update.message.reply_text(f"Running deep dive for {post_id}...")
+        await update.message.reply_text(limit_telegram_text(f"Running deep dive for {post_id}..."))
         result = await self.deep_dive_fn(post_id, row["subreddit"], "manual")
         if result.status == "completed":
             await update.message.reply_text(limit_telegram_text(f"Deep dive complete for {post_id}: {result.summary}"))
@@ -690,7 +690,7 @@ class PainFinderBot:
         except ValueError as e:
             await update.message.reply_text(str(e))
             return
-        await update.message.reply_text(f"Generating GTM package for {post_id}...")
+        await update.message.reply_text(limit_telegram_text(f"Generating GTM package for {post_id}..."))
         result = await self.gtm_fn(post_id)
         await update.message.reply_text(self._format_gtm_result(result))
 
