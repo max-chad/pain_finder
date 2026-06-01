@@ -559,7 +559,12 @@ class RedditScraper:
             for payload in feed_payloads:
                 if not payload:
                     continue
-                for post in self._parse_rss_entries(subreddit, payload):
+                try:
+                    parsed_posts = self._parse_rss_entries(subreddit, payload)
+                except ET.ParseError as e:
+                    logger.warning("RSS parse failed for r/%s feed payload: %s", subreddit, e)
+                    continue
+                for post in parsed_posts:
                     self._merge_post(posts_by_id, post)
 
             async def fetch_search(query: str, params: dict[str, Any]) -> str | None:
@@ -581,7 +586,12 @@ class RedditScraper:
             for (query, _), payload in zip(search_requests, search_payloads, strict=False):
                 if not payload:
                     continue
-                for post in self._parse_rss_entries(subreddit, payload, discovery_query=query):
+                try:
+                    parsed_posts = self._parse_rss_entries(subreddit, payload, discovery_query=query)
+                except ET.ParseError as e:
+                    logger.warning("RSS search parse failed for r/%s query %r: %s", subreddit, query, e)
+                    continue
+                for post in parsed_posts:
                     self._merge_post(posts_by_id, post)
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]

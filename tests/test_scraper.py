@@ -743,6 +743,65 @@ async def test_fetch_rss_keeps_successful_feed_when_peer_feed_fails(respx_mock):
     assert [post.post_id for post in posts] == ["reddit:rssnew"]
 
 
+async def test_fetch_rss_keeps_successful_feed_when_peer_feed_has_bad_xml(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_rssnew</id>
+        <title>New RSS pain</title>
+        <summary>Manual checks still break</summary>
+        <link href='https://reddit.com/r/python/comments/rssnew/new-rss-pain/' />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        return_value=httpx.Response(200, text="<html>blocked</html")
+    )
+    respx_mock.get("https://old.reddit.com/r/python/new/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:rssnew"]
+
+
+async def test_fetch_rss_keeps_feed_results_when_search_has_bad_xml(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_feed</id>
+        <title>Feed pain</title>
+        <summary>Manual checks still break</summary>
+        <link href='https://reddit.com/r/python/comments/feed/feed-pain/' />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+    respx_mock.get("https://old.reddit.com/r/python/search.rss").mock(
+        return_value=httpx.Response(200, text="<html>blocked</html")
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["manual checks"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:feed"]
+
+
 async def test_fetch_oauth_json_requests_feeds_concurrently():
     from unittest.mock import patch
 

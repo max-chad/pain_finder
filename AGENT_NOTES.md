@@ -468,3 +468,10 @@
 - Change: Add a shared listing-child extractor and skip malformed comment nodes while preserving valid sibling and nested comments.
 - Verification: Added scraper tests for malformed comment listings and malformed nested comment nodes; full gates are run after this note.
 - Impact: Keeps Reddit collection resilient to upstream schema drift and partial malformed responses.
+
+## 2026-06-01 - Reddit RSS fallback skips malformed XML peers
+
+- Reason: RSS fallback fetches multiple Reddit feeds/searches, but XML parsing happened outside per-feed error handling, so one malformed old.reddit response could abort otherwise usable RSS collection.
+- Change: Catch RSS parse failures per feed/search payload and continue merging valid peer results.
+- Verification: Added scraper tests for malformed feed XML alongside a valid feed and malformed search XML alongside valid feed results; full gates are run after this note.
+- Impact: Improves data-collection reliability when Reddit returns a block page or partial malformed RSS payload for one request.
