@@ -447,3 +447,10 @@
 - Change: Coerce invalid Reddit score values to `0`, matching the defensive behavior already used for Hacker News payloads.
 - Verification: Added a scraper regression test for malformed Reddit score values; full gates are run after this note.
 - Impact: Keeps ingestion resilient to external source field drift without dropping usable source posts.
+
+## 2026-06-01 - Quality gates include runtime parser modules
+
+- Reason: CI, README, and agent command docs omitted `dspy_parser.py`, `eval/run_eval.py`, and `eval_harness.py` from the mypy gate even though these modules are part of runtime parsing, evaluation, and budget-sensitive LLM wiring.
+- Change: Align the documented and CI mypy command with the full local gate used during audit.
+- Verification: Targeted mypy and full gates are run after this note.
+- Impact: Prevents future parser/eval type regressions from passing CI while failing the local deploy gate.

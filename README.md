@@ -261,7 +261,7 @@ Add `--require-posts` when a deployment gate should fail if a requested source r
 
 ```bash
 ruff check .
-mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py
+mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
 docker compose config -q
 python -m pip_audit -r requirements.txt
 pytest --cov=. --cov-fail-under=80 -q

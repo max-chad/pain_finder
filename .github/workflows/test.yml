@@ -32,7 +32,7 @@ jobs:
         run: ruff check .
 
       - name: Mypy
-        run: mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py
+        run: mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
 
       - name: Docker Compose config
         run: docker compose config -q

@@ -6,7 +6,7 @@ This file provides guidance to agents when working with code in this repository.
 - `pip install -r requirements.txt`
 - `python main.py`
 - `ruff check .`
-- `mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py`
+- `mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py`
 - `pytest --cov=. --cov-fail-under=80 -q`
 - `pytest tests/test_pipeline.py -q`
 - `pytest tests/test_pipeline.py::test_name -q`
