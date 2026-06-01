@@ -503,3 +503,10 @@
 - Change: Add `scheduled_job_status`, record success/failure for non-subreddit scheduled jobs, and surface active scheduled-job errors in `/status`.
 - Verification: Added DB, scheduler, and bot status tests for scheduled-job failure persistence and clearing; full gates are run after this note.
 - Impact: Improves deploy observability for source collection and digest jobs without changing collector behavior.
+
+## 2026-06-01 - Healthcheck reports scheduled job errors
+
+- Reason: after persisting scheduled-job failures, the container healthcheck still returned only storage and monitoring counts, so deploy diagnostics could miss a source/digest job failure without opening Telegram.
+- Change: Include a read-only `scheduled_job_errors` count in healthcheck output while keeping liveness success independent from historical job failures.
+- Verification: Updated healthcheck tests to seed a scheduled job failure and assert the reported error count; full gates are run after this note.
+- Impact: Makes container-level diagnostics more informative without causing restart loops for recoverable upstream source outages.

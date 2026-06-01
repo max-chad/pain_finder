@@ -17,6 +17,7 @@ async def test_run_healthcheck_validates_storage_and_returns_summary(monkeypatch
     (tmp_path / "data").mkdir()
     db = Database(config.DB_PATH)
     await db.init()
+    await db.mark_scheduled_job_failure("hn_ingest", "network down")
     await db.close()
 
     result = await healthcheck.run_healthcheck()
@@ -25,6 +26,7 @@ async def test_run_healthcheck_validates_storage_and_returns_summary(monkeypatch
     assert result["db_path"] == str(tmp_path / "data" / "health.db")
     assert result["reports_dir"] == str(tmp_path / "reports")
     assert result["monitored"] == 0
+    assert result["scheduled_job_errors"] == 1
     assert (tmp_path / "data" / "health.db").exists()
     assert (tmp_path / "reports").is_dir()
 

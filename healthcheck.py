@@ -45,6 +45,7 @@ async def run_healthcheck() -> dict[str, Any]:
         "reports_dir": config.REPORTS_DIR,
         "llm_paused": bool(flags.get("llm_paused", 0)),
         "monitored": int(summary.get("monitored", 0)),
+        "scheduled_job_errors": int(summary.get("scheduled_job_errors", 0)),
     }
 
 
@@ -85,10 +86,27 @@ async def _get_monitoring_summary(db: aiosqlite.Connection) -> dict[str, int]:
         monitored = await cursor.fetchone()
     async with db.execute("SELECT COUNT(*) AS total FROM pain_points WHERE triage_status = 'favorite'") as cursor:
         favorites = await cursor.fetchone()
+    scheduled_job_errors = 0
+    if await _table_exists(db, "scheduled_job_status"):
+        async with db.execute(
+            "SELECT COUNT(*) AS total FROM scheduled_job_status WHERE last_error IS NOT NULL"
+        ) as cursor:
+            failed_jobs = await cursor.fetchone()
+        scheduled_job_errors = int(failed_jobs["total"] if failed_jobs else 0)
     return {
         "monitored": int(monitored["total"] if monitored else 0),
         "favorites": int(favorites["total"] if favorites else 0),
+        "scheduled_job_errors": scheduled_job_errors,
     }
+
+
+async def _table_exists(db: aiosqlite.Connection, table_name: str) -> bool:
+    async with db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row is not None
 
 
 def main() -> int:
@@ -102,7 +120,8 @@ def main() -> int:
         f"db_path={result['db_path']} "
         f"reports_dir={result['reports_dir']} "
         f"llm_paused={int(result['llm_paused'])} "
-        f"monitored={result['monitored']}"
+        f"monitored={result['monitored']} "
+        f"scheduled_job_errors={result['scheduled_job_errors']}"
     )
     return 0
 
