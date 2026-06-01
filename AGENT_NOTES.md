@@ -552,3 +552,10 @@
 - Change: Stream chat completion responses through a byte limit before JSON parsing and treat oversized responses as provider failures.
 - Verification: Added an OpenRouter regression test for oversized LLM responses returning `None`; full gates are run after this note.
 - Impact: Reduces LLM runtime memory risk without changing retry behavior for retryable HTTP/network failures.
+
+## 2026-06-01 - Scheduler diagnostics stay legacy-compatible
+
+- Reason: `scheduled_job_status` is new deploy observability state, so old initialized SQLite databases must keep passing read-only healthchecks and startup must create the new table before scheduler methods use it.
+- Change: Add regression coverage for legacy DB healthcheck behavior without `scheduled_job_status` and for `Database.init()` creating usable scheduled-job status storage on an older schema.
+- Verification: Added healthcheck and DB migration compatibility tests; full gates are run after this note.
+- Impact: Reduces migration risk for existing deployments adopting scheduler diagnostics.

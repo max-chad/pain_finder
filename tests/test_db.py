@@ -513,6 +513,12 @@ async def test_init_migrates_existing_analysis_runs_with_old_migration_marker(tm
         monitored = await database.get_monitored_subreddits()
         assert monitored[0]["last_attempted_at"] is not None
         assert monitored[0]["last_error"] == "boom"
+
+        await database.mark_scheduled_job_failure("digest_delivery", "digest failed")
+        statuses = await database.get_scheduled_job_statuses()
+        digest_status = next(item for item in statuses if item["job_name"] == "digest_delivery")
+        assert digest_status["last_attempted_at"] is not None
+        assert digest_status["last_error"] == "digest failed"
     finally:
         await database.close()
 
