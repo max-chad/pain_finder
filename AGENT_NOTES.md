@@ -510,3 +510,10 @@
 - Change: Include a read-only `scheduled_job_errors` count in healthcheck output while keeping liveness success independent from historical job failures.
 - Verification: Updated healthcheck tests to seed a scheduled job failure and assert the reported error count; full gates are run after this note.
 - Impact: Makes container-level diagnostics more informative without causing restart loops for recoverable upstream source outages.
+
+## 2026-06-01 - README documents scheduler diagnostics and review DNS safety
+
+- Reason: README still described healthcheck and review smoke safety at the older level, omitting `scheduled_job_errors` and fetch-time public DNS resolution.
+- Change: Document the healthcheck diagnostic counter and the public-address resolution requirement for review targets.
+- Verification: Documentation-only change; full gates are run after this note to keep the checkpoint consistent.
+- Impact: Keeps deploy/runbook expectations aligned with the current hardening behavior.

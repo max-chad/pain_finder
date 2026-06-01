@@ -237,7 +237,7 @@ pip install -r requirements-ml.txt
 docker compose up -d --build
 ```
 
-The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, report-directory writability, and read-only access to an already initialized SQLite database without calling external APIs or running migrations.
+The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, report-directory writability, and read-only access to an already initialized SQLite database without calling external APIs or running migrations. Its output includes `scheduled_job_errors` as a diagnostic counter; historical scheduled-job failures are reported but do not fail liveness.
 The runtime handles `SIGTERM`/`SIGINT` through the asyncio loop so Docker stops and manual interrupts drain through scheduler/database cleanup.
 
 Persisted mounts in `docker-compose.yml`:
@@ -255,7 +255,7 @@ python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
 python smoke_collect.py --source all --limit 5
 ```
 
-Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs.
+Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs that resolve to public addresses before fetch.
 
 ## Quality Gates
 
