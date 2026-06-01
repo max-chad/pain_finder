@@ -475,3 +475,10 @@
 - Change: Catch RSS parse failures per feed/search payload and continue merging valid peer results.
 - Verification: Added scraper tests for malformed feed XML alongside a valid feed and malformed search XML alongside valid feed results; full gates are run after this note.
 - Impact: Improves data-collection reliability when Reddit returns a block page or partial malformed RSS payload for one request.
+
+## 2026-06-01 - Review URLs require public DNS resolution
+
+- Reason: review targets are operator-configured external URLs; syntactic private-host checks rejected literals but still allowed domains that resolve to private, loopback, link-local, reserved, or unspecified addresses at fetch time.
+- Change: Add an async resolved-URL safety check and require review target hostnames to resolve only to public addresses immediately before fetching.
+- Verification: Added URL safety tests for public/private DNS results and scraper tests for resolved-private review targets; full gates are run after this note.
+- Impact: Reduces SSRF risk from review collection without adding DNS lookups to import-time configuration parsing.

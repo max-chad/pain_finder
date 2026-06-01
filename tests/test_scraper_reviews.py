@@ -158,8 +158,17 @@ async def test_fetch_negative_reviews_rejects_private_target_url():
         await scraper.fetch_negative_reviews(target=target, max_reviews=5)
 
 
-async def test_fetch_html_streams_review_response_with_size_limit(respx_mock):
+async def test_fetch_html_rejects_target_url_that_resolves_private(monkeypatch):
+    scraper = ReviewScraper()
+    monkeypatch.setattr("scraper_reviews.is_resolved_public_http_url", AsyncMock(return_value=False))
+
+    with pytest.raises(ReviewFetchError, match="resolve to a public"):
+        await scraper._fetch_html("https://reviews.example.test")
+
+
+async def test_fetch_html_streams_review_response_with_size_limit(monkeypatch, respx_mock):
     scraper = ReviewScraper(max_html_bytes=64)
+    monkeypatch.setattr("scraper_reviews.is_resolved_public_http_url", AsyncMock(return_value=True))
     route = respx_mock.get("https://example.com/reviews").mock(
         return_value=httpx.Response(200, content=b"<html>ok</html>")
     )
@@ -170,8 +179,9 @@ async def test_fetch_html_streams_review_response_with_size_limit(respx_mock):
     assert html == "<html>ok</html>"
 
 
-async def test_fetch_html_rejects_oversized_review_response(respx_mock):
+async def test_fetch_html_rejects_oversized_review_response(monkeypatch, respx_mock):
     scraper = ReviewScraper(max_html_bytes=8)
+    monkeypatch.setattr("scraper_reviews.is_resolved_public_http_url", AsyncMock(return_value=True))
     respx_mock.get("https://example.com/reviews").mock(return_value=httpx.Response(200, content=b"123456789"))
 
     with pytest.raises(ReviewFetchError, match="exceeded 8 bytes"):

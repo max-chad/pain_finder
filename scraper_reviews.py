@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from scraper import Post
-from url_safety import is_public_http_url
+from url_safety import is_resolved_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +137,8 @@ class ReviewScraper:
         return f"review:{site}:{slug}:{digest}"
 
     async def _fetch_html(self, url: str) -> str:
-        if not is_public_http_url(url):
-            raise ReviewFetchError("Review target URL must be a public http or https URL")
+        if not await is_resolved_public_http_url(url):
+            raise ReviewFetchError("Review target URL must resolve to a public http or https URL")
         headers = {"User-Agent": self.user_agent}
         try:
             async with httpx.AsyncClient(timeout=25) as client:
