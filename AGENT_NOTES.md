@@ -545,3 +545,10 @@
 - Change: Stream embedding provider responses through a byte limit and let oversized responses fall through the existing sentence-transformers/BOW fallback path.
 - Verification: Added an embedder regression test proving oversized provider responses fall back to BOW; full gates are run after this note.
 - Impact: Reduces runtime memory risk from embedding providers without breaking the embedder's never-raise contract.
+
+## 2026-06-01 - LLM provider responses are bounded
+
+- Reason: OpenRouter/OpenAI-compatible chat responses were parsed with `response.json()` after an unbounded body read, even though malformed provider responses already degrade to `None`.
+- Change: Stream chat completion responses through a byte limit before JSON parsing and treat oversized responses as provider failures.
+- Verification: Added an OpenRouter regression test for oversized LLM responses returning `None`; full gates are run after this note.
+- Impact: Reduces LLM runtime memory risk without changing retry behavior for retryable HTTP/network failures.

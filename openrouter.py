@@ -45,6 +45,7 @@ LEGACY_SCHEMA_VERSION = "legacy_v2"
 DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
 CLUSTER_SCHEMA_VERSION = "cluster_v1"
 GTM_SCHEMA_VERSION = "gtm_v1"
+MAX_LLM_RESPONSE_BYTES = 5_000_000
 
 
 PRIMARY_PROMPT_TEMPLATE = """You are a B2B SaaS product manager analyzing Reddit pain signals.
@@ -242,6 +243,7 @@ class OpenRouterClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         primary_max_output_tokens: int | None = None,
+        max_response_bytes: int = MAX_LLM_RESPONSE_BYTES,
         app_url: str = "https://github.com/max-chad/pain_finder",
         app_name: str = "pain_finder",
     ):
@@ -259,6 +261,7 @@ class OpenRouterClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.primary_max_output_tokens = primary_max_output_tokens
+        self.max_response_bytes = max(1, max_response_bytes)
         self.app_url = app_url
         self.app_name = app_name
         self.base_url = self._resolve_base_url()
@@ -329,6 +332,30 @@ class OpenRouterClient:
         if self.reasoning_effort and self._is_openai_compatible():
             request_body["reasoning_effort"] = self.reasoning_effort
         return request_body
+
+    async def _post_json_with_response_limit(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        async with client.stream("POST", url, json=payload, headers=headers) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > self.max_response_bytes:
+                    raise RuntimeError(f"LLM response exceeded {self.max_response_bytes} bytes")
+            bounded_response = httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+                extensions=response.extensions,
+            )
+        bounded_response.raise_for_status()
+        return json.loads(bounded_response.content.decode(bounded_response.encoding or "utf-8", errors="replace"))
 
     @staticmethod
     def _extract_responses_text(final_response: Any, streamed_parts: list[str]) -> str:
@@ -646,9 +673,12 @@ class OpenRouterClient:
             async with httpx.AsyncClient(timeout=45) as client:
                 for attempt in range(1, _max_attempts + 1):
                     try:
-                        response = await client.post(self.base_url, json=request_body, headers=headers)
-                        response.raise_for_status()
-                        response_json = response.json()
+                        response_json = await self._post_json_with_response_limit(
+                            client=client,
+                            url=self.base_url,
+                            payload=request_body,
+                            headers=headers,
+                        )
                         content = response_json["choices"][0]["message"]["content"]
                         payload = self._safe_json_load(content)
                         is_valid_payload = validate_payload(payload) if validate_payload is not None else True
@@ -703,7 +733,7 @@ class OpenRouterClient:
                             await asyncio.sleep(delay)
                             continue
                         raise
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError) as e:
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, RuntimeError, json.JSONDecodeError) as e:
             logger.warning("OpenRouter request failed: %s", e)
             return None
 

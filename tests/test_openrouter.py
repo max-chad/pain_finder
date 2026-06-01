@@ -860,6 +860,17 @@ async def test_request_error_retries_then_returns_none(respx_mock):
     assert sleep_mock.await_count == len(RETRY_BACKOFF_SECONDS) - 1
 
 
+async def test_oversized_llm_response_returns_none(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=b"x" * 17)
+    )
+    client = OpenRouterClient(api_key="test-key", model="test-model", max_response_bytes=16)
+
+    result = await client.analyze_post(title="T", body="B")
+
+    assert result is None
+
+
 async def test_non_retryable_http_error_does_not_retry(respx_mock):
     """A 400 Bad Request is not in RETRYABLE_STATUS_CODES and must not be retried."""
     from unittest.mock import AsyncMock, patch
