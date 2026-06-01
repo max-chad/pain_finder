@@ -587,3 +587,10 @@
 - Change: Add Reddit/HN/review response byte caps and `DSPY_TIMEOUT_SECONDS` to `.env.example`.
 - Verification: Added a config test asserting the env example lists these operational limit knobs; full gates are run after this note.
 - Impact: Improves deployment DX and makes safety limits discoverable before first run.
+
+## 2026-06-01 - DSPy optional install requires its own audit
+
+- Reason: `python -m pip_audit -r requirements-dspy.txt` still reports `diskcache 5.6.3` / `CVE-2025-69872` through optional DSPy with no fixed version, while the base and ML requirement sets are clean.
+- Change: Document that operators should run the optional DSPy audit and keep DSPy disabled in production unless that audit is clean or the residual optional-dependency risk is accepted.
+- Verification: Added a README regression test for the optional DSPy audit warning; full gates are run after this note.
+- Impact: Prevents the optional parser path from looking production-safe just because the default dependency audit is clean.

@@ -420,3 +420,10 @@ def test_env_example_lists_operational_limit_knobs():
     ]:
         assert key in env_example
 
+
+def test_readme_requires_optional_dspy_dependency_audit():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "python -m pip_audit -r requirements-dspy.txt" in readme
+    assert "DSPY_REDDIT_PARSER_ENABLED=0" in readme
+

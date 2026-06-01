@@ -130,7 +130,10 @@ The DSPy dependency is intentionally optional and is not installed by the base r
 
 ```bash
 pip install -r requirements-dspy.txt
+python -m pip_audit -r requirements-dspy.txt
 ```
+
+Keep `DSPY_REDDIT_PARSER_ENABLED=0` for production unless the optional DSPy dependency audit is clean or the residual optional-dependency risk is explicitly accepted.
 
 Trend clustering:
 
