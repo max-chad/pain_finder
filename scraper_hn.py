@@ -1,4 +1,5 @@
 import logging
+import json
 from json import JSONDecodeError
 from datetime import UTC, datetime, timedelta
 
@@ -7,6 +8,7 @@ import httpx
 from scraper import Post
 
 logger = logging.getLogger(__name__)
+MAX_HN_RESPONSE_BYTES = 2_000_000
 
 
 def _clean_text(value: object) -> str:
@@ -20,8 +22,25 @@ def _clean_text(value: object) -> str:
 class HackerNewsScraper:
     BASE_URL = "https://hn.algolia.com/api/v1/search_by_date"
 
-    def __init__(self, user_agent: str = "pain_finder/1.0"):
+    def __init__(self, user_agent: str = "pain_finder/1.0", max_response_bytes: int = MAX_HN_RESPONSE_BYTES):
         self.user_agent = user_agent
+        self.max_response_bytes = max(1, max_response_bytes)
+
+    async def _request_json_with_response_limit(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        params: dict[str, object],
+        headers: dict[str, str],
+    ) -> object:
+        async with client.stream("GET", self.BASE_URL, params=params, headers=headers) as response:
+            response.raise_for_status()
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > self.max_response_bytes:
+                    raise ValueError(f"HN response exceeded {self.max_response_bytes} bytes")
+            return json.loads(bytes(body).decode(response.encoding or "utf-8", errors="replace"))
 
     async def fetch_posts(
         self,
@@ -52,9 +71,7 @@ class HackerNewsScraper:
                     "numericFilters": f"created_at_i>{since_ts}",
                 }
                 try:
-                    response = await client.get(self.BASE_URL, params=params, headers=headers)
-                    response.raise_for_status()
-                    payload = response.json()
+                    payload = await self._request_json_with_response_limit(client, params=params, headers=headers)
                     if not isinstance(payload, dict):
                         raise ValueError("HN response must be a JSON object")
                 except (httpx.HTTPError, JSONDecodeError, ValueError) as e:

@@ -587,6 +587,22 @@ async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_
     assert sleep_mock.await_args.args[0] == 0.2
 
 
+async def test_fetch_public_json_rejects_oversized_response(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, content=b"123456789")
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        max_response_bytes=8,
+    )
+
+    with pytest.raises(RuntimeError, match="Reddit response exceeded 8 bytes"):
+        await scraper._fetch_public_json("python", limit=10)
+
+
 async def test_request_json_with_retries_retries_request_error_then_succeeds(respx_mock):
     from unittest.mock import AsyncMock, patch
 
@@ -770,6 +786,23 @@ async def test_fetch_rss_keeps_successful_feed_when_peer_feed_has_bad_xml(respx_
     posts = await scraper._fetch_rss("python", limit=5)
 
     assert [post.post_id for post in posts] == ["reddit:rssnew"]
+
+
+async def test_fetch_rss_rejects_oversized_response(respx_mock):
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        return_value=httpx.Response(200, content=b"123456789")
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        max_response_bytes=8,
+    )
+
+    with pytest.raises(RuntimeError, match="Reddit response exceeded 8 bytes"):
+        await scraper._fetch_rss("python", limit=5)
 
 
 async def test_fetch_rss_keeps_feed_results_when_search_has_bad_xml(respx_mock):

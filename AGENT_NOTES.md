@@ -517,3 +517,10 @@
 - Change: Document the healthcheck diagnostic counter and the public-address resolution requirement for review targets.
 - Verification: Documentation-only change; full gates are run after this note to keep the checkpoint consistent.
 - Impact: Keeps deploy/runbook expectations aligned with the current hardening behavior.
+
+## 2026-06-01 - Reddit and HN response bodies are bounded
+
+- Reason: Reddit JSON/RSS and Hacker News JSON collectors read external response bodies without an application-level byte cap, allowing oversized responses to consume unbounded memory before parsing.
+- Change: Stream Reddit JSON/RSS and HN JSON responses through collector-level byte limits before decoding/parsing.
+- Verification: Added scraper tests for oversized Reddit JSON, oversized Reddit RSS, and oversized HN payload handling; full gates are run after this note.
+- Impact: Reduces data-collection DoS risk from external sources while keeping existing retry/fallback behavior.

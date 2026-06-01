@@ -1,5 +1,6 @@
 ﻿import asyncio
 import html
+import json
 import logging
 import math
 import random
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 ALLOWED_FEEDS = {"top", "new", "rising"}
 DEFAULT_FEEDS = ("top",)
+MAX_REDDIT_RESPONSE_BYTES = 5_000_000
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
@@ -52,6 +54,7 @@ class RedditScraper:
         retry_base_delay: float = 1.0,
         feed_mix: list[str] | tuple[str, ...] | None = None,
         search_queries: list[str] | tuple[str, ...] | None = None,
+        max_response_bytes: int = MAX_REDDIT_RESPONSE_BYTES,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -60,6 +63,7 @@ class RedditScraper:
         self.comment_fetch_concurrency = max(1, comment_fetch_concurrency)
         self.retry_max_attempts = max(1, retry_max_attempts)
         self.retry_base_delay = max(0.1, retry_base_delay)
+        self.max_response_bytes = max(1, max_response_bytes)
         self._use_praw = bool(client_id and client_secret)
         self.feed_mix = self._normalize_feeds(feed_mix)
         self.search_queries = self._normalize_search_queries(search_queries)
@@ -217,6 +221,34 @@ class RedditScraper:
             return int(raw_value or default)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _decode_response_content(response: httpx.Response) -> str:
+        return response.content.decode(response.encoding or "utf-8", errors="replace")
+
+    async def _request_with_response_limit(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 20,
+    ) -> httpx.Response:
+        async with client.stream(method, url, params=params, headers=headers, timeout=timeout) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > self.max_response_bytes:
+                    raise RuntimeError(f"Reddit response exceeded {self.max_response_bytes} bytes")
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+                extensions=response.extensions,
+            )
 
     @staticmethod
     def _listing_children(payload: Any, index: int = 1) -> list[Any]:
@@ -540,14 +572,16 @@ class RedditScraper:
             async def fetch_feed(feed: str, params: dict[str, Any]) -> str:
                 nonlocal feed_error
                 try:
-                    response = await client.get(
-                        self._rss_feed_url(subreddit, feed),
+                    response = await self._request_with_response_limit(
+                        client=client,
+                        method="GET",
+                        url=self._rss_feed_url(subreddit, feed),
                         params=self._rss_request_params(params),
                         headers=headers,
                         timeout=20,
                     )
                     response.raise_for_status()
-                    return response.text
+                    return self._decode_response_content(response)
                 except Exception as e:
                     feed_error = e
                     logger.warning("RSS feed failed for r/%s feed=%s: %s", subreddit, feed, e)
@@ -569,14 +603,16 @@ class RedditScraper:
 
             async def fetch_search(query: str, params: dict[str, Any]) -> str | None:
                 try:
-                    response = await client.get(
-                        f"https://old.reddit.com/r/{subreddit}/search.rss",
+                    response = await self._request_with_response_limit(
+                        client=client,
+                        method="GET",
+                        url=f"https://old.reddit.com/r/{subreddit}/search.rss",
                         params=self._rss_request_params(params),
                         headers=headers,
                         timeout=20,
                     )
                     response.raise_for_status()
-                    return response.text
+                    return self._decode_response_content(response)
                 except Exception as e:
                     logger.warning("RSS search failed for r/%s query %r: %s", subreddit, query, e)
                     return None
@@ -932,9 +968,16 @@ class RedditScraper:
 
         for attempt in range(1, self.retry_max_attempts + 1):
             try:
-                response = await client.get(url, params=params, headers=headers, timeout=20)
+                response = await self._request_with_response_limit(
+                    client=client,
+                    method="GET",
+                    url=url,
+                    params=params,
+                    headers=headers,
+                    timeout=20,
+                )
                 response.raise_for_status()
-                return response.json()
+                return json.loads(self._decode_response_content(response))
             except httpx.HTTPStatusError as e:
                 last_error = e
                 status_code = e.response.status_code if e.response else None
