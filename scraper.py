@@ -190,7 +190,7 @@ class RedditScraper:
             title=post_data.get("title", ""),
             body=post_data.get("selftext", ""),
             url=full_url,
-            score=int(post_data.get("score", 0) or 0),
+            score=RedditScraper._safe_int(post_data.get("score", 0)),
             permalink=permalink,
             discovery_query=discovery_query,
             source_created_at=source_created_at,
@@ -210,6 +210,13 @@ class RedditScraper:
             return None, None
         dt = datetime.fromtimestamp(ts, UTC)
         return dt.isoformat(), ts
+
+    @staticmethod
+    def _safe_int(raw_value: Any, default: int = 0) -> int:
+        try:
+            return int(raw_value or default)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def _parse_datetime_text(raw_text: str) -> tuple[str | None, int | None]:

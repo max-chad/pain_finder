@@ -440,3 +440,10 @@
 - Change: Pass runtime pricing into the DSPy parser, record DSPy usage from LM history when available, fall back to a token estimate when priced, and skip DSPy when budget enforcement is active but pricing is missing.
 - Verification: Added DSPy parser regression tests for usage recording, exact LM-history usage, and fail-closed missing-pricing behavior; full gates are run after this note.
 - Impact: Keeps the optional DSPy path aligned with the same budget-cap semantics as the primary OpenRouter client.
+
+## 2026-06-01 - Reddit score parsing is tolerant
+
+- Reason: malformed Reddit JSON `score` values could raise inside `_build_post()` and push a whole fetch path into fallback instead of preserving otherwise valid posts.
+- Change: Coerce invalid Reddit score values to `0`, matching the defensive behavior already used for Hacker News payloads.
+- Verification: Added a scraper regression test for malformed Reddit score values; full gates are run after this note.
+- Impact: Keeps ingestion resilient to external source field drift without dropping usable source posts.
