@@ -573,3 +573,10 @@
 - Change: Add `DSPY_TIMEOUT_SECONDS`, pass it into `dspy.LM`, and wrap the threaded DSPy call in `asyncio.wait_for`.
 - Verification: Added config/main/DSPy parser tests for timeout wiring and timeout fallback; full gates are run after this note.
 - Impact: Improves runtime reliability when DSPy is enabled without changing the default disabled state.
+
+## 2026-06-01 - Eval DSPy runtime uses the same timeout
+
+- Reason: the live eval classifier is a second composition root and must not diverge from `main.py` when DSPy is enabled.
+- Change: Pass `DSPY_TIMEOUT_SECONDS` into the eval runtime `DSPyRedditPainParser` builder.
+- Verification: Extended eval runtime builder tests to assert DSPy timeout wiring; full gates are run after this note.
+- Impact: Keeps live evaluation runs under the same bounded-DSPy contract as production runtime.

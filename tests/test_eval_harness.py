@@ -376,6 +376,7 @@ def test_build_runtime_classifier_wires_budget_guard(monkeypatch):
     assert isinstance(built, FakeClassifier)
     assert FakeOpenRouterClient.instances[0].kwargs["budget_guard"] is budget_guard
     assert FakeDSPyRedditPainParser.instances[0].kwargs["budget_guard"] is budget_guard
+    assert FakeDSPyRedditPainParser.instances[0].kwargs["timeout_seconds"] == config.DSPY_TIMEOUT_SECONDS
     assert built.kwargs["openrouter"] is FakeOpenRouterClient.instances[0]
     assert built.kwargs["dspy_parser"] is FakeDSPyRedditPainParser.instances[0]
 
