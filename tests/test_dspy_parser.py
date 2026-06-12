@@ -171,6 +171,20 @@ async def test_analyze_post_skips_dspy_when_budget_guard_has_no_pricing(monkeypa
     ensure_program.assert_not_called()
 
 
+def test_usage_from_object_tolerates_overflow_token_counts():
+    parser = DSPyRedditPainParser(
+        api_key="test-key",
+        provider="codex",
+        model="gpt-5.3-spark",
+        pricing_map={"gpt-5.3-spark": {"prompt_per_1k": 0.001, "completion_per_1k": 0.002}},
+    )
+
+    assert parser._usage_from_object({"prompt_tokens": float("inf"), "completion_tokens": 12}) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 12,
+    }
+
+
 @pytest.mark.asyncio
 async def test_analyze_post_times_out_slow_dspy_program(monkeypatch):
     parser = DSPyRedditPainParser(

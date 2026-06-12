@@ -157,7 +157,7 @@ class DSPyRedditPainParser:
     def _usage_token_count(value: Any) -> int:
         try:
             parsed = int(value)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return 0
         return max(0, parsed)
 

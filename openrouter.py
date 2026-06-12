@@ -395,7 +395,7 @@ class OpenRouterClient:
     def _usage_token_count(value: Any) -> int:
         try:
             parsed = int(value or 0)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return 0
         return max(0, parsed)
 

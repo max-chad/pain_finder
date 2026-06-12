@@ -748,3 +748,10 @@
 - Change: Require finite float values in shared numeric env parsing and model-pricing normalization.
 - Verification: Added config regressions for `nan`/`inf` env values and pricing JSON values; full gates are run after this note.
 - Impact: Fails deploy/startup fast on invalid numeric configuration instead of running with non-comparable budget, cost, and threshold values.
+
+## 2026-06-12 - Usage token overflow cannot drop LLM results
+
+- Reason: Provider usage metadata can decode to non-finite numbers such as `inf`; `int(inf)` raised `OverflowError`, so malformed telemetry could drop an otherwise valid LLM or DSPy result.
+- Change: Treat overflow token counts as malformed usage and coerce them to zero in the OpenRouter/Codex client and optional DSPy parser.
+- Verification: Added regression tests for OpenRouter chat usage, Codex Responses usage conversion, and DSPy usage history parsing with overflow values; full gates are run after this note.
+- Impact: Preserves successful classification results and budget-recording attempts when provider telemetry is bad, without inventing spend from untrusted token counts.

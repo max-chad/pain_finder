@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import json
 import httpx
 import pytest
 import respx
@@ -806,6 +807,34 @@ async def test_usage_tracking_tolerates_malformed_token_counts(respx_mock):
     assert call_kwargs["completion_tokens"] == 0
 
 
+async def test_usage_tracking_tolerates_overflow_token_counts(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            content=json.dumps({
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, "niche_category": "DevTools", "competitor_tags": [], "summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": float("inf"), "completion_tokens": 50},
+            }).encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
+
+    assert result is not None
+    call_kwargs = budget.record_usage.await_args.kwargs
+    assert call_kwargs["prompt_tokens"] == 0
+    assert call_kwargs["completion_tokens"] == 50
+
+
 async def test_usage_tracking_records_usage_before_provider_payload_shape_failure(respx_mock):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
         return_value=httpx.Response(
@@ -891,6 +920,15 @@ def test_responses_usage_to_dict_tolerates_malformed_token_counts():
     assert OpenRouterClient._responses_usage_to_dict(usage) == {
         "prompt_tokens": 0,
         "completion_tokens": 0,
+    }
+
+
+def test_responses_usage_to_dict_tolerates_overflow_token_counts():
+    usage = SimpleNamespace(input_tokens=float("inf"), output_tokens=25)
+
+    assert OpenRouterClient._responses_usage_to_dict(usage) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 25,
     }
 
 
