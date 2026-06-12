@@ -243,6 +243,19 @@ async def test_triage_and_deep_dive_helpers(db):
     assert row["deep_dive_status"] == "completed"
 
 
+async def test_save_deep_dive_rejects_non_standard_json_payload(db):
+    with pytest.raises(ValueError, match="deep-dive payload must be valid JSON"):
+        await db.save_deep_dive(
+            post_id="deep_bad",
+            subreddit="python",
+            source="manual",
+            status="completed",
+            payload={"confidence": float("nan")},
+        )
+
+    assert await db.get_deep_dive("deep_bad") is None
+
+
 async def test_list_export_rows_filters_discarded_and_wtp(db):
     await db.insert_pain_point(
         subreddit="python",
@@ -933,6 +946,18 @@ async def test_llm_response_cache_roundtrip(db):
     assert cached == payload
 
 
+async def test_llm_response_cache_rejects_non_standard_json(db):
+    with pytest.raises(ValueError, match="cached LLM payload must be valid JSON"):
+        await db.set_cached_llm_payload(
+            cache_key="classify_primary:test-model:bad",
+            model="test-model",
+            operation="classify_primary",
+            payload={"score": float("nan")},
+        )
+
+    assert await db.get_cached_llm_payload("classify_primary:test-model:bad") is None
+
+
 async def test_usage_ledger_and_runtime_flags(db):
     await db.record_llm_usage(
         model="model-a",
@@ -1031,6 +1056,17 @@ async def test_gtm_assets_persist(db):
     latest = await db.get_latest_gtm_asset("reddit:g1")
     assert latest is not None
     assert latest["model"] == "model-g"
+
+
+async def test_gtm_assets_reject_non_standard_json_payload(db):
+    with pytest.raises(ValueError, match="GTM payload must be valid JSON"):
+        await db.save_gtm_asset(
+            post_id="reddit:g_bad",
+            model="model-g",
+            payload={"name_options": ["A"], "score": float("inf")},
+        )
+
+    assert await db.get_latest_gtm_asset("reddit:g_bad") is None
 
 
 async def test_insert_pain_point_propagates_unexpected_db_errors(db):

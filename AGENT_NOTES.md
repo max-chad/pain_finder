@@ -839,3 +839,10 @@
 - Change: Normalize legacy callback subreddits and require `db.get_pain_point(post_id)` to exist before invoking the injected deep-dive function from callbacks.
 - Verification: Added a bot callback regression proving a missing post answers `Post not found` and does not call `deep_dive_fn`; full gates are run after this note.
 - Impact: Prevents stale/corrupt inline buttons from triggering avoidable external fetches, LLM spend, and orphaned deep-dive rows.
+
+## 2026-06-12 - Model payload JSON rejects NaN and Infinity
+
+- Reason: Python's default `json.dumps()` writes non-standard `NaN` and `Infinity` tokens, so malformed model payloads could persist invalid JSON into deep-dive rows, the LLM cache, or GTM assets.
+- Change: Add a strict JSON serializer for DB payload boundaries and use it for deep-dive payloads, cached LLM payloads, and GTM asset payloads.
+- Verification: Added DB regressions for non-finite deep-dive, cached payload, and GTM asset payload values; full gates are run after this note.
+- Impact: Keeps persisted model artifacts compatible with standard JSON tooling and prevents corrupted cache/asset rows from becoming operator-facing data debt.

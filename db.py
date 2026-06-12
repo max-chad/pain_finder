@@ -463,6 +463,13 @@ class Database:
             raise ValueError(f"{field_name} must be non-negative")
         return parsed
 
+    @staticmethod
+    def _json_dumps_strict(value: Any, field_name: str) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be valid JSON") from exc
+
     async def _replace_competitor_tags(self, post_id: str, tags: list[str]) -> None:
         await self._conn.execute("DELETE FROM pain_point_competitors WHERE post_id = ?", (post_id,))
         for tag in tags:
@@ -858,7 +865,7 @@ class Database:
     ) -> None:
         if status not in DEEP_DIVE_STATUSES:
             raise ValueError(f"Unsupported deep dive status: {status}")
-        payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else None
+        payload_json = self._json_dumps_strict(payload, "deep-dive payload") if payload is not None else None
         await self._conn.execute(
             """
             INSERT INTO deep_dives (post_id, subreddit, source, status, payload_json, error)
@@ -1275,7 +1282,7 @@ class Database:
         operation: str,
         payload: dict[str, Any],
     ) -> None:
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        payload_json = self._json_dumps_strict(payload, "cached LLM payload")
         await self._conn.execute(
             """
             INSERT INTO llm_response_cache (cache_key, model, operation, payload_json)
@@ -1345,9 +1352,10 @@ class Database:
         return True
 
     async def save_gtm_asset(self, *, post_id: str, model: str, payload: dict[str, Any]) -> int:
+        payload_json = self._json_dumps_strict(payload, "GTM payload")
         async with self._conn.execute(
             "INSERT INTO gtm_assets (post_id, model, payload_json) VALUES (?, ?, ?)",
-            (post_id, model, json.dumps(payload, ensure_ascii=False)),
+            (post_id, model, payload_json),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
