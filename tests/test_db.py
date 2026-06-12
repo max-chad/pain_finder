@@ -318,6 +318,66 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
     assert "r4" not in ids
 
 
+async def test_list_export_rows_prioritizes_opportunity_score_after_favorites(db):
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="capped_noise",
+        url="",
+        title="Founder announcement without buyer evidence",
+        body="",
+        category="complaint",
+        summary="weak evidence",
+        severity="high",
+        willingness_to_pay=10,
+        pain_level=10,
+        is_monetizable=True,
+        opportunity_score=35.0,
+        source_created_ts=1776775200,
+        opportunity_bucket="current_opportunity",
+    )
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="grounded_buyer_pain",
+        url="",
+        title="Buyer needs audit exports",
+        body="",
+        category="complaint",
+        summary="strong evidence",
+        severity="high",
+        willingness_to_pay=8,
+        pain_level=8,
+        is_monetizable=True,
+        opportunity_score=82.0,
+        source_created_ts=1776775201,
+        opportunity_bucket="current_opportunity",
+    )
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="manual_favorite",
+        url="",
+        title="Manually promoted lead",
+        body="",
+        category="complaint",
+        summary="operator override",
+        severity="medium",
+        willingness_to_pay=1,
+        pain_level=1,
+        is_monetizable=False,
+        opportunity_score=5.0,
+        triage_status="favorite",
+        source_created_ts=1776775202,
+        opportunity_bucket="current_opportunity",
+    )
+
+    rows = await db.list_export_rows(subreddit="python", min_wtp=8, include_favorites=True)
+
+    assert [row["post_id"] for row in rows] == [
+        "manual_favorite",
+        "grounded_buyer_pain",
+        "capped_noise",
+    ]
+
+
 async def test_get_recent_pain_points_filters_by_opportunity_bucket_and_source_age(db):
     now = datetime.now(UTC)
     fresh_ts = int((now - timedelta(days=5)).timestamp())
@@ -655,6 +715,39 @@ async def test_macro_tables_persist_and_query(db):
     candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
     ids = {row["post_id"] for row in candidates}
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
+
+
+async def test_get_macro_candidates_prioritizes_opportunity_score(db):
+    now_ts = int(datetime.now(UTC).timestamp())
+    for post_id, wtp, pain, score in [
+        ("macro_capped_noise", 10, 10, 35.0),
+        ("macro_grounded_signal", 8, 8, 84.0),
+        ("macro_mid_signal", 9, 9, 62.0),
+    ]:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url="",
+            title=post_id,
+            body="",
+            category="complaint",
+            summary=post_id,
+            severity="high",
+            triage_status="new",
+            willingness_to_pay=wtp,
+            pain_level=pain,
+            is_monetizable=True,
+            opportunity_score=score,
+            source_created_ts=now_ts,
+        )
+
+    candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
+
+    assert [row["post_id"] for row in candidates] == [
+        "macro_grounded_signal",
+        "macro_mid_signal",
+        "macro_capped_noise",
+    ]
 
 
 async def test_get_latest_canonical_clusters_filters_before_limit(db):

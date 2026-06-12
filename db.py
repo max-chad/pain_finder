@@ -859,7 +859,10 @@ class Database:
             params.append(min_wtp)
 
         query = "SELECT * FROM pain_points WHERE " + " AND ".join(conditions)  # nosec B608
-        query += " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, willingness_to_pay DESC, pain_level DESC, created_at DESC"  # nosec B608
+        query += (
+            " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, "
+            "opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, created_at DESC"
+        )  # nosec B608
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -1083,7 +1086,7 @@ class Database:
             WHERE datetime(created_at) >= datetime('now', ?)
               AND triage_status NOT IN ('discarded', 'merged')
               AND (triage_status = 'favorite' OR willingness_to_pay >= ?)
-            ORDER BY willingness_to_pay DESC, pain_level DESC, created_at DESC
+            ORDER BY opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, created_at DESC
             """,
             (f"-{window_days} days", min_wtp),
         ) as cursor:

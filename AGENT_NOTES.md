@@ -622,3 +622,10 @@
 - Change: Add promotion columns to exports and render promotion rejection reasons in digest documents.
 - Verification: Added export and digest tests for promotion gate visibility; full gates are run after this note.
 - Impact: Makes false-positive filtering visible in operator workflows instead of hiding it in raw JSON payloads.
+
+## 2026-06-12 - Export ordering uses opportunity score
+
+- Reason: CSV/Sheets export ordering still prioritized raw willingness-to-pay and pain level, so capped weak-evidence leads could stay above stronger grounded leads.
+- Change: Order export rows by manual favorites first, then opportunity score, then legacy WTP/pain tie-breakers; order macro trend candidates by opportunity score before raw WTP/pain.
+- Verification: Added DB regression tests where capped WTP=10 noisy leads must sort below grounded high-score leads in export rows and macro candidates.
+- Impact: Makes promotion score caps affect the operator's first review surface and macro clustering seed order instead of only report JSON and digest ranking.
