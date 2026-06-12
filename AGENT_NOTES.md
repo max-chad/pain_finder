@@ -636,3 +636,10 @@
 - Change: Skip only LLM-spending scheduler jobs (subreddit monitor, macro trend, HN, reviews) while still scheduling daily digest when configured.
 - Verification: Added a scheduler regression test that keeps `daily_digest` loaded under `llm_paused=True` while excluding LLM ingest jobs.
 - Impact: Preserves reporting/observability during budget pauses instead of making the system go silent.
+
+## 2026-06-12 - RSS fallback retries rate limits
+
+- Reason: Live source smoke showed Reddit public/RSS degradation with `429 Too Many Requests`; JSON requests retried retryable failures, but RSS fallback feed/search/comment requests failed after a single rate-limit response.
+- Change: Add a shared response retry wrapper for size-limited GET requests, route RSS feed/search fallback through it with bounded fallback attempts, and keep optional comment RSS fallback on an even shorter retry budget.
+- Verification: Added RSS regression tests where old.reddit returns `429` with `Retry-After` before a successful feed response, where fallback feed retries are bounded, and where optional comment RSS retries are bounded.
+- Impact: Makes the no-OAuth Reddit fallback more resilient during transient rate limits without turning optional comment hydration into a long-tail collection bottleneck.

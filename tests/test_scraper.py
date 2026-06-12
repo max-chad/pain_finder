@@ -603,6 +603,69 @@ async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_
     assert sleep_mock.await_args.args[0] == 0.2
 
 
+async def test_fetch_rss_retries_transient_error_with_retry_after(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    xml_text = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>tag:reddit.com,2005:comments/rssretry</id>
+        <title>RSS retry pain</title>
+        <published>2026-04-19T08:15:00+00:00</published>
+        <summary>Manual retry finally works.</summary>
+        <link href="https://old.reddit.com/r/python/comments/rssretry/rss_retry_pain/" />
+      </entry>
+    </feed>
+    """
+    route = respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "0.2"}),
+            httpx.Response(200, text=xml_text),
+        ]
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        retry_max_attempts=3,
+        retry_base_delay=1.0,
+    )
+
+    with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        posts = await scraper._fetch_rss("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:rssretry"]
+    assert route.call_count == 2
+    sleep_mock.assert_awaited_once()
+    assert sleep_mock.await_args.args[0] == 0.2
+
+
+async def test_fetch_rss_uses_bounded_retries_for_fallback_feeds(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0.2"})
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        retry_max_attempts=5,
+        retry_base_delay=1.0,
+    )
+
+    with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        with pytest.raises(httpx.HTTPStatusError):
+            await scraper._fetch_rss("python", limit=10)
+
+    assert route.call_count == 3
+    assert sleep_mock.await_count == 2
+
+
 async def test_fetch_public_json_rejects_oversized_response(respx_mock):
     respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
         return_value=httpx.Response(200, content=b"123456789")
@@ -1000,6 +1063,30 @@ async def test_fetch_top_comments_json_falls_back_to_rss_when_json_is_blocked(re
         )
 
     assert comments == ["same issue every week", "we built our own workaround"]
+
+
+async def test_fetch_comments_rss_uses_bounded_retries_for_optional_comments(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.get("https://old.reddit.com/comments/abc1/.rss").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0.2"})
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        retry_max_attempts=5,
+        retry_base_delay=1.0,
+    )
+
+    async with httpx.AsyncClient() as client:
+        with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            comments = await scraper._fetch_comments_rss(client=client, post_id="abc1", limit=2)
+
+    assert comments == []
+    assert route.call_count == 2
+    sleep_mock.assert_awaited_once()
+    assert sleep_mock.await_args.args[0] == 0.2
 
 
 async def test_fetch_full_thread_json_skips_malformed_comment_nodes(respx_mock):

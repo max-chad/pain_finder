@@ -582,13 +582,13 @@ class RedditScraper:
             async def fetch_feed(feed: str, params: dict[str, Any]) -> str:
                 nonlocal feed_error
                 try:
-                    response = await self._request_with_response_limit(
+                    response = await self._request_response_with_retries(
                         client=client,
-                        method="GET",
                         url=self._rss_feed_url(subreddit, feed),
                         params=self._rss_request_params(params),
                         headers=headers,
                         timeout=20,
+                        max_attempts=min(3, self.retry_max_attempts),
                     )
                     response.raise_for_status()
                     return self._decode_response_content(response)
@@ -613,13 +613,13 @@ class RedditScraper:
 
             async def fetch_search(query: str, params: dict[str, Any]) -> str | None:
                 try:
-                    response = await self._request_with_response_limit(
+                    response = await self._request_response_with_retries(
                         client=client,
-                        method="GET",
                         url=f"https://old.reddit.com/r/{subreddit}/search.rss",
                         params=self._rss_request_params(params),
                         headers=headers,
                         timeout=20,
+                        max_attempts=min(3, self.retry_max_attempts),
                     )
                     response.raise_for_status()
                     return self._decode_response_content(response)
@@ -878,13 +878,13 @@ class RedditScraper:
     ) -> list[str]:
         raw_post_id = self._raw_post_id(post_id)
         try:
-            response = await self._request_with_response_limit(
+            response = await self._request_response_with_retries(
                 client=client,
-                method="GET",
                 url=f"https://old.reddit.com/comments/{raw_post_id}/.rss",
                 params={"limit": limit, "sort": "top"},
                 headers={"User-Agent": self.user_agent},
                 timeout=20,
+                max_attempts=min(2, self.retry_max_attempts),
             )
             response.raise_for_status()
             payload = self._decode_response_content(response)
@@ -1028,9 +1028,29 @@ class RedditScraper:
         params: dict[str, Any],
         headers: dict[str, str],
     ) -> Any:
-        last_error: Exception | None = None
+        response = await self._request_response_with_retries(
+            client=client,
+            url=url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        return json.loads(self._decode_response_content(response))
 
-        for attempt in range(1, self.retry_max_attempts + 1):
+    async def _request_response_with_retries(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        url: str,
+        params: dict[str, Any],
+        headers: dict[str, str],
+        timeout: float = 20,
+        max_attempts: int | None = None,
+    ) -> httpx.Response:
+        last_error: Exception | None = None
+        attempts = max(1, max_attempts if max_attempts is not None else self.retry_max_attempts)
+
+        for attempt in range(1, attempts + 1):
             try:
                 response = await self._request_with_response_limit(
                     client=client,
@@ -1038,14 +1058,14 @@ class RedditScraper:
                     url=url,
                     params=params,
                     headers=headers,
-                    timeout=20,
+                    timeout=timeout,
                 )
                 response.raise_for_status()
-                return json.loads(self._decode_response_content(response))
+                return response
             except httpx.HTTPStatusError as e:
                 last_error = e
                 status_code = e.response.status_code if e.response else None
-                if status_code not in RETRYABLE_STATUS_CODES or attempt >= self.retry_max_attempts:
+                if status_code not in RETRYABLE_STATUS_CODES or attempt >= attempts:
                     raise
 
                 retry_after = e.response.headers.get("Retry-After") if e.response else None
@@ -1054,20 +1074,20 @@ class RedditScraper:
                     "Reddit HTTP %s attempt %d/%d for %s, retrying in %.2fs",
                     status_code,
                     attempt,
-                    self.retry_max_attempts,
+                    attempts,
                     url,
                     delay,
                 )
                 await asyncio.sleep(delay)
             except httpx.RequestError as e:
                 last_error = e
-                if attempt >= self.retry_max_attempts:
+                if attempt >= attempts:
                     raise
                 delay = self._compute_backoff_delay(attempt)
                 logger.warning(
                     "Reddit request error attempt %d/%d for %s: %s; retrying in %.2fs",
                     attempt,
-                    self.retry_max_attempts,
+                    attempts,
                     url,
                     e,
                     delay,
