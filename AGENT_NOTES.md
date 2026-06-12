@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Budget pause only gates real LLM classification work
+
+- Reason: `AnalysisPipeline._analyze_posts()` checked budget/pause state before filtering already-seen posts or empty batches, so a run with no fresh LLM candidates could be blocked as if it would spend tokens.
+- Change: Move the budget/pause check to immediately before `classify_batch()` and skip classification entirely when no fresh candidates remain after existing-row filtering and prescreening.
+- Verification: Added pipeline regressions for empty and existing-only paused batches, while preserving pause enforcement for fresh candidates.
+- Impact: Keeps budget caps focused on spend-producing LLM work and preserves cheap ingestion diagnostics/reporting for duplicate or empty source runs.
+
 ## 2026-05-24 - Portable local baseline
 
 - Reason: `pytest -q` failed locally on Windows even though the scraper implementation already used `asyncio.gather`; the concurrency tests measured wall-clock time including `httpx.AsyncClient` startup overhead instead of proving task overlap.

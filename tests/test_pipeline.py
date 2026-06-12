@@ -369,6 +369,52 @@ async def test_analyze_subreddit_skips_already_persisted_posts_before_classifica
     assert latest_run["screen_capped_count"] == 0
 
 
+async def test_analyze_subreddit_existing_only_batch_skips_llm_pause_check(db, tmp_path):
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="existing1",
+        url="https://reddit.com/existing1",
+        title="Already processed",
+        body="still broken",
+        category="complaint",
+        summary="existing",
+        severity="medium",
+    )
+    await db.pause_llm(reason="cap hit")
+
+    existing_post = Post(
+        post_id="existing1",
+        subreddit="python",
+        title="Already processed",
+        body="still broken",
+        url="https://reddit.com/existing1",
+        score=7,
+    )
+    scraper = AsyncMock()
+    scraper.fetch_posts.return_value = [existing_post]
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[]),
+        openrouter=None,
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        budget_guard=None,
+    )
+
+    run = await pipeline.analyze_subreddit("python", limit=10)
+
+    assert run.post_count == 1
+    assert run.pain_count == 0
+    classifier.classify_batch.assert_not_awaited()
+    latest_run = await db.get_latest_analysis_run("python")
+    assert latest_run is not None
+    assert latest_run["skipped_existing_count"] == 1
+
+
 async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_path):
     posts = [
         Post(
@@ -685,17 +731,47 @@ async def test_analyze_external_posts_records_source(db, tmp_path):
     assert stored["source"] == "hn"
 
 
-async def test_analyze_posts_respects_llm_pause_without_budget_guard(db, tmp_path):
+async def test_analyze_posts_allows_empty_batch_during_llm_pause(db, tmp_path):
     await db.pause_llm(reason="cap hit")
+    classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None)
     pipeline = AnalysisPipeline(
         scraper=AsyncMock(),
-        classifier=SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None),
+        classifier=classifier,
         db=db,
         reports_dir=str(tmp_path / "reports"),
         budget_guard=None,
     )
+
+    run = await pipeline.analyze_external_posts(posts=[], source="hn", run_scope="hn")
+
+    assert run.post_count == 0
+    assert run.pain_count == 0
+    classifier.classify_batch.assert_not_awaited()
+
+
+async def test_analyze_posts_respects_llm_pause_for_fresh_candidates_without_budget_guard(db, tmp_path):
+    await db.pause_llm(reason="cap hit")
+    post = Post(
+        post_id="hn:fresh",
+        subreddit="hackernews",
+        title="Manual billing reconciliation is painful",
+        body="We still spend hours fixing invoices by hand.",
+        url="https://news.ycombinator.com/item?id=1",
+        score=5,
+        source="hn",
+    )
+    classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None)
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        budget_guard=None,
+    )
+
     with pytest.raises(RuntimeError):
-        await pipeline.analyze_external_posts(posts=[], source="hn", run_scope="hn")
+        await pipeline.analyze_external_posts(posts=[post], source="hn", run_scope="hn")
+    classifier.classify_batch.assert_not_awaited()
 
 
 async def test_cross_source_dedup_skips_second_insert(db, tmp_path):

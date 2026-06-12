@@ -121,11 +121,6 @@ class AnalysisPipeline:
         source: str,
         run_label: str,
     ) -> AnalysisRun:
-        if self.budget_guard is not None:
-            await self.budget_guard.ensure_can_spend("pipeline_analyze")
-        elif await self.db.is_llm_paused():
-            raise RuntimeError("LLM operations are paused. Use /resume to override.")
-
         start = perf_counter()
         existing_ids = await self.db.get_pain_points_by_ids([post.post_id for post in posts])
         fresh_posts = [post for post in posts if post.post_id not in existing_ids]
@@ -147,7 +142,14 @@ class AnalysisPipeline:
             screen_capped_count = int(screen_stats.get("screen_capped_count", 0))
         llm_capped_count = screen_capped_count
 
-        classified_signals = await self.classifier.classify_batch(fresh_posts)
+        if fresh_posts:
+            if self.budget_guard is not None:
+                await self.budget_guard.ensure_can_spend("pipeline_analyze")
+            elif await self.db.is_llm_paused():
+                raise RuntimeError("LLM operations are paused. Use /resume to override.")
+            classified_signals = await self.classifier.classify_batch(fresh_posts)
+        else:
+            classified_signals = []
         persisted_signals: list[PainSignal] = []
         classified_count = len(classified_signals)
         inserted_count = 0
