@@ -902,3 +902,17 @@
 - Change: Ignore `.env.*` in both git and Docker build contexts while explicitly keeping `.env.example` available as the documented template, and rewrite `.dockerignore` without BOM.
 - Verification: Added a config/doc regression that checks both ignore files contain the deny pattern and the `.env.example` allow rule; verified `git check-ignore` for env variants, verified `.dockerignore` bytes start with `.git`, and full gates are run after this note.
 - Impact: Reduces accidental credential leakage through source control and container images without changing runtime env loading.
+
+## 2026-06-12 - CSV export escapes every spreadsheet cell
+
+- Reason: CSV export sanitized formula-like text fields but wrote numeric-looking fields such as `pain_level`, `willingness_to_pay`, and `opportunity_score` directly; a corrupt SQLite row or imported value could therefore become spreadsheet formula execution when the CSV is opened.
+- Change: Apply the existing spreadsheet-cell guard to every CSV column at the writer boundary while preserving normal non-string numeric values.
+- Verification: Extended the CSV formula-injection regression to cover numeric export columns; full gates are run after this note.
+- Impact: Closes a remaining spreadsheet injection path in operator-facing exports without changing Google Sheets export behavior.
+
+## 2026-06-12 - Daily digest tolerates malformed row values
+
+- Reason: Daily digest rendering trusted DB numeric and text field shapes; one malformed `willingness_to_pay`, `opportunity_score`, cluster count, or non-string title/source field could crash the entire document build and block the operator digest.
+- Change: Add local safe text/int/float coercion for digest filtering, sorting, cluster rendering, and row rendering; non-finite or malformed numeric values degrade to zero.
+- Verification: Added a digest regression with malformed row and cluster values proving the DOCX still renders with defaulted metrics; full gates are run after this note.
+- Impact: Keeps daily digest delivery available under partial data corruption or schema drift, preserving visibility into the rest of the collected data.

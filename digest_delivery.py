@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
@@ -9,6 +10,28 @@ from typing import Any
 
 from docx import Document as create_document
 from docx.document import Document as DocxDocument
+
+
+def _safe_text(value: Any, *, default: str = "") -> str:
+    text = str(default if value is None else value).strip()
+    return text or default
+
+
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(numeric):
+        return default
+    return numeric
 
 
 @dataclass
@@ -117,7 +140,7 @@ class DailyDigestDocumentService:
         triage_status = str(row.get("triage_status") or "new").strip().lower()
         if triage_status == "favorite":
             return True
-        return int(row.get("willingness_to_pay") or 0) >= min_wtp
+        return _safe_int(row.get("willingness_to_pay")) >= min_wtp
 
     @staticmethod
     def _group_label(row: dict[str, Any], *, group_by: str) -> str:
@@ -144,11 +167,11 @@ class DailyDigestDocumentService:
 
     def _render_cluster_section(self, document: DocxDocument, clusters: list[dict[str, Any]]) -> None:
         for cluster in clusters:
-            label = (str(cluster.get("label") or "Recurring pain cluster").strip() or "Recurring pain cluster")
-            summary = (str(cluster.get("summary") or "No summary available.").strip() or "No summary available.")
-            avg_score = float(cluster.get("avg_opportunity_score") or 0.0)
-            fresh_post_count = int(cluster.get("fresh_post_count") or 0)
-            evergreen_post_count = int(cluster.get("evergreen_post_count") or 0)
+            label = _safe_text(cluster.get("label"), default="Recurring pain cluster")
+            summary = _safe_text(cluster.get("summary"), default="No summary available.")
+            avg_score = _safe_float(cluster.get("avg_opportunity_score"))
+            fresh_post_count = _safe_int(cluster.get("fresh_post_count"))
+            evergreen_post_count = _safe_int(cluster.get("evergreen_post_count"))
             incumbents = cluster.get("incumbents") or []
             incumbents_text = ", ".join(str(item) for item in incumbents[:4]) or "none"
 
@@ -170,16 +193,16 @@ class DailyDigestDocumentService:
         for label, items in ordered_groups:
             document.add_heading(f"{label} ({len(items)})", level=2)
             for row in items[:max_items_per_group]:
-                title = (row.get("title") or "Untitled").strip() or "Untitled"
-                summary = (row.get("summary") or "No summary available.").strip() or "No summary available."
-                source = (row.get("source") or "unknown").strip() or "unknown"
-                subreddit = (row.get("subreddit") or "n/a").strip() or "n/a"
-                url = (row.get("url") or "").strip()
-                wtp = int(row.get("willingness_to_pay") or 0)
-                pain_level = int(row.get("pain_level") or 0)
+                title = _safe_text(row.get("title"), default="Untitled")
+                summary = _safe_text(row.get("summary"), default="No summary available.")
+                source = _safe_text(row.get("source"), default="unknown")
+                subreddit = _safe_text(row.get("subreddit"), default="n/a")
+                url = _safe_text(row.get("url"))
+                wtp = _safe_int(row.get("willingness_to_pay"))
+                pain_level = _safe_int(row.get("pain_level"))
                 opportunity_score = self._row_opportunity_score(row)
                 competitors = ", ".join(self._competitor_tags(row)) or "none"
-                deep_dive_summary = (row.get("deep_dive_summary") or "").strip()
+                deep_dive_summary = _safe_text(row.get("deep_dive_summary"))
                 promotion_rejection_reason = self._promotion_rejection_reason(row)
 
                 header = document.add_paragraph()
@@ -209,9 +232,9 @@ class DailyDigestDocumentService:
             rows.sort(
                 key=lambda row: (
                     cls._row_opportunity_score(row),
-                    int(row.get("source_created_ts") or 0),
-                    int(row.get("willingness_to_pay") or 0),
-                    int(row.get("pain_level") or 0),
+                    _safe_int(row.get("source_created_ts")),
+                    _safe_int(row.get("willingness_to_pay")),
+                    _safe_int(row.get("pain_level")),
                 ),
                 reverse=True,
             )
@@ -220,12 +243,15 @@ class DailyDigestDocumentService:
     @staticmethod
     def _row_opportunity_score(row: dict[str, Any]) -> float:
         raw = row.get("opportunity_score")
-        try:
-            if raw is not None:
-                return float(raw)
-        except (TypeError, ValueError):
-            pass
-        return float(int(row.get("willingness_to_pay") or 0))
+        if raw is not None:
+            try:
+                score = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                if math.isfinite(score):
+                    return score
+        return float(_safe_int(row.get("willingness_to_pay")))
 
     @staticmethod
     def _competitor_tags(row: dict[str, Any]) -> list[str]:

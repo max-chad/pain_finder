@@ -134,7 +134,7 @@ class ExportService:
                 writer = csv.DictWriter(handle, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
-                    writer.writerow({
+                    export_row = {
                         "created_at": _safe_spreadsheet_cell(row.get("created_at", "")),
                         "subreddit": _safe_spreadsheet_cell(row.get("subreddit", "")),
                         "source": _safe_spreadsheet_cell(row.get("source", "")),
@@ -156,7 +156,8 @@ class ExportService:
                         "deep_dive_status": _safe_spreadsheet_cell(row.get("deep_dive_status", "not_requested")),
                         "deep_dive_summary": _safe_spreadsheet_cell(row.get("deep_dive_summary", "")),
                         "url": _safe_spreadsheet_cell(row.get("url", "")),
-                    })
+                    }
+                    writer.writerow({key: _safe_spreadsheet_cell(value) for key, value in export_row.items()})
             os.replace(tmp_path, csv_path)
         except Exception:
             if os.path.exists(tmp_path):

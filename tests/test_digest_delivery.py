@@ -186,3 +186,46 @@ async def test_daily_digest_document_renders_promotion_rejection_reason(tmp_path
         xml = archive.read("word/document.xml").decode("utf-8")
     assert "Promotion blocked:" in xml
     assert "insufficient_first_hand_evidence" in xml
+
+
+async def test_daily_digest_document_tolerates_malformed_row_values(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "bad-values",
+            "title": 12345,
+            "summary": None,
+            "pain_level": "not-an-int",
+            "willingness_to_pay": "not-an-int",
+            "opportunity_score": "NaN",
+            "source_created_ts": "not-a-timestamp",
+            "niche_category": "Ops",
+            "competitor_tags": '["excel"]',
+            "source": 99,
+            "url": None,
+            "subreddit": None,
+            "deep_dive_summary": None,
+            "opportunity_bucket": "current_opportunity",
+        }
+    ]
+    db.get_latest_canonical_clusters.return_value = [
+        {
+            "label": None,
+            "summary": None,
+            "fresh_post_count": "bad",
+            "evergreen_post_count": "bad",
+            "avg_opportunity_score": "Infinity",
+            "incumbents": ["excel"],
+        }
+    ]
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    assert result.total_items == 1
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert "12345" in xml
+    assert "No summary available." in xml
+    assert "Opp 0.0 | WTP 0/10 | Pain 0/10" in xml
+    assert "Avg opp 0.0 | Fresh 0 | Evergreen 0" in xml

