@@ -38,6 +38,30 @@ def _safe_spreadsheet_cell(value: Any) -> Any:
     return value
 
 
+def _analysis_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("analysis_payload_json") or row.get("analysis_payload") or {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _promotion_value(row: dict[str, Any], key: str) -> Any:
+    if key in row and row.get(key) is not None:
+        return row.get(key)
+    return _analysis_payload(row).get(key)
+
+
+def _promotion_text(row: dict[str, Any], key: str) -> str:
+    value = _promotion_value(row, key)
+    return "" if value is None else str(value)
+
+
 def _safe_worksheet_name(prefix: str, scope: str | None) -> str:
     safe_prefix = _safe_artifact_stem(prefix, default="pain_finder")
     safe_scope = _safe_artifact_stem(scope or "all", default="all")
@@ -96,6 +120,9 @@ class ExportService:
             "competitor_tags",
             "category",
             "severity",
+            "opportunity_score",
+            "promotion_eligible",
+            "evidence_rejection_reason",
             "triage_status",
             "deep_dive_status",
             "deep_dive_summary",
@@ -120,6 +147,11 @@ class ExportService:
                         "competitor_tags": _safe_spreadsheet_cell(row.get("competitor_tags", "[]")),
                         "category": _safe_spreadsheet_cell(row.get("category", "")),
                         "severity": _safe_spreadsheet_cell(row.get("severity", "")),
+                        "opportunity_score": row.get("opportunity_score", ""),
+                        "promotion_eligible": _safe_spreadsheet_cell(_promotion_text(row, "promotion_eligible")),
+                        "evidence_rejection_reason": _safe_spreadsheet_cell(
+                            _promotion_text(row, "evidence_rejection_reason")
+                        ),
                         "triage_status": _safe_spreadsheet_cell(row.get("triage_status", "new")),
                         "deep_dive_status": _safe_spreadsheet_cell(row.get("deep_dive_status", "not_requested")),
                         "deep_dive_summary": _safe_spreadsheet_cell(row.get("deep_dive_summary", "")),
@@ -189,6 +221,9 @@ class ExportService:
                 str(_safe_spreadsheet_cell(str(row.get("competitor_tags", "[]")))),
                 str(_safe_spreadsheet_cell(str(row.get("category", "")))),
                 str(_safe_spreadsheet_cell(str(row.get("severity", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("opportunity_score", "")))),
+                str(_safe_spreadsheet_cell(_promotion_text(row, "promotion_eligible"))),
+                str(_safe_spreadsheet_cell(_promotion_text(row, "evidence_rejection_reason"))),
                 str(_safe_spreadsheet_cell(str(row.get("triage_status", "new")))),
                 str(_safe_spreadsheet_cell(str(row.get("deep_dive_status", "not_requested")))),
                 str(_safe_spreadsheet_cell(str(row.get("deep_dive_summary", "")))),

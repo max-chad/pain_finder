@@ -1,4 +1,5 @@
 import zipfile
+import json
 import re
 from unittest.mock import AsyncMock
 
@@ -149,3 +150,39 @@ async def test_daily_digest_document_orders_rows_by_opportunity_score_within_gro
         xml = archive.read("word/document.xml").decode("utf-8")
 
     assert xml.index("Lower WTP but stronger consensus") < xml.index("Higher WTP but weaker score")
+
+
+async def test_daily_digest_document_renders_promotion_rejection_reason(tmp_path):
+    db = AsyncMock()
+    db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "founder_noise",
+            "title": "Launching my SaaS",
+            "summary": "No exact buyer evidence.",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 35.0,
+            "niche_category": "Compliance",
+            "competitor_tags": "[]",
+            "source": "reddit",
+            "url": "https://reddit.com/founder_noise",
+            "subreddit": "startups",
+            "deep_dive_summary": "",
+            "opportunity_bucket": "current_opportunity",
+            "analysis_payload_json": json.dumps(
+                {
+                    "promotion_eligible": False,
+                    "evidence_rejection_reason": "insufficient_first_hand_evidence",
+                }
+            ),
+        }
+    ]
+    db.get_latest_canonical_clusters.return_value = []
+    service = DailyDigestDocumentService(db=db, reports_dir=str(tmp_path))
+
+    result = await service.build_document(hours=24, group_by="niche", min_wtp=0, max_items_per_group=5)
+
+    with zipfile.ZipFile(result.docx_path) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert "Promotion blocked:" in xml
+    assert "insufficient_first_hand_evidence" in xml

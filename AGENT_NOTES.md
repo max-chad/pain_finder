@@ -615,3 +615,10 @@
 - Change: Add promotion eligibility and evidence rejection reasons to report/analysis payloads, cap opportunity score for rejected signals, and skip auto deep dives for rejected promotions.
 - Verification: Added pipeline tests for noisy founder/news/B2C rejection and grounded first-hand founder acceptance; full gates are run after this note.
 - Impact: Reduces false-positive monetization leads in operator output while preserving evidence-backed founder pain.
+
+## 2026-06-12 - Promotion status reaches exports and digest
+
+- Reason: promotion gating stored rejection reasons in analysis payloads, but CSV/Sheets exports and daily digest rendering did not surface those reasons to operators.
+- Change: Add promotion columns to exports and render promotion rejection reasons in digest documents.
+- Verification: Added export and digest tests for promotion gate visibility; full gates are run after this note.
+- Impact: Makes false-positive filtering visible in operator workflows instead of hiding it in raw JSON payloads.

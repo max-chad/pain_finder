@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from docx import Document
+from docx import Document as create_document
+from docx.document import Document as DocxDocument
 
 
 @dataclass
@@ -46,7 +47,7 @@ class DailyDigestDocumentService:
         evergreen_groups = self._order_groups(self._group_rows(evergreen_rows, group_by=group_by)) if evergreen_rows else []
         unknown_groups = self._order_groups(self._group_rows(unknown_rows, group_by=group_by)) if unknown_rows else []
 
-        document = Document()
+        document = create_document()
         document.add_heading("Pain Finder Daily Digest", level=0)
         document.add_paragraph(
             (
@@ -141,7 +142,7 @@ class DailyDigestDocumentService:
             return "evergreen_pain"
         return "unknown_age"
 
-    def _render_cluster_section(self, document: Document, clusters: list[dict[str, Any]]) -> None:
+    def _render_cluster_section(self, document: DocxDocument, clusters: list[dict[str, Any]]) -> None:
         for cluster in clusters:
             label = (str(cluster.get("label") or "Recurring pain cluster").strip() or "Recurring pain cluster")
             summary = (str(cluster.get("summary") or "No summary available.").strip() or "No summary available.")
@@ -161,7 +162,7 @@ class DailyDigestDocumentService:
 
     def _render_grouped_section(
         self,
-        document: Document,
+        document: DocxDocument,
         ordered_groups: list[tuple[str, list[dict[str, Any]]]],
         *,
         max_items_per_group: int,
@@ -179,6 +180,7 @@ class DailyDigestDocumentService:
                 opportunity_score = self._row_opportunity_score(row)
                 competitors = ", ".join(self._competitor_tags(row)) or "none"
                 deep_dive_summary = (row.get("deep_dive_summary") or "").strip()
+                promotion_rejection_reason = self._promotion_rejection_reason(row)
 
                 header = document.add_paragraph()
                 header.add_run(title).bold = True
@@ -188,6 +190,8 @@ class DailyDigestDocumentService:
                 metrics.style = "Intense Quote"
                 document.add_paragraph(summary)
                 document.add_paragraph(f"Competitors/tags: {competitors}")
+                if promotion_rejection_reason:
+                    document.add_paragraph(f"Promotion blocked: {promotion_rejection_reason}")
                 if deep_dive_summary:
                     document.add_paragraph(f"Deep dive: {deep_dive_summary}")
                 if url:
@@ -238,6 +242,26 @@ class DailyDigestDocumentService:
             if parsed:
                 return [str(parsed)]
         return []
+
+    @staticmethod
+    def _analysis_payload(row: dict[str, Any]) -> dict[str, Any]:
+        raw = row.get("analysis_payload_json") or row.get("analysis_payload") or {}
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    @classmethod
+    def _promotion_rejection_reason(cls, row: dict[str, Any]) -> str:
+        raw_reason = row.get("evidence_rejection_reason")
+        if raw_reason is None:
+            raw_reason = cls._analysis_payload(row).get("evidence_rejection_reason")
+        return str(raw_reason or "").strip()
 
     @staticmethod
     def _recurring_blockers(rows: list[dict[str, Any]]) -> list[str]:

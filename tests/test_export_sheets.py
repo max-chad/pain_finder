@@ -1,4 +1,5 @@
 import csv
+import json
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -110,6 +111,46 @@ async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
     assert row["summary"].startswith("'  @")
     assert row["niche_category"].startswith("'+")
     assert row["deep_dive_summary"].startswith("'-")
+
+
+async def test_export_service_includes_promotion_gate_columns(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "startups",
+            "source": "reddit",
+            "post_id": "founder_noise",
+            "title": "Launching my SaaS",
+            "summary": "No exact evidence",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 35.0,
+            "niche_category": "Compliance",
+            "competitor_tags": "[]",
+            "category": "complaint",
+            "severity": "high",
+            "analysis_payload_json": json.dumps(
+                {
+                    "promotion_eligible": False,
+                    "evidence_rejection_reason": "insufficient_first_hand_evidence",
+                }
+            ),
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "",
+            "url": "https://reddit.com/founder_noise",
+        }
+    ]
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    result = await service.export()
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["opportunity_score"] == "35.0"
+    assert row["promotion_eligible"] == "False"
+    assert row["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
 
 
 async def test_export_service_cleans_tmp_file_on_atomic_replace_error(tmp_path, monkeypatch):
@@ -269,6 +310,9 @@ def test_upsert_google_sheet_escapes_spreadsheet_formulas(tmp_path):
                 "competitor_tags",
                 "category",
                 "severity",
+                "opportunity_score",
+                "promotion_eligible",
+                "evidence_rejection_reason",
                 "triage_status",
                 "deep_dive_status",
                 "deep_dive_summary",
@@ -278,11 +322,12 @@ def test_upsert_google_sheet_escapes_spreadsheet_formulas(tmp_path):
         )
 
     values = worksheet.update.call_args.args[1]
+    header_row = values[0]
     data_row = values[1]
-    assert data_row[4].startswith("'=")
-    assert data_row[5].startswith("'@")
-    assert data_row[8].startswith("'-")
-    assert data_row[14].startswith("'+")
+    assert data_row[header_row.index("title")].startswith("'=")
+    assert data_row[header_row.index("summary")].startswith("'@")
+    assert data_row[header_row.index("niche_category")].startswith("'-")
+    assert data_row[header_row.index("deep_dive_summary")].startswith("'+")
 
 
 def test_upsert_google_sheet_uses_safe_worksheet_name(tmp_path):
