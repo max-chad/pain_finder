@@ -825,3 +825,10 @@
 - Change: Reject non-finite source timestamps, catch timestamp conversion overflow, and treat overflowing external scores as zero.
 - Verification: Added Reddit and HN regressions for infinite external score/timestamp payloads; full gates are run after this note.
 - Impact: Keeps source collection resilient to malformed upstream rows instead of dropping an entire subreddit or keyword query.
+
+## 2026-06-12 - OpenAI Codex provider uses Codex defaults
+
+- Reason: `LLM_PROVIDER=openai-codex` was accepted and routed to the Codex Responses backend, but unset `LLM_MODEL` still defaulted to the OpenRouter llama model because default selection did not treat `openai-codex` as Codex-like.
+- Change: Include `openai-codex` in the shared Codex/OpenAI-compatible default set for LLM model, temperature, max tokens, and embedding model defaults.
+- Verification: Extended config regression coverage for `openai-codex` with `LLM_MODEL`, `LLM_TEMPERATURE`, and `LLM_MAX_TOKENS` unset; full gates are run after this note.
+- Impact: Prevents a formally valid Codex-provider deploy from sending incompatible default model names and token settings to the Codex backend.

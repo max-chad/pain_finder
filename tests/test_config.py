@@ -244,6 +244,9 @@ def test_openai_codex_llm_defaults_embedding_and_dspy_to_codex(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_PROVIDER", "openai-codex")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
     monkeypatch.delenv("EMBED_PROVIDER", raising=False)
     monkeypatch.delenv("DSPY_PROVIDER", raising=False)
 
@@ -251,6 +254,9 @@ def test_openai_codex_llm_defaults_embedding_and_dspy_to_codex(monkeypatch):
     config_module = importlib.reload(config_module)
 
     assert config_module.LLM_PROVIDER == "openai-codex"
+    assert config_module.LLM_MODEL == "gpt-5.3-spark"
+    assert config_module.LLM_TEMPERATURE == 1.0
+    assert config_module.LLM_MAX_TOKENS == 16000
     assert config_module.EMBED_PROVIDER == "codex"
     assert config_module.DSPY_PROVIDER == "codex"
 

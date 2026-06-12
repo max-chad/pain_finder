@@ -14,6 +14,7 @@ EMBED_PROVIDERS = {"openrouter", "codex", "openai", "bow", "hash", "disabled", "
 DSPY_PROVIDERS = {"openrouter", "codex", "openai"}
 TRUE_VALUES = {"1", "true", "on", "yes"}
 FALSE_VALUES = {"0", "false", "off", "no"}
+CODEX_LIKE_PROVIDERS = {"codex", "openai", "openai-codex"}
 
 
 def _first_env(*names: str, default: str | None = None, required: bool = False) -> str:
@@ -42,25 +43,25 @@ def _required_int_env(name: str) -> int:
 
 
 def _default_llm_model(provider: str) -> str:
-    if provider in {"codex", "openai"}:
+    if provider in CODEX_LIKE_PROVIDERS:
         return "gpt-5.3-spark"
     return "meta-llama/llama-3.1-8b-instruct:free"
 
 
 def _default_embed_model(provider: str) -> str:
-    if provider in {"codex", "openai"}:
+    if provider in CODEX_LIKE_PROVIDERS:
         return "text-embedding-3-small"
     return "google/text-embedding-004"
 
 
 def _default_temperature(provider: str, model: str) -> str:
-    if provider in {"codex", "openai"} and "gpt-5" in model:
+    if provider in CODEX_LIKE_PROVIDERS and "gpt-5" in model:
         return "1.0"
     return "0.1"
 
 
 def _default_max_tokens(provider: str, model: str) -> str:
-    if provider in {"codex", "openai"} and "gpt-5" in model:
+    if provider in CODEX_LIKE_PROVIDERS and "gpt-5" in model:
         return "16000"
     return "4000"
 
