@@ -485,7 +485,7 @@ class AnalysisPipeline:
         tmp_path = f"{json_path}.tmp"
         try:
             with open(tmp_path, "w", encoding="utf-8") as report_file:
-                json.dump(payload, report_file, indent=2, ensure_ascii=False)
+                json.dump(payload, report_file, indent=2, ensure_ascii=False, allow_nan=False)
             os.replace(tmp_path, json_path)
             return json_path
         except Exception:

@@ -519,6 +519,22 @@ async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_p
     assert tmp_files == []
 
 
+async def test_write_report_rejects_non_standard_json_payload(db, tmp_path):
+    reports_dir = tmp_path / "reports"
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        reports_dir=str(reports_dir),
+    )
+
+    with pytest.raises(ValueError, match="Out of range float"):
+        await pipeline._write_report(run_label="bad-json", payload=[{"score": float("nan")}])
+
+    assert list(reports_dir.glob("*.tmp")) == []
+    assert list(reports_dir.glob("*.json")) == []
+
+
 async def test_write_report_sanitizes_run_label_path(db, tmp_path):
     reports_dir = tmp_path / "reports"
     pipeline = AnalysisPipeline(

@@ -860,3 +860,10 @@
 - Change: Wrap macro cluster and member inserts in a single transactional try/rollback boundary.
 - Verification: Added a DB regression that forces a member binding failure after cluster insertion and asserts no cluster is visible afterward; full gates are run after this note.
 - Impact: Protects canonical cluster/digest state from partial macro snapshots when member persistence fails mid-write.
+
+## 2026-06-12 - Report JSON rejects NaN and Infinity
+
+- Reason: Pipeline report artifacts used default `json.dump()`, which can write non-standard `NaN`/`Infinity` tokens and leave operator-facing report files that fail strict JSON tooling.
+- Change: Write report artifacts with `allow_nan=False` while preserving the existing atomic `.tmp` + `os.replace` behavior.
+- Verification: Added a pipeline regression proving non-standard report payloads fail and leave no `.tmp` or final `.json` artifact; full gates are run after this note.
+- Impact: Keeps generated report files standards-compliant and prevents malformed analysis artifacts from being saved or exported.
