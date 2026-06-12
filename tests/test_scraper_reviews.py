@@ -102,6 +102,27 @@ async def test_fetch_negative_reviews_skips_bad_rating_rows(monkeypatch):
     assert posts[0].body == "Valid complaint"
 
 
+async def test_fetch_negative_reviews_skips_nan_rating_rows(monkeypatch):
+    html = """
+    <html><body>
+      <script type="application/ld+json">
+      [
+        {"@type":"Review","reviewRating":{"ratingValue":"NaN"},"reviewBody":"Bad numeric payload"},
+        {"@type":"Review","reviewRating":{"ratingValue":"2"},"reviewBody":"Valid complaint"}
+      ]
+      </script>
+    </body></html>
+    """
+    scraper = ReviewScraper()
+    monkeypatch.setattr(scraper, "_fetch_html", AsyncMock(return_value=html))
+    target = ReviewTarget(site="appstore", name="QuickBooks Sync Tool", url="https://example.com/reviews")
+
+    posts = await scraper.fetch_negative_reviews(target=target, max_reviews=10)
+
+    assert len(posts) == 1
+    assert posts[0].body == "Valid complaint"
+
+
 async def test_fetch_negative_reviews_uses_stable_content_ids(monkeypatch):
     first_html = """
     <article class="review-card" aria-label="1 star">Completely unusable for invoicing.</article>

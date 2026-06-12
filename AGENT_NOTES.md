@@ -769,3 +769,10 @@
 - Change: Require fallback report exports to be existing `.json` files under the configured `REPORTS_DIR` before opening them.
 - Verification: Added bot regressions for allowed report export inside `REPORTS_DIR` and rejection of an existing JSON file outside that directory; full gates are run after this note.
 - Impact: Prevents database path corruption from turning an authorized export command into local file disclosure.
+
+## 2026-06-12 - Review ratings reject non-finite values
+
+- Reason: Review rating payloads such as `"NaN"` parsed to `float("nan")`; comparisons did not reject it, and score calculation crashed on `int(nan)`.
+- Change: Treat non-finite review ratings as invalid in the shared rating coercion helper.
+- Verification: Added a review-ingest regression proving a NaN rating row is skipped while a valid complaint in the same target is still collected; full gates are run after this note.
+- Impact: Keeps review collection resilient to malformed numeric payloads from external review pages.

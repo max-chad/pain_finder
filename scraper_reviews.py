@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 import hashlib
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ def _coerce_rating(value: Any) -> float:
     try:
         rating = float(value or 0)
     except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(rating):
         return 0.0
     if rating < 0 or rating > 5:
         return 0.0
