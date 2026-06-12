@@ -453,6 +453,16 @@ class Database:
             raise ValueError(f"{field_name} must be finite")
         return parsed
 
+    @staticmethod
+    def _non_negative_int(value: Any, field_name: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field_name} must be a non-negative integer") from exc
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be non-negative")
+        return parsed
+
     async def _replace_competitor_tags(self, post_id: str, tags: list[str]) -> None:
         await self._conn.execute("DELETE FROM pain_point_competitors WHERE post_id = ?", (post_id,))
         for tag in tags:
@@ -952,9 +962,14 @@ class Database:
             return int(cursor.lastrowid)
 
     async def create_macro_trend_run(self, *, window_days: int, candidate_count: int, cluster_count: int) -> int:
+        window_days_value = self._non_negative_int(window_days, "window_days")
+        if window_days_value <= 0:
+            raise ValueError("window_days must be positive")
+        candidate_count_value = self._non_negative_int(candidate_count, "candidate_count")
+        cluster_count_value = self._non_negative_int(cluster_count, "cluster_count")
         async with self._conn.execute(
             "INSERT INTO macro_trend_runs (window_days, candidate_count, cluster_count) VALUES (?, ?, ?)",
-            (window_days, candidate_count, cluster_count),
+            (window_days_value, candidate_count_value, cluster_count_value),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
@@ -978,6 +993,21 @@ class Database:
         latest_source_created_ts: int | None = None,
         members: list[tuple[str, float]],
     ) -> int:
+        item_count_value = self._non_negative_int(item_count, "item_count")
+        aggregate_wtp_value = self._finite_float(aggregate_wtp, "aggregate_wtp")
+        fresh_post_count_value = self._non_negative_int(fresh_post_count, "fresh_post_count")
+        evergreen_post_count_value = self._non_negative_int(evergreen_post_count, "evergreen_post_count")
+        median_buyer_authority_value = self._finite_float(median_buyer_authority, "median_buyer_authority")
+        avg_opportunity_score_value = self._finite_float(avg_opportunity_score, "avg_opportunity_score")
+        latest_source_created_ts_value = (
+            None
+            if latest_source_created_ts is None
+            else self._non_negative_int(latest_source_created_ts, "latest_source_created_ts")
+        )
+        member_rows = [
+            (post_id, self._finite_float(similarity, "member similarity"))
+            for post_id, similarity in members
+        ]
         async with self._conn.execute(
             """
             INSERT INTO macro_trend_clusters (
@@ -993,18 +1023,18 @@ class Database:
                 label,
                 summary,
                 estimated_monetization_signal,
-                item_count,
-                aggregate_wtp,
-                fresh_post_count,
-                evergreen_post_count,
-                median_buyer_authority,
+                item_count_value,
+                aggregate_wtp_value,
+                fresh_post_count_value,
+                evergreen_post_count_value,
+                median_buyer_authority_value,
                 json.dumps(incumbents or [], ensure_ascii=False),
-                avg_opportunity_score,
-                latest_source_created_ts,
+                avg_opportunity_score_value,
+                latest_source_created_ts_value,
             ),
         ) as cursor:
             cluster_id = int(cursor.lastrowid)
-        for post_id, similarity in members:
+        for post_id, similarity in member_rows:
             await self._conn.execute(
                 "INSERT INTO macro_trend_members (run_id, cluster_id, post_id, similarity) VALUES (?, ?, ?, ?)",
                 (run_id, cluster_id, post_id, similarity),

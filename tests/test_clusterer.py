@@ -1,3 +1,4 @@
+import math
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -212,6 +213,65 @@ async def test_run_persists_canonical_cluster_aggregates(db):
     assert latest_clusters[0]["canonical_key"] == cluster.canonical_key
     assert latest_clusters[0]["fresh_post_count"] == 1
     assert latest_clusters[0]["evergreen_post_count"] == 1
+
+
+async def test_run_ignores_non_finite_legacy_candidate_numbers(db):
+    now_ts = int(datetime.now(UTC).timestamp())
+    await _seed_candidate(
+        db,
+        post_id="reddit:legacy_bad",
+        title="QuickBooks sync failures",
+        summary="Manual ledger repair every week",
+        wtp=9,
+        opportunity_bucket="current_opportunity",
+        buyer_authority_score=0.95,
+        opportunity_score=91.0,
+        source_created_ts=now_ts - 60,
+        competitor_tags=["quickbooks"],
+    )
+    await _seed_candidate(
+        db,
+        post_id="reddit:legacy_good",
+        title="QuickBooks reconciliation failures",
+        summary="Manual ledger repair every week",
+        wtp=8,
+        opportunity_bucket="evergreen_pain",
+        buyer_authority_score=0.65,
+        opportunity_score=73.0,
+        source_created_ts=now_ts - 120,
+        competitor_tags=["quickbooks"],
+    )
+    await db._conn.execute(
+        """
+        UPDATE pain_points
+        SET willingness_to_pay = ?,
+            buyer_authority_score = ?,
+            opportunity_score = ?,
+            source_created_ts = ?
+        WHERE post_id = ?
+        """,
+        (float("inf"), float("inf"), float("inf"), float("inf"), "reddit:legacy_bad"),
+    )
+    await db._conn.commit()
+
+    clusterer = MacroTrendClusterer(
+        db=db,
+        openrouter=None,
+        min_cluster_size=2,
+        similarity_threshold=0.1,
+        min_wtp=7,
+    )
+    result = await clusterer.run(window_days=30)
+
+    assert len(result.clusters) == 1
+    cluster = result.clusters[0]
+    assert math.isfinite(cluster.aggregate_wtp)
+    assert math.isfinite(cluster.median_buyer_authority)
+    assert math.isfinite(cluster.avg_opportunity_score)
+    assert cluster.aggregate_wtp == pytest.approx(8.0)
+    assert cluster.median_buyer_authority == pytest.approx(0.325)
+    assert cluster.avg_opportunity_score == pytest.approx(36.5)
+    assert cluster.latest_source_created_ts == now_ts - 120
 
 
 def test_compose_candidate_text_handles_invalid_competitor_json():

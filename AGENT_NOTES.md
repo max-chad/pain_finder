@@ -811,3 +811,10 @@
 - Change: Require finite float env values in the smoke collector before any source fetch starts.
 - Verification: Added a smoke regression for non-finite retry delay; full gates are run after this note.
 - Impact: Keeps the read-only source smoke gate fast-failing on invalid deploy env instead of hanging during collection probes.
+
+## 2026-06-12 - Macro cluster aggregates reject invalid numbers
+
+- Reason: Macro clustering and canonical cluster persistence trusted numeric aggregates from SQLite rows; legacy/corrupted rows with `inf` could crash `/macro` on timestamp conversion or persist non-finite scores into digest ranking.
+- Change: Validate macro run counters, cluster aggregate fields, and member similarities before DB writes; make `MacroTrendClusterer` ignore non-finite legacy candidate values while still using valid members.
+- Verification: Added DB regressions for invalid macro aggregate/member values and clusterer regression for legacy rows with infinite WTP, authority, opportunity score, and source timestamp; full gates are run after this note.
+- Impact: Keeps the central macro-cluster/digest signal path available and prevents corrupted numeric rows from poisoning canonical cluster ranking.

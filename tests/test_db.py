@@ -717,6 +717,49 @@ async def test_macro_tables_persist_and_query(db):
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
 
 
+async def test_save_macro_cluster_rejects_invalid_numeric_values(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+    base_kwargs = {
+        "run_id": run_id,
+        "canonical_key": "invalid-cluster",
+        "cluster_key": "reddit:bad",
+        "label": "Invalid cluster",
+        "summary": "Should not persist invalid numeric aggregates.",
+        "estimated_monetization_signal": "high",
+        "item_count": 2,
+        "aggregate_wtp": 17.0,
+        "fresh_post_count": 1,
+        "evergreen_post_count": 1,
+        "median_buyer_authority": 0.8,
+        "incumbents": ["quickbooks"],
+        "avg_opportunity_score": 84.5,
+        "latest_source_created_ts": 1713772800,
+        "members": [("reddit:m1", 0.9), ("reddit:m2", 0.88)],
+    }
+
+    with pytest.raises(ValueError, match="aggregate_wtp must be finite"):
+        await db.save_macro_cluster(**(base_kwargs | {"aggregate_wtp": float("inf")}))
+
+    with pytest.raises(ValueError, match="avg_opportunity_score must be finite"):
+        await db.save_macro_cluster(**(base_kwargs | {"avg_opportunity_score": float("nan")}))
+
+    with pytest.raises(ValueError, match="member similarity must be finite"):
+        await db.save_macro_cluster(**(base_kwargs | {"members": [("reddit:m1", float("inf"))]}))
+
+    with pytest.raises(ValueError, match="latest_source_created_ts must be a non-negative integer"):
+        await db.save_macro_cluster(**(base_kwargs | {"latest_source_created_ts": float("inf")}))
+
+    assert await db.get_macro_clusters(run_id) == []
+
+
+async def test_create_macro_trend_run_rejects_invalid_counts(db):
+    with pytest.raises(ValueError, match="window_days must be positive"):
+        await db.create_macro_trend_run(window_days=0, candidate_count=0, cluster_count=0)
+
+    with pytest.raises(ValueError, match="candidate_count must be non-negative"):
+        await db.create_macro_trend_run(window_days=30, candidate_count=-1, cluster_count=0)
+
+
 async def test_get_macro_candidates_prioritizes_opportunity_score(db):
     now_ts = int(datetime.now(UTC).timestamp())
     for post_id, wtp, pain, score in [

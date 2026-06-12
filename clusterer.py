@@ -134,15 +134,20 @@ class MacroTrendClusterer:
             members = [candidates[index] for index in cluster_indices]
             sample_lines = [self._compose_cluster_line(row) for row in members[:12]]
             cluster_text = "\n".join(sample_lines)
-            aggregate_wtp = sum(float(row.get("willingness_to_pay") or 0) for row in members)
+            aggregate_wtp = sum(self._finite_number(row.get("willingness_to_pay"), default=0.0) for row in members)
             fresh_post_count = sum(1 for row in members if str(row.get("opportunity_bucket") or "").strip().lower() == "current_opportunity")
             evergreen_post_count = sum(1 for row in members if str(row.get("opportunity_bucket") or "").strip().lower() == "evergreen_pain")
-            authority_values = [float(row.get("buyer_authority_score") or 0.0) for row in members]
+            authority_values = [self._finite_number(row.get("buyer_authority_score"), default=0.0) for row in members]
             median_buyer_authority = round(float(median(authority_values)), 3) if authority_values else 0.0
             incumbents = self._aggregate_incumbents(members)
-            opportunity_scores = [float(row.get("opportunity_score") or 0.0) for row in members]
+            opportunity_scores = [self._finite_number(row.get("opportunity_score"), default=0.0) for row in members]
             avg_opportunity_score = round(float(mean(opportunity_scores)), 2) if opportunity_scores else 0.0
-            latest_source_created_ts = max(int(row.get("source_created_ts") or 0) for row in members) or None
+            source_timestamps = [
+                timestamp
+                for row in members
+                if (timestamp := self._source_timestamp(row.get("source_created_ts"))) is not None
+            ]
+            latest_source_created_ts = max(source_timestamps) if source_timestamps else None
             label = await self._label_cluster(
                 cluster_text=cluster_text,
                 cluster_size=len(members),
@@ -283,6 +288,24 @@ class MacroTrendClusterer:
             f"wtp={row.get('willingness_to_pay', 0)} "
             f"summary={str(row.get('summary') or '')[:180]}"
         )
+
+    @staticmethod
+    def _finite_number(value: Any, *, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(parsed):
+            return default
+        return parsed
+
+    @staticmethod
+    def _source_timestamp(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if parsed > 0 else None
 
     @staticmethod
     def _parse_tags(raw: Any) -> list[str]:
