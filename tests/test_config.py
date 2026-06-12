@@ -364,6 +364,10 @@ def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
         ("REVIEWS_MAX_HTML_BYTES", "1023", "REVIEWS_MAX_HTML_BYTES must be at least 1024"),
         ("DSPY_TIMEOUT_SECONDS", "0", "DSPY_TIMEOUT_SECONDS must be at least 0.1"),
         ("DAILY_BUDGET_USD", "-0.01", "DAILY_BUDGET_USD must be at least 0"),
+        ("DAILY_BUDGET_USD", "nan", "DAILY_BUDGET_USD must be finite"),
+        ("LLM_TEMPERATURE", "inf", "LLM_TEMPERATURE must be finite"),
+        ("TREND_CLUSTER_SIMILARITY", "nan", "TREND_CLUSTER_SIMILARITY must be finite"),
+        ("DEDUP_SIMILARITY_THRESHOLD", "inf", "DEDUP_SIMILARITY_THRESHOLD must be finite"),
     ]
     config_module = importlib.import_module("config")
 
@@ -387,6 +391,8 @@ def test_config_rejects_invalid_model_pricing_environment(monkeypatch):
         ('{"m1": 1}', "LLM_MODEL_PRICING_JSON must map model names to pricing objects"),
         ('{"m1": {"prompt_per_1k": "free"}}', "LLM_MODEL_PRICING_JSON price values must be numbers"),
         ('{"m1": {"completion_per_1k": -0.01}}', "LLM_MODEL_PRICING_JSON price values must be non-negative"),
+        ('{"m1": {"prompt_per_1k": "nan"}}', "LLM_MODEL_PRICING_JSON price values must be finite"),
+        ('{"m1": {"completion_per_1k": "inf"}}', "LLM_MODEL_PRICING_JSON price values must be finite"),
     ]
     config_module = importlib.import_module("config")
 

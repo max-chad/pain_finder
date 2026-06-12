@@ -741,3 +741,10 @@
 - Change: Share active resume-override parsing between pre-spend checks and post-usage pause checks, and skip automatic re-pause while the override is still valid.
 - Verification: Added a budget regression test where usage above cap records successfully without re-pausing during an active resume override.
 - Impact: Makes operator resume semantics reliable instead of allowing only one resumed request before monitoring pauses again.
+
+## 2026-06-12 - Reject non-finite numeric config values
+
+- Reason: Python accepts `nan` and `inf` as floats, and the existing min/range checks let them through, which could disable or corrupt budget caps, similarity thresholds, temperatures, retry delays, timeouts, and model pricing.
+- Change: Require finite float values in shared numeric env parsing and model-pricing normalization.
+- Verification: Added config regressions for `nan`/`inf` env values and pricing JSON values; full gates are run after this note.
+- Impact: Fails deploy/startup fast on invalid numeric configuration instead of running with non-comparable budget, cost, and threshold values.
