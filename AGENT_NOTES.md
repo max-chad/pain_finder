@@ -629,3 +629,10 @@
 - Change: Order export rows by manual favorites first, then opportunity score, then legacy WTP/pain tie-breakers; order macro trend candidates by opportunity score before raw WTP/pain.
 - Verification: Added DB regression tests where capped WTP=10 noisy leads must sort below grounded high-score leads in export rows and macro candidates.
 - Impact: Makes promotion score caps affect the operator's first review surface and macro clustering seed order instead of only report JSON and digest ranking.
+
+## 2026-06-12 - Budget pause keeps daily digest scheduled
+
+- Reason: Scheduler reload returned early when LLM operations were paused, removing daily digest jobs even though digest delivery does not spend LLM budget and is needed for operator visibility during pauses.
+- Change: Skip only LLM-spending scheduler jobs (subreddit monitor, macro trend, HN, reviews) while still scheduling daily digest when configured.
+- Verification: Added a scheduler regression test that keeps `daily_digest` loaded under `llm_paused=True` while excluding LLM ingest jobs.
+- Impact: Preserves reporting/observability during budget pauses instead of making the system go silent.

@@ -108,6 +108,30 @@ async def test_reload_jobs_skips_when_paused():
     sched.stop()
 
 
+async def test_reload_jobs_keeps_digest_when_llm_paused():
+    mock_db = AsyncMock()
+    mock_db.is_llm_paused.return_value = True
+    mock_db.get_monitored_subreddits.return_value = [{"name": "python", "interval_hours": 1}]
+    sched = MonitoringScheduler(
+        db=mock_db,
+        analyze_fn=AsyncMock(),
+        macro_fn=AsyncMock(),
+        hn_fn=AsyncMock(),
+        reviews_fn=AsyncMock(),
+        digest_fn=AsyncMock(),
+        macro_enabled=True,
+        hn_enabled=True,
+        reviews_enabled=True,
+        digest_enabled=True,
+    )
+    sched.start()
+    await sched.reload_jobs()
+    job_ids = {job.id for job in sched.scheduler.get_jobs()}
+    assert job_ids == {"daily_digest"}
+    mock_db.get_monitored_subreddits.assert_not_awaited()
+    sched.stop()
+
+
 async def test_reload_jobs_adds_macro_hn_reviews_jobs():
     mock_db = AsyncMock()
     mock_db.is_llm_paused.return_value = False

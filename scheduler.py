@@ -70,68 +70,71 @@ class MonitoringScheduler:
                 job.remove()
 
         paused_value = await self.db.is_llm_paused()
-        paused = paused_value if isinstance(paused_value, bool) else False
-        if paused:
-            logger.warning("scheduler_reload_skipped stage=scheduler reason=llm_paused")
-            return
+        llm_paused = paused_value if isinstance(paused_value, bool) else False
 
-        subs = await self.db.get_monitored_subreddits()
-        for sub in subs:
-            self.scheduler.add_job(
-                self._run_analysis,
-                trigger="interval",
-                hours=sub["interval_hours"],
-                id=f"monitor_{sub['name']}",
-                args=[sub["name"]],
-                replace_existing=True,
-            )
+        if llm_paused:
             logger.info(
-                "scheduler_job_loaded stage=scheduler job=monitor subreddit=%s interval_hours=%d",
-                sub["name"],
-                sub["interval_hours"],
+                "scheduler_llm_jobs_skipped stage=scheduler reason=llm_paused digest_enabled=%s",
+                self.digest_enabled,
             )
+        else:
+            subs = await self.db.get_monitored_subreddits()
+            for sub in subs:
+                self.scheduler.add_job(
+                    self._run_analysis,
+                    trigger="interval",
+                    hours=sub["interval_hours"],
+                    id=f"monitor_{sub['name']}",
+                    args=[sub["name"]],
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=monitor subreddit=%s interval_hours=%d",
+                    sub["name"],
+                    sub["interval_hours"],
+                )
 
-        if self.macro_enabled and self.macro_fn is not None:
-            self.scheduler.add_job(
-                self._run_macro,
-                trigger="cron",
-                day_of_week=self.macro_weekday_utc,
-                hour=self.macro_hour_utc,
-                minute=0,
-                id="macro_weekly",
-                replace_existing=True,
-            )
-            logger.info(
-                "scheduler_job_loaded stage=scheduler job=macro weekday=%s hour=%d",
-                self.macro_weekday_utc,
-                self.macro_hour_utc,
-            )
+            if self.macro_enabled and self.macro_fn is not None:
+                self.scheduler.add_job(
+                    self._run_macro,
+                    trigger="cron",
+                    day_of_week=self.macro_weekday_utc,
+                    hour=self.macro_hour_utc,
+                    minute=0,
+                    id="macro_weekly",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=macro weekday=%s hour=%d",
+                    self.macro_weekday_utc,
+                    self.macro_hour_utc,
+                )
 
-        if self.hn_enabled and self.hn_fn is not None:
-            self.scheduler.add_job(
-                self._run_hn,
-                trigger="interval",
-                hours=max(1, self.hn_interval_hours),
-                id="hn_ingest",
-                replace_existing=True,
-            )
-            logger.info(
-                "scheduler_job_loaded stage=scheduler job=hn interval_hours=%d",
-                self.hn_interval_hours,
-            )
+            if self.hn_enabled and self.hn_fn is not None:
+                self.scheduler.add_job(
+                    self._run_hn,
+                    trigger="interval",
+                    hours=max(1, self.hn_interval_hours),
+                    id="hn_ingest",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=hn interval_hours=%d",
+                    self.hn_interval_hours,
+                )
 
-        if self.reviews_enabled and self.reviews_fn is not None:
-            self.scheduler.add_job(
-                self._run_reviews,
-                trigger="interval",
-                hours=max(1, self.reviews_interval_hours),
-                id="reviews_ingest",
-                replace_existing=True,
-            )
-            logger.info(
-                "scheduler_job_loaded stage=scheduler job=reviews interval_hours=%d",
-                self.reviews_interval_hours,
-            )
+            if self.reviews_enabled and self.reviews_fn is not None:
+                self.scheduler.add_job(
+                    self._run_reviews,
+                    trigger="interval",
+                    hours=max(1, self.reviews_interval_hours),
+                    id="reviews_ingest",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=reviews interval_hours=%d",
+                    self.reviews_interval_hours,
+                )
 
         if self.digest_enabled and self.digest_fn is not None:
             self.scheduler.add_job(
