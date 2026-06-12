@@ -691,6 +691,16 @@ class OpenRouterClient:
                             payload=request_body,
                             headers=headers,
                         )
+                        await self._record_usage_from_response(
+                            response_json=response_json,
+                            model=model,
+                            operation=operation,
+                            post_id=post_id,
+                            prompt_hash=prompt_hash,
+                            fallback_reason=fallback_reason,
+                            schema_version=schema_version,
+                            candidate_stage=candidate_stage,
+                        )
                         content = response_json["choices"][0]["message"]["content"]
                         payload = self._safe_json_load(content)
                         is_valid_payload = validate_payload(payload) if validate_payload is not None else True
@@ -703,16 +713,6 @@ class OpenRouterClient:
                                 operation,
                                 cache_key,
                             )
-                        await self._record_usage_from_response(
-                            response_json=response_json,
-                            model=model,
-                            operation=operation,
-                            post_id=post_id,
-                            prompt_hash=prompt_hash,
-                            fallback_reason=fallback_reason,
-                            schema_version=schema_version,
-                            candidate_stage=candidate_stage,
-                        )
                         return payload
                     except httpx.HTTPStatusError as e:
                         status_code = e.response.status_code if e.response else None

@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Record OpenRouter usage before payload shape parsing
+
+- Reason: the OpenRouter chat-completions path accessed `choices[0]` before recording provider `usage`, so malformed but billable responses could return `None` without updating the local LLM spend ledger.
+- Change: Record response usage immediately after the provider response is received, before parsing `choices` or validating/cache-checking the payload.
+- Verification: Added a regression where a response with `usage` but an empty `choices` array returns `None` and still calls `BudgetGuard.record_usage()`.
+- Impact: Keeps budget/cost accounting accurate when paid provider calls produce unusable payload shapes.
+
 ## 2026-06-12 - Codex empty responses still record usage
 
 - Reason: the OpenAI Codex Responses path returned `(None, usage)` for empty model output, but `_request_json_response()` exited before recording usage, so failed/empty provider calls could bypass the LLM spend ledger.

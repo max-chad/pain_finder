@@ -806,6 +806,37 @@ async def test_usage_tracking_tolerates_malformed_token_counts(respx_mock):
     assert call_kwargs["completion_tokens"] == 0
 
 
+async def test_usage_tracking_records_usage_before_provider_payload_shape_failure(respx_mock):
+    respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [],
+                "usage": {"prompt_tokens": 900, "completion_tokens": 120},
+            },
+        )
+    )
+    budget = AsyncMock()
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="m1",
+        pricing_map={"m1": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}},
+        budget_guard=budget,
+    )
+
+    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:bad-shape")
+
+    assert result is None
+    budget.record_usage.assert_awaited_once()
+    call_kwargs = budget.record_usage.await_args.kwargs
+    assert call_kwargs["model"] == "m1"
+    assert call_kwargs["operation"] == "classify_primary"
+    assert call_kwargs["prompt_tokens"] == 900
+    assert call_kwargs["completion_tokens"] == 120
+    assert call_kwargs["cost_usd"] == 0.00228
+    assert call_kwargs["post_id"] == "reddit:bad-shape"
+
+
 async def test_usage_tracking_failure_does_not_drop_valid_result(respx_mock, caplog):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
         return_value=httpx.Response(
