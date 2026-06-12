@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+PROMOTION_SCORE_CAP = 35.0
 
 
 def safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
@@ -516,6 +517,16 @@ class AnalysisPipeline:
                 "first_handness": signal.first_handness,
                 "buyer_authority": signal.buyer_authority,
                 "evidence_spans": signal.evidence_spans,
+                "promotion_eligible": bool(
+                    signal.analysis_payload.get("promotion_eligible")
+                    if isinstance(signal.analysis_payload, dict)
+                    else False
+                ),
+                "evidence_rejection_reason": (
+                    signal.analysis_payload.get("evidence_rejection_reason")
+                    if isinstance(signal.analysis_payload, dict)
+                    else None
+                ),
                 "comment_sample": signal.comment_sample,
                 "buyer_authority_score": signal.buyer_authority_score,
                 "workflow_frequency_score": signal.workflow_frequency_score,
@@ -615,6 +626,45 @@ class AnalysisPipeline:
         if isinstance(signal.analysis_payload, dict):
             signal.analysis_payload.setdefault("comment_sample", signal.comment_sample)
             signal.analysis_payload.setdefault("score_components", signal.score_components)
+        promotion_rejection_reason = self._promotion_rejection_reason(signal)
+        promotion_eligible = promotion_rejection_reason is None
+        if not promotion_eligible:
+            signal.opportunity_score = min(signal.opportunity_score, PROMOTION_SCORE_CAP)
+            if signal.score_components is not None:
+                signal.score_components["promotion_score_cap"] = PROMOTION_SCORE_CAP
+        if signal.score_components is not None:
+            signal.score_components["promotion_eligible"] = promotion_eligible
+            signal.score_components["evidence_rejection_reason"] = promotion_rejection_reason
+        if isinstance(signal.analysis_payload, dict):
+            signal.analysis_payload["promotion_eligible"] = promotion_eligible
+            signal.analysis_payload["evidence_rejection_reason"] = promotion_rejection_reason
+            signal.analysis_payload["score_components"] = signal.score_components
+
+    @staticmethod
+    def _grounded_evidence_spans(signal: PainSignal) -> list[str]:
+        source_text = "\n".join(
+            part for part in [signal.post.title, signal.post.body, *signal.post.top_comments] if isinstance(part, str)
+        ).lower()
+        grounded: list[str] = []
+        for span in signal.evidence_spans:
+            clean = str(span or "").strip()
+            if clean and clean.lower() in source_text:
+                grounded.append(clean)
+        return grounded
+
+    def _promotion_rejection_reason(self, signal: PainSignal) -> str | None:
+        if not signal.is_monetizable:
+            return "not_monetizable"
+        if signal.post_type == "news_analysis":
+            return "unsupported_post_type"
+        if signal.post_type in {"founder_pitch", "advice_thread"} and signal.first_handness not in {
+            "first_hand",
+            "second_hand",
+        }:
+            return "insufficient_first_hand_evidence"
+        if not self._grounded_evidence_spans(signal):
+            return "ungrounded_evidence"
+        return None
 
     def _recency_profile(self, post: Post, bucket: str) -> tuple[float, float]:
         if not post.source_created_ts:
@@ -630,6 +680,11 @@ class AnalysisPipeline:
         return round(recency_score, 3), round(stale_penalty, 3)
 
     def _deep_dive_skip_reason(self, signal: PainSignal, *, existing: dict[str, Any] | None) -> str | None:
+        promotion_rejection_reason = None
+        if isinstance(signal.analysis_payload, dict):
+            promotion_rejection_reason = signal.analysis_payload.get("evidence_rejection_reason")
+        if promotion_rejection_reason:
+            return f"not_promotion_eligible:{promotion_rejection_reason}"
         if not signal.is_monetizable:
             return "not_monetizable"
         if signal.willingness_to_pay < self.deep_dive_wtp_threshold:

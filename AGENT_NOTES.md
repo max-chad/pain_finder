@@ -608,3 +608,10 @@
 - Change: Add comments RSS fallback for top-comment hydration and full-thread extraction, skipping the original post entry and parsing comment entries into plain text.
 - Verification: Added scraper tests for top-comment and full-thread JSON-blocked fallbacks; full gates are run after this note.
 - Impact: Preserves consensus/workaround/comment evidence for default no-OAuth Reddit collection and reduces deep-dive failures.
+
+## 2026-06-12 - Promotion gate fails closed on weak evidence
+
+- Reason: high-scoring founder pitches, news/advice noise, or non-monetizable B2C items could still look like strong opportunities because the pipeline had no explicit promotion eligibility contract.
+- Change: Add promotion eligibility and evidence rejection reasons to report/analysis payloads, cap opportunity score for rejected signals, and skip auto deep dives for rejected promotions.
+- Verification: Added pipeline tests for noisy founder/news/B2C rejection and grounded first-hand founder acceptance; full gates are run after this note.
+- Impact: Reduces false-positive monetization leads in operator output while preserving evidence-backed founder pain.

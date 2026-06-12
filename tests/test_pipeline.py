@@ -118,6 +118,186 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert rows[0]["opportunity_score"] > 0
 
 
+async def test_promotion_gate_caps_noisy_signals_and_skips_deep_dive(db, tmp_path):
+    posts = [
+        Post(
+            post_id="founder_noise",
+            subreddit="startups",
+            title="Launching my SaaS and looking for cofounder",
+            body="People say compliance workflows are broken but I do not have exact customer evidence.",
+            url="https://reddit.com/founder_noise",
+            score=5,
+            source_created_ts=1776688800,
+        ),
+        Post(
+            post_id="news_noise",
+            subreddit="hackernews",
+            title="Industry news analysis: CRM vendors face lawsuits",
+            body="This is a market recap, not a first-hand operator pain report.",
+            url="https://news.ycombinator.com/item?id=1",
+            score=7,
+            source="hn",
+            source_created_ts=1776688800,
+        ),
+        Post(
+            post_id="b2c_noise",
+            subreddit="gaming",
+            title="Fortnite game is broken",
+            body="My controller lags every match.",
+            url="https://reddit.com/b2c_noise",
+            score=9,
+            source_created_ts=1776688800,
+        ),
+    ]
+    signals = [
+        PainSignal(
+            post=posts[0],
+            category="complaint",
+            summary="Founder pitch with vague market claims",
+            severity="high",
+            is_monetizable=True,
+            pain_level=10,
+            willingness_to_pay=10,
+            niche_category="Compliance",
+            analysis_mode="b2b",
+            analysis_payload={},
+            post_type="founder_pitch",
+            first_handness="aggregated",
+            buyer_authority="founder_owner",
+            evidence_spans=["not in source text"],
+        ),
+        PainSignal(
+            post=posts[1],
+            category="complaint",
+            summary="News recap about vendors",
+            severity="high",
+            is_monetizable=True,
+            pain_level=10,
+            willingness_to_pay=10,
+            niche_category="CRM",
+            analysis_mode="b2b",
+            analysis_payload={},
+            post_type="news_analysis",
+            first_handness="speculative",
+            buyer_authority="unknown",
+            evidence_spans=["market recap"],
+        ),
+        PainSignal(
+            post=posts[2],
+            category="complaint",
+            summary="Consumer gaming complaint",
+            severity="high",
+            is_monetizable=False,
+            pain_level=8,
+            willingness_to_pay=0,
+            niche_category="B2C-noise",
+            analysis_mode="b2b",
+            analysis_payload={},
+            post_type="first_person_pain",
+            first_handness="first_hand",
+            buyer_authority="unknown",
+            evidence_spans=["Fortnite game is broken"],
+        ),
+    ]
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = ["should not be fetched"]
+    openrouter = AsyncMock()
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=signals),
+        openrouter=openrouter,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=8,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=posts, source="mixed", run_scope="promotion")
+
+    assert run.deep_dive_count == 0
+    scraper.fetch_full_thread.assert_not_awaited()
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = {row["post_id"]: row for row in json.load(handle)}
+
+    assert report_payload["founder_noise"]["promotion_eligible"] is False
+    assert report_payload["founder_noise"]["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert report_payload["founder_noise"]["opportunity_score"] <= 35.0
+    assert report_payload["news_noise"]["promotion_eligible"] is False
+    assert report_payload["news_noise"]["evidence_rejection_reason"] == "unsupported_post_type"
+    assert report_payload["b2c_noise"]["promotion_eligible"] is False
+    assert report_payload["b2c_noise"]["evidence_rejection_reason"] == "not_monetizable"
+
+    founder_row = await db.get_pain_point("founder_noise")
+    assert founder_row is not None
+    analysis_payload = json.loads(founder_row["analysis_payload_json"])
+    assert analysis_payload["promotion_eligible"] is False
+    assert analysis_payload["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert analysis_payload["score_components"]["promotion_score_cap"] == 35.0
+
+
+async def test_promotion_gate_allows_grounded_first_hand_founder_signal(db, tmp_path):
+    post = Post(
+        post_id="founder_grounded",
+        subreddit="startups",
+        title="As founder, QuickBooks reconciliation breaks every week",
+        body="Our finance team loses two days every month reconciling invoices manually.",
+        url="https://reddit.com/founder_grounded",
+        score=12,
+        source_created_ts=1776688800,
+    )
+    signal = PainSignal(
+        post=post,
+        category="complaint",
+        summary="Founder reports recurring reconciliation pain",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="Finance Ops",
+        analysis_mode="b2b",
+        analysis_payload={},
+        post_type="founder_pitch",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["QuickBooks reconciliation breaks every week"],
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = []
+    openrouter = AsyncMock()
+    openrouter.analyze_deep_dive.return_value = DeepDiveResult(
+        workarounds=[],
+        competitors=["QuickBooks"],
+        feature_wishlist=["auto reconciliation"],
+        buying_signals=["loses two days every month"],
+        icp_hypothesis="Founder-led finance teams",
+        actionable_summary="Validate reconciliation automation",
+    )
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[signal]),
+        openrouter=openrouter,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=8,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[post], source="reddit", run_scope="promotion")
+
+    assert run.deep_dive_count == 1
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    assert report_payload[0]["promotion_eligible"] is True
+    assert report_payload[0]["evidence_rejection_reason"] is None
+    assert report_payload[0]["opportunity_score"] > 35.0
+
+
 async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):
     existing_post = Post(
         post_id="existing1",
