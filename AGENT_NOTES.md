@@ -762,3 +762,10 @@
 - Change: Cap parsed `Retry-After` and exponential fallback delays at `MAX_REDDIT_RETRY_DELAY_SECONDS`.
 - Verification: Added a scraper regression for huge and infinite `Retry-After` values while preserving the existing short-delay retry behavior; full gates are run after this note.
 - Impact: Keeps scheduled collection responsive under hostile or broken rate-limit headers instead of letting one upstream response stall the collector.
+
+## 2026-06-12 - Legacy report export stays inside reports directory
+
+- Reason: The legacy `/export` fallback opened the latest report path directly from the database, so a corrupted or injected report row could make the bot send an arbitrary local file to Telegram.
+- Change: Require fallback report exports to be existing `.json` files under the configured `REPORTS_DIR` before opening them.
+- Verification: Added bot regressions for allowed report export inside `REPORTS_DIR` and rejection of an existing JSON file outside that directory; full gates are run after this note.
+- Impact: Prevents database path corruption from turning an authorized export command into local file disclosure.

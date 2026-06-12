@@ -4,6 +4,7 @@ import re
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Literal, TypedDict
 
 from classifier import PainSignal
@@ -185,6 +186,14 @@ def limit_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     if limit <= len(TELEGRAM_TRUNCATION_SUFFIX):
         return text[:limit]
     return text[: limit - len(TELEGRAM_TRUNCATION_SUFFIX)].rstrip() + TELEGRAM_TRUNCATION_SUFFIX
+
+
+def _is_path_inside(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _signal_icon(signal: PainSignal) -> str:
@@ -550,10 +559,20 @@ class PainFinderBot:
         if not json_path or not os.path.exists(json_path):
             await update.message.reply_text(f"Report file not found: {json_path}")
             return
-        with open(json_path, "rb") as report_file:
+        import config
+
+        report_path = Path(str(json_path)).expanduser().resolve()
+        reports_root = Path(config.REPORTS_DIR).expanduser().resolve()
+        if report_path.suffix.lower() != ".json":
+            await update.message.reply_text("Report path is not a JSON report.")
+            return
+        if not _is_path_inside(report_path, reports_root):
+            await update.message.reply_text("Report path is outside the configured reports directory.")
+            return
+        with open(report_path, "rb") as report_file:
             await update.message.reply_document(
                 document=report_file,
-                filename=os.path.basename(json_path),
+                filename=report_path.name,
                 caption=f"Latest report for r/{report['subreddit']}",
             )
 

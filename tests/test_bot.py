@@ -389,6 +389,44 @@ async def test_cmd_export_truncates_long_sheet_warning(tmp_path):
     assert "[truncated]" in text
 
 
+async def test_cmd_export_legacy_sends_report_inside_reports_dir(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report_path = reports_dir / "report.json"
+    report_path.write_text("[]\n", encoding="utf-8")
+    monkeypatch.setattr("config.REPORTS_DIR", str(reports_dir))
+
+    db = AsyncMock()
+    db.get_latest_report.return_value = {"subreddit": "python", "json_path": str(report_path)}
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    update.message.reply_document.assert_awaited_once()
+    assert update.message.reply_document.await_args.kwargs["filename"] == "report.json"
+
+
+async def test_cmd_export_legacy_rejects_report_path_outside_reports_dir(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    outside_path = tmp_path / "secrets.json"
+    outside_path.write_text('{"secret": true}\n', encoding="utf-8")
+    monkeypatch.setattr("config.REPORTS_DIR", str(reports_dir))
+
+    db = AsyncMock()
+    db.get_latest_report.return_value = {"subreddit": "python", "json_path": str(outside_path)}
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    update.message.reply_document.assert_not_awaited()
+    update.message.reply_text.assert_awaited_once_with("Report path is outside the configured reports directory.")
+
+
 async def test_cmd_deepdive_runs_injected_function():
     db = AsyncMock()
     db.get_pain_point.return_value = {"subreddit": "python"}
