@@ -438,3 +438,11 @@ def test_readme_requires_optional_dspy_dependency_audit():
     assert "CVE-2025-69872" in readme
     assert "\ndspy" not in requirements_dspy.lower()
 
+
+def test_readme_smoke_collect_all_documents_review_target_requirement():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "python smoke_collect.py --source all --limit 5\n```" not in readme
+    assert "only after configuring `REVIEW_TARGETS_JSON`" in readme
+    assert "python smoke_collect.py --source reddit --subreddit python --limit 5" in readme
+    assert "python smoke_collect.py --source hn --hn-keyword \"manual process\" --limit 5" in readme

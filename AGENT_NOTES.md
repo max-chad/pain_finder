@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Document review target requirement for all-source smoke
+
+- Reason: README listed `python smoke_collect.py --source all --limit 5` as a generic source smoke command, but the implementation intentionally fails closed when no enabled `REVIEW_TARGETS_JSON` entries exist.
+- Change: Keep the safe Reddit and HN smoke commands as first-run examples and document that `--source all` should be used only after configuring review targets.
+- Verification: Added a README regression that rejects the unqualified all-source command and requires the review-target warning.
+- Impact: Prevents operators from treating an expected reviews configuration failure as a broken Reddit/HN readiness check during deployment.
+
 ## 2026-06-12 - Record OpenRouter usage before payload shape parsing
 
 - Reason: the OpenRouter chat-completions path accessed `choices[0]` before recording provider `usage`, so malformed but billable responses could return `None` without updating the local LLM spend ledger.

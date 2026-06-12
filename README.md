@@ -269,8 +269,9 @@ Use the read-only source smoke check before a first data-collection run or after
 ```bash
 python smoke_collect.py --source reddit --subreddit python --limit 5
 python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
-python smoke_collect.py --source all --limit 5
 ```
+
+Use `python smoke_collect.py --source all --limit 5` only after configuring `REVIEW_TARGETS_JSON`, because `--source all` includes the reviews collector and fails closed when no enabled review targets exist.
 
 Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`, `REVIEWS_MAX_HTML_BYTES`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs that resolve to public addresses before fetch.
 
