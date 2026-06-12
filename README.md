@@ -182,6 +182,8 @@ Hermes-mode delivery:
 - `DIGEST_MINUTE_UTC`
 - `DIGEST_MIN_WTP`
 - `DIGEST_MAX_ITEMS_PER_GROUP`
+- `CURRENT_OPPORTUNITY_MAX_AGE_DAYS`
+- `EVERGREEN_MAX_AGE_DAYS`
 
 Codex reserve routing note:
 

@@ -106,6 +106,13 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.DSPY_TIMEOUT_SECONDS == 60.0
 
 
+def test_env_example_documents_recency_knobs():
+    example_text = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "CURRENT_OPPORTUNITY_MAX_AGE_DAYS=180" in example_text
+    assert "EVERGREEN_MAX_AGE_DAYS=365" in example_text
+
+
 def test_dspy_parser_is_disabled_by_default(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")

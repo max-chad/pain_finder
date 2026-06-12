@@ -657,3 +657,10 @@
 - Change: Add `python healthcheck.py --fail-on-job-errors`, which preserves default liveness behavior while raising on active scheduled job errors in strict mode.
 - Verification: Added healthcheck tests for strict mode failure and CLI flag wiring.
 - Impact: Lets deployment checks catch a degraded collector without making Docker restart a live container for historical job diagnostics.
+
+## 2026-06-12 - Recency knobs documented in env example
+
+- Reason: `CURRENT_OPPORTUNITY_MAX_AGE_DAYS` and `EVERGREEN_MAX_AGE_DAYS` affect freshness scoring and opportunity buckets, but were missing from `.env.example` and the README environment list.
+- Change: Add both recency tuning variables to `.env.example` and README, plus a regression test that keeps the example file aligned for those knobs.
+- Verification: Added `test_env_example_documents_recency_knobs` and run config/docs checks after this note.
+- Impact: Makes deployment freshness/ranking behavior discoverable instead of relying on hidden defaults in `config.py`.
