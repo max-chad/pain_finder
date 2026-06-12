@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Preserve manual value when merging existing duplicates
+
+- Reason: `Database.merge_duplicate()` marked an existing duplicate row as `merged` without transferring a manual `favorite` triage or completed deep-dive summary to the canonical row, so dedup backfill could hide operator-selected value from exports and digests.
+- Change: When the duplicate row exists, promote the canonical row to `favorite` and copy a completed deep-dive status/summary if the canonical row has not already completed one; keep the no-duplicate-row pipeline merge path unchanged.
+- Verification: Added a regression where a favorite duplicate with a completed deep dive is merged and the canonical row preserves both signals.
+- Impact: Prevents cross-source dedup/backfill from silently dropping high-value manual triage and enrichment state.
+
 ## 2026-06-12 - Document review target requirement for all-source smoke
 
 - Reason: README listed `python smoke_collect.py --source all --limit 5` as a generic source smoke command, but the implementation intentionally fails closed when no enabled `REVIEW_TARGETS_JSON` entries exist.

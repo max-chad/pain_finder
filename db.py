@@ -698,23 +698,43 @@ class Database:
             logger.warning("merge_duplicate: canonical %s not found", canonical_post_id)
             return
 
+        async with self._conn.execute(
+            "SELECT triage_status, deep_dive_status, deep_dive_summary FROM pain_points WHERE post_id = ?",
+            (dup_post_id,),
+        ) as cursor:
+            dup_row = await cursor.fetchone()
+
         current_ids: list[str] = json.loads(row["cross_source_ids"] or "[]")
         should_increment_count = dup_post_id not in current_ids
         if should_increment_count:
             current_ids.append(dup_post_id)
+        promote_favorite = bool(dup_row and dup_row["triage_status"] == "favorite")
+        promote_completed_deep_dive = bool(dup_row and dup_row["deep_dive_status"] == "completed")
+        duplicate_deep_dive_summary = dup_row["deep_dive_summary"] if dup_row else None
 
         try:
-            if should_increment_count:
-                await self._conn.execute(
-                    "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
-                    "cross_source_ids = ? WHERE post_id = ?",
-                    (json.dumps(current_ids), canonical_post_id),
-                )
-            else:
-                await self._conn.execute(
-                    "UPDATE pain_points SET cross_source_ids = ? WHERE post_id = ?",
-                    (json.dumps(current_ids), canonical_post_id),
-                )
+            await self._conn.execute(
+                "UPDATE pain_points SET cross_source_count = cross_source_count + ?, "
+                "cross_source_ids = ?, "
+                "triage_status = CASE WHEN ? THEN 'favorite' ELSE triage_status END, "
+                "deep_dive_status = CASE "
+                "WHEN ? AND deep_dive_status != 'completed' THEN 'completed' "
+                "ELSE deep_dive_status END, "
+                "deep_dive_summary = CASE "
+                "WHEN ? AND (deep_dive_status != 'completed' OR deep_dive_summary IS NULL) "
+                "THEN COALESCE(?, deep_dive_summary) "
+                "ELSE deep_dive_summary END "
+                "WHERE post_id = ?",
+                (
+                    int(should_increment_count),
+                    json.dumps(current_ids),
+                    int(promote_favorite),
+                    int(promote_completed_deep_dive),
+                    int(promote_completed_deep_dive),
+                    duplicate_deep_dive_summary,
+                    canonical_post_id,
+                ),
+            )
             await self._conn.execute(
                 "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
                 (json.dumps(dup_emb_vector), dup_post_id),

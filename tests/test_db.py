@@ -1207,3 +1207,37 @@ async def test_merge_duplicate_multistep_sequence_preserves_invariants(db):
     assert dup_b is not None
     assert dup_a["triage_status"] == "merged"
     assert dup_b["triage_status"] == "merged"
+
+
+async def test_merge_duplicate_preserves_duplicate_favorite_and_completed_deep_dive(db):
+    await _insert_test_point(db, "canonical_preserve", source="reddit")
+    await db.insert_pain_point(
+        subreddit="test",
+        post_id="dup_preserve",
+        url="",
+        title="Duplicate with operator value",
+        body="Duplicate body",
+        category="complaint",
+        summary="s",
+        severity="high",
+        source="hn",
+        triage_status="favorite",
+        deep_dive_status="completed",
+        deep_dive_summary="Validated buying workflow",
+    )
+
+    await db.merge_duplicate(
+        canonical_post_id="canonical_preserve",
+        dup_post_id="dup_preserve",
+        dup_emb_vector=[0.42, 0.58],
+    )
+
+    canonical = await db.get_pain_point("canonical_preserve")
+    assert canonical is not None
+    assert canonical["triage_status"] == "favorite"
+    assert canonical["deep_dive_status"] == "completed"
+    assert canonical["deep_dive_summary"] == "Validated buying workflow"
+
+    dup = await db.get_pain_point("dup_preserve")
+    assert dup is not None
+    assert dup["triage_status"] == "merged"
