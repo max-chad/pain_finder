@@ -25,6 +25,20 @@ _TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 MAX_EMBED_RESPONSE_BYTES = 2_000_000
 
 
+def _coerce_embedding_vector(value: Any) -> list[float]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("embedding must be a non-empty numeric list")
+    vector: list[float] = []
+    for item in value:
+        if not isinstance(item, int | float):
+            raise ValueError("embedding must contain only numeric values")
+        parsed = float(item)
+        if not math.isfinite(parsed):
+            raise ValueError("embedding values must be finite")
+        vector.append(parsed)
+    return vector
+
+
 def _embed_url_for_provider(provider: str, api_base: str) -> str:
     normalized = provider.strip().lower() or "openrouter"
     if api_base:
@@ -72,7 +86,8 @@ async def _provider_embed_raw(
                 if len(body) > max_response_bytes:
                     raise RuntimeError(f"Embedding response exceeded {max_response_bytes} bytes")
         response.raise_for_status()
-    return json.loads(bytes(body).decode(response.encoding or "utf-8", errors="replace"))["data"][0]["embedding"]
+    payload = json.loads(bytes(body).decode(response.encoding or "utf-8", errors="replace"))
+    return _coerce_embedding_vector(payload["data"][0]["embedding"])
 
 
 def _bow_embed(text: str) -> list[float]:
@@ -146,4 +161,4 @@ class Embedder:
             raise ImportError("sentence-transformers is not installed")
         if self._st_model is None:
             self._st_model = SentenceTransformer("all-MiniLM-L6-v2")
-        return self._st_model.encode(text).tolist()
+        return _coerce_embedding_vector(self._st_model.encode(text).tolist())

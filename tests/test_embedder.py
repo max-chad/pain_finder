@@ -95,6 +95,19 @@ class TestOpenRouterEmbed:
 
         assert result == _bow_embed("hello world hello")
 
+    @respx.mock
+    async def test_fallback_to_bow_on_malformed_provider_embedding(self):
+        respx.post("https://openrouter.ai/api/v1/embeddings").mock(
+            return_value=httpx.Response(200, json={"data": [{"embedding": ["not-a-number"]}]})
+        )
+        import sys
+
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            e = _make_embedder()
+            result = await e.embed("hello world hello")
+
+        assert result == _bow_embed("hello world hello")
+
     async def test_fallback_to_bow_when_st_not_installed(self):
         """Falls back to bag-of-words when sentence-transformers is unavailable."""
         import sys

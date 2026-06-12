@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Reject malformed embedding vectors before dedup
+
+- Reason: `Embedder.embed()` promised `list[float]` but returned malformed provider payloads such as `["not-a-number"]` unchanged, which could crash cosine similarity or persist unusable vectors in dedup state.
+- Change: Validate remote and sentence-transformers embeddings as non-empty finite numeric lists; malformed vectors now trigger the existing fallback chain and ultimately the deterministic bag-of-words embedding.
+- Verification: Added a regression where a provider returns a non-numeric embedding and `embed()` falls back to the local BOW vector.
+- Impact: Keeps cross-source dedup and embedding backfill reliable under malformed provider responses.
+
 ## 2026-06-12 - Preserve manual value when merging existing duplicates
 
 - Reason: `Database.merge_duplicate()` marked an existing duplicate row as `merged` without transferring a manual `favorite` triage or completed deep-dive summary to the canonical row, so dedup backfill could hide operator-selected value from exports and digests.
