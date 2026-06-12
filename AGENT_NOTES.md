@@ -832,3 +832,10 @@
 - Change: Include `openai-codex` in the shared Codex/OpenAI-compatible default set for LLM model, temperature, max tokens, and embedding model defaults.
 - Verification: Extended config regression coverage for `openai-codex` with `LLM_MODEL`, `LLM_TEMPERATURE`, and `LLM_MAX_TOKENS` unset; full gates are run after this note.
 - Impact: Prevents a formally valid Codex-provider deploy from sending incompatible default model names and token settings to the Codex backend.
+
+## 2026-06-12 - Deep-dive callbacks require persisted posts
+
+- Reason: Manual `/deepdive` checked that the post existed before network and LLM work, but legacy inline `deepdive:<post_id>:<subreddit>` callbacks could bypass that check and run a Reddit thread fetch plus deep-dive model call for missing or stale post ids.
+- Change: Normalize legacy callback subreddits and require `db.get_pain_point(post_id)` to exist before invoking the injected deep-dive function from callbacks.
+- Verification: Added a bot callback regression proving a missing post answers `Post not found` and does not call `deep_dive_fn`; full gates are run after this note.
+- Impact: Prevents stale/corrupt inline buttons from triggering avoidable external fetches, LLM spend, and orphaned deep-dive rows.

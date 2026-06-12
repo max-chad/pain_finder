@@ -555,6 +555,7 @@ async def test_callback_query_updates_triage_status():
 
 async def test_callback_query_runs_deep_dive():
     db = AsyncMock()
+    db.get_pain_point.return_value = {"post_id": "abc123"}
     deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="Done", error=None))
 
     query = SimpleNamespace(
@@ -576,6 +577,34 @@ async def test_callback_query_runs_deep_dive():
 
     deep_dive_fn.assert_awaited_once_with("abc123", "python", "callback")
     assert query.message.reply_text.await_count == 1
+
+
+async def test_callback_query_deep_dive_requires_existing_post():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    deep_dive_fn = AsyncMock()
+
+    query = SimpleNamespace(
+        data="deepdive:missing:python",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        deep_dive_fn=deep_dive_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.get_pain_point.assert_awaited_once_with("missing")
+    deep_dive_fn.assert_not_awaited()
+    query.answer.assert_awaited_once_with("Post not found", show_alert=False)
+    query.message.reply_text.assert_not_awaited()
 
 
 async def test_cmd_macro_triggers_injected_clusterer():

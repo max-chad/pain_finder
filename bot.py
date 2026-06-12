@@ -834,8 +834,12 @@ class PainFinderBot:
                     subreddit = signal.post.subreddit
                 else:
                     post_id, subreddit = parse_scoped_callback_data(data, "deepdive:")
+                    subreddit = normalize_subreddit(subreddit)
                 if not self.deep_dive_fn:
                     await query.answer("Deep dive not configured", show_alert=False)
+                    return
+                if await self.db.get_pain_point(post_id) is None:
+                    await query.answer("Post not found", show_alert=False)
                     return
                 await query.answer("Running deep dive...", show_alert=False)
                 result = await self.deep_dive_fn(post_id, subreddit, "callback")
