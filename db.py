@@ -1015,39 +1015,43 @@ class Database:
             (post_id, self._finite_float(similarity, "member similarity"))
             for post_id, similarity in members
         ]
-        async with self._conn.execute(
-            """
-            INSERT INTO macro_trend_clusters (
-                run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
-                item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
-                median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                canonical_key,
-                cluster_key,
-                label,
-                summary,
-                estimated_monetization_signal,
-                item_count_value,
-                aggregate_wtp_value,
-                fresh_post_count_value,
-                evergreen_post_count_value,
-                median_buyer_authority_value,
-                json.dumps(incumbents or [], ensure_ascii=False),
-                avg_opportunity_score_value,
-                latest_source_created_ts_value,
-            ),
-        ) as cursor:
-            cluster_id = int(cursor.lastrowid)
-        for post_id, similarity in member_rows:
-            await self._conn.execute(
-                "INSERT INTO macro_trend_members (run_id, cluster_id, post_id, similarity) VALUES (?, ?, ?, ?)",
-                (run_id, cluster_id, post_id, similarity),
-            )
-        await self._conn.commit()
-        return cluster_id
+        try:
+            async with self._conn.execute(
+                """
+                INSERT INTO macro_trend_clusters (
+                    run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
+                    item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
+                    median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    canonical_key,
+                    cluster_key,
+                    label,
+                    summary,
+                    estimated_monetization_signal,
+                    item_count_value,
+                    aggregate_wtp_value,
+                    fresh_post_count_value,
+                    evergreen_post_count_value,
+                    median_buyer_authority_value,
+                    json.dumps(incumbents or [], ensure_ascii=False),
+                    avg_opportunity_score_value,
+                    latest_source_created_ts_value,
+                ),
+            ) as cursor:
+                cluster_id = int(cursor.lastrowid)
+            for post_id, similarity in member_rows:
+                await self._conn.execute(
+                    "INSERT INTO macro_trend_members (run_id, cluster_id, post_id, similarity) VALUES (?, ?, ?, ?)",
+                    (run_id, cluster_id, post_id, similarity),
+                )
+            await self._conn.commit()
+            return cluster_id
+        except Exception:
+            await self._conn.rollback()
+            raise
 
     async def get_latest_macro_trend_run(self) -> dict[str, Any] | None:
         async with self._conn.execute("SELECT * FROM macro_trend_runs ORDER BY created_at DESC, id DESC LIMIT 1") as cursor:

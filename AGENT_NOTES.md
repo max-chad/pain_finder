@@ -853,3 +853,10 @@
 - Change: Reject non-positive monitor intervals on `add_monitored_subreddit()` and clamp legacy non-positive persisted intervals to one hour during scheduler reload.
 - Verification: Added DB regression for interval `0` rejection and scheduler regression proving a legacy `interval_hours=0` row still schedules a one-hour monitor job; full gates are run after this note.
 - Impact: Prevents one bad monitor row from breaking scheduled collection reload and leaving ingestion unscheduled.
+
+## 2026-06-12 - Macro cluster saves roll back partial member failures
+
+- Reason: `save_macro_cluster()` inserted the cluster row before inserting member rows, but lacked rollback handling; a member insert failure could leave a partial uncommitted cluster visible on the shared connection and vulnerable to a later unrelated commit.
+- Change: Wrap macro cluster and member inserts in a single transactional try/rollback boundary.
+- Verification: Added a DB regression that forces a member binding failure after cluster insertion and asserts no cluster is visible afterward; full gates are run after this note.
+- Impact: Protects canonical cluster/digest state from partial macro snapshots when member persistence fails mid-write.

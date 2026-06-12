@@ -772,6 +772,31 @@ async def test_save_macro_cluster_rejects_invalid_numeric_values(db):
     assert await db.get_macro_clusters(run_id) == []
 
 
+async def test_save_macro_cluster_rolls_back_partial_member_failure(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+
+    with pytest.raises(Exception):
+        await db.save_macro_cluster(
+            run_id=run_id,
+            canonical_key="partial-cluster",
+            cluster_key="reddit:partial",
+            label="Partial cluster",
+            summary="Member insert should fail after cluster insert.",
+            estimated_monetization_signal="high",
+            item_count=2,
+            aggregate_wtp=17.0,
+            fresh_post_count=1,
+            evergreen_post_count=1,
+            median_buyer_authority=0.8,
+            incumbents=["quickbooks"],
+            avg_opportunity_score=84.5,
+            latest_source_created_ts=1713772800,
+            members=[(object(), 0.9)],
+        )
+
+    assert await db.get_macro_clusters(run_id) == []
+
+
 async def test_create_macro_trend_run_rejects_invalid_counts(db):
     with pytest.raises(ValueError, match="window_days must be positive"):
         await db.create_macro_trend_run(window_days=0, candidate_count=0, cluster_count=0)
