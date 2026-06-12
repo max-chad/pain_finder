@@ -36,7 +36,10 @@ def _coerce_embedding_vector(value: Any) -> list[float]:
         if not math.isfinite(parsed):
             raise ValueError("embedding values must be finite")
         vector.append(parsed)
-    return vector
+    norm = math.sqrt(sum(item * item for item in vector))
+    if norm == 0:
+        raise ValueError("embedding vector must not be zero")
+    return [item / norm for item in vector]
 
 
 def _embed_url_for_provider(provider: str, api_base: str) -> str:

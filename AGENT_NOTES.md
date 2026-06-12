@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Normalize provider embeddings for cosine dedup
+
+- Reason: the deduplicator treats embedding dot products as cosine similarity, but remote and sentence-transformers vectors were accepted without L2 normalization, so large-magnitude provider vectors could inflate similarity and trigger false cross-source merges.
+- Change: Normalize validated provider and sentence-transformers embeddings to unit length; zero vectors now fail validation and use the existing fallback path.
+- Verification: Added a regression where provider embedding `[3.0, 4.0]` is returned as `[0.6, 0.8]` before dedup sees it.
+- Impact: Keeps cross-source dedup thresholds meaningful across embedding providers and reduces false merge/data-loss risk.
+
 ## 2026-06-12 - Reject malformed embedding vectors before dedup
 
 - Reason: `Embedder.embed()` promised `list[float]` but returned malformed provider payloads such as `["not-a-number"]` unchanged, which could crash cosine similarity or persist unusable vectors in dedup state.

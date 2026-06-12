@@ -63,6 +63,17 @@ class TestOpenRouterEmbed:
         assert result == embedding
 
     @respx.mock
+    async def test_provider_embedding_is_l2_normalized_for_cosine_dedup(self):
+        respx.post("https://openrouter.ai/api/v1/embeddings").mock(
+            return_value=httpx.Response(200, json={"data": [{"embedding": [3.0, 4.0]}]})
+        )
+        e = _make_embedder()
+
+        result = await e.embed("test text")
+
+        assert result == [0.6, 0.8]
+
+    @respx.mock
     async def test_fallback_to_st_on_http_error(self):
         """When OpenRouter returns 500, falls back to sentence-transformers."""
         respx.post("https://openrouter.ai/api/v1/embeddings").mock(
