@@ -874,3 +874,10 @@
 - Change: Validate Reddit listing payload shapes, treat fully malformed core feeds as feed failures so RSS fallback remains available, and skip malformed child entries while preserving valid posts.
 - Verification: Added scraper regressions for malformed public child entries, malformed public listing fallback to RSS, and malformed OAuth child entries; full gates are run after this note.
 - Impact: Keeps scheduled Reddit ingestion collecting valid posts during partial upstream schema drift instead of dropping an entire run.
+
+## 2026-06-12 - HN schema drift marks source failure
+
+- Reason: Hacker News ingestion accepted a response object with non-array `hits` as a successful empty query, so scheduled HN collection could report success while Algolia's response schema was unusable.
+- Change: Treat non-array `hits` as a malformed keyword response, preserving partial success for other keywords and raising when all keyword responses are invalid.
+- Verification: Added HN scraper regressions for one malformed `hits` response followed by a valid query and for all malformed keyword payloads; full gates are run after this note.
+- Impact: Keeps deploy/readiness diagnostics honest for HN ingestion instead of silently marking broken source responses as empty successful runs.

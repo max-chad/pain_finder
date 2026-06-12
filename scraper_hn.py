@@ -127,8 +127,13 @@ class HackerNewsScraper:
                     failed_queries.append(keyword)
                     continue
 
+                raw_hits = payload.get("hits", [])
+                if not isinstance(raw_hits, list):
+                    logger.warning("HN fetch failed for query '%s': hits must be a JSON array", keyword)
+                    failed_queries.append(keyword)
+                    continue
                 successful_queries += 1
-                for hit in payload.get("hits", []):
+                for hit in raw_hits:
                     if not isinstance(hit, dict):
                         continue
                     object_id = str(hit.get("objectID", "")).strip()
