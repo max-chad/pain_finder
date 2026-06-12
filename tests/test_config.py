@@ -113,6 +113,15 @@ def test_env_example_documents_recency_knobs():
     assert "EVERGREEN_MAX_AGE_DAYS=365" in example_text
 
 
+def test_ignore_files_exclude_env_variants_but_keep_example():
+    for path in [Path(".gitignore"), Path(".dockerignore")]:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert ".env" in lines
+        assert ".env.*" in lines
+        assert "!.env.example" in lines
+        assert lines.index(".env.*") < lines.index("!.env.example")
+
+
 def test_dspy_parser_is_disabled_by_default(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")

@@ -895,3 +895,10 @@
 - Change: Catch and log non-budget per-post classification failures inside the concurrency limiter while still propagating `BudgetCapReachedError` as a hard spending stop.
 - Verification: Added classifier regressions proving one crashed post no longer drops a valid peer and budget pause still propagates; full gates are run after this note.
 - Impact: Improves scheduled ingestion reliability under partial parser/provider failures without weakening budget safety.
+
+## 2026-06-12 - Env variants stay out of git and Docker context
+
+- Reason: `.gitignore` and `.dockerignore` ignored only the exact `.env` file, so common secret-bearing variants such as `.env.local`, `.env.production`, or `.env.backup` could be committed or copied into the Docker image; `.dockerignore` also had a UTF-8 BOM before `.git`, weakening the first pattern.
+- Change: Ignore `.env.*` in both git and Docker build contexts while explicitly keeping `.env.example` available as the documented template, and rewrite `.dockerignore` without BOM.
+- Verification: Added a config/doc regression that checks both ignore files contain the deny pattern and the `.env.example` allow rule; verified `git check-ignore` for env variants, verified `.dockerignore` bytes start with `.git`, and full gates are run after this note.
+- Impact: Reduces accidental credential leakage through source control and container images without changing runtime env loading.

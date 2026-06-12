@@ -1,4 +1,4 @@
-﻿.git
+.git
 .github
 .pytest_cache
 __pycache__
@@ -6,9 +6,10 @@ __pycache__
 *.pyo
 *.pyd
 .env
+.env.*
+!.env.example
 .coverage
 htmlcov
 reports
 data
 pain_finder.db
-
