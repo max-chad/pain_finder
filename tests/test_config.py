@@ -430,7 +430,11 @@ def test_env_example_lists_operational_limit_knobs():
 
 def test_readme_requires_optional_dspy_dependency_audit():
     readme = Path("README.md").read_text(encoding="utf-8")
+    requirements_dspy = Path("requirements-dspy.txt").read_text(encoding="utf-8")
 
     assert "python -m pip_audit -r requirements-dspy.txt" in readme
     assert "DSPY_REDDIT_PARSER_ENABLED=0" in readme
+    assert "fail-closed" in readme
+    assert "CVE-2025-69872" in readme
+    assert "\ndspy" not in requirements_dspy.lower()
 

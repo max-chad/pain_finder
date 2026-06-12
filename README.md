@@ -116,7 +116,7 @@ Scraper controls:
 
 Optional DSPy Reddit parser:
 
-- `DSPY_REDDIT_PARSER_ENABLED` (default `0`; set to `1` after installing `requirements-dspy.txt`)
+- `DSPY_REDDIT_PARSER_ENABLED` (default `0`; keep disabled unless you have an audited DSPy install)
 - `DSPY_PROVIDER` (defaults to `LLM_PROVIDER`, so Codex by default)
 - `DSPY_MODEL` (defaults to `LLM_MODEL`)
 - `DSPY_REASONING_EFFORT` (defaults to `LLM_REASONING_EFFORT`)
@@ -126,14 +126,14 @@ Optional DSPy Reddit parser:
 - `DSPY_MAX_TOKENS`
 - `DSPY_TIMEOUT_SECONDS` (default `60`)
 
-The DSPy dependency is intentionally optional and is not installed by the base requirements. Install it only when this parser path is needed:
+The DSPy dependency is intentionally optional and is not installed by the base requirements. The project-managed `requirements-dspy.txt` is currently fail-closed and does not install DSPy because the upstream dependency set still pulls `diskcache 5.6.3` / `CVE-2025-69872` with no fixed version reported by `pip-audit`.
 
 ```bash
 pip install -r requirements-dspy.txt
 python -m pip_audit -r requirements-dspy.txt
 ```
 
-Keep `DSPY_REDDIT_PARSER_ENABLED=0` for production unless the optional DSPy dependency audit is clean or the residual optional-dependency risk is explicitly accepted.
+Keep `DSPY_REDDIT_PARSER_ENABLED=0` for production until DSPy can be re-added to `requirements-dspy.txt` and the optional dependency audit passes with DSPy included.
 
 Trend clustering:
 

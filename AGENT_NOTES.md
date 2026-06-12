@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Optional DSPy install path fails closed on known CVE
+
+- Reason: `python -m pip_audit -r requirements-dspy.txt` still reports `diskcache 5.6.3` / `CVE-2025-69872` through optional DSPy, with no fixed version reported, so the documented optional install path remained known-vulnerable.
+- Change: Remove `dspy>=3.2` from the project-managed optional requirements file, leave the file as an audited fail-closed placeholder, and update README guidance to keep DSPy disabled until it can be re-added with a clean audit.
+- Verification: Added a README/requirements regression asserting the fail-closed status and rerun optional dependency audit after the change.
+- Impact: Prevents operators from installing a known-vulnerable optional parser path via repository-provided commands while preserving the lazy runtime seam for a future audited DSPy install.
+
 ## 2026-06-12 - Roll back pain point writes on secondary index failures
 
 - Reason: `Database.insert_pain_point()` could fail after the main `pain_points` upsert but before competitor index replacement, then leave the uncommitted row visible on the connection and eligible to be committed by a later successful operation.
