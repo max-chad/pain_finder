@@ -776,3 +776,10 @@
 - Change: Treat non-finite review ratings as invalid in the shared rating coercion helper.
 - Verification: Added a review-ingest regression proving a NaN rating row is skipped while a valid complaint in the same target is still collected; full gates are run after this note.
 - Impact: Keeps review collection resilient to malformed numeric payloads from external review pages.
+
+## 2026-06-12 - URL safety rejects non-global shared address space
+
+- Reason: `100.64.0.0/10` shared address space is not private/reserved in Python's `ipaddress` flags, so review target URLs could pass the public URL guard despite not being globally reachable.
+- Change: Require literal and resolved IP addresses to be globally routable and non-multicast.
+- Verification: Added URL safety regressions for literal CGNAT addresses and DNS results resolving into CGNAT space; full gates are run after this note.
+- Impact: Tightens SSRF protection for operator-configured review targets and blocks another internal/non-public address range.

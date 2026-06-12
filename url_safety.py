@@ -16,14 +16,7 @@ def _is_public_ip(value: object) -> bool:
         ip = ip_address(str(value))
     except ValueError:
         return False
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    return ip.is_global and not ip.is_multicast
 
 
 def _normalized_hostname(value: str) -> str | None:

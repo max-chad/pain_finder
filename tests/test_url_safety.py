@@ -13,6 +13,8 @@ def test_public_http_url_rejects_private_and_ambiguous_numeric_hosts():
         "http://localhost/reviews",
         "http://127.0.0.1/reviews",
         "http://10.0.0.1/reviews",
+        "http://100.64.0.1/reviews",
+        "http://100.127.255.254/reviews",
         "http://[::1]/reviews",
         "http://2130706433/reviews",
         "http://0177.0.0.1/reviews",
@@ -34,6 +36,15 @@ def test_public_http_url_rejects_credentials_and_unsupported_schemes():
 async def test_resolved_public_http_url_rejects_domains_that_resolve_private(monkeypatch):
     def fake_getaddrinfo(host, port, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.10", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert await is_resolved_public_http_url("https://reviews.example.test/path") is False
+
+
+async def test_resolved_public_http_url_rejects_domains_that_resolve_to_shared_address_space(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.10", port))]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
