@@ -809,7 +809,7 @@ class RedditScraper:
             )
         except Exception as e:
             logger.debug("Unable to fetch top comments via OAuth for %s: %s", post_id, e)
-            return []
+            return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
 
         comments_listing = self._listing_children(payload)
         comments: list[str] = []
@@ -826,7 +826,9 @@ class RedditScraper:
                 comments.append(body.strip())
             if len(comments) >= limit:
                 break
-        return comments
+        if comments:
+            return comments
+        return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
 
     async def _fetch_top_comments_json(
         self,

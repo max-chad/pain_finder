@@ -980,6 +980,38 @@ async def test_fetch_oauth_json_keeps_successful_feed_when_peer_feed_fails():
     assert [post.post_id for post in posts] == ["reddit:oauthnew"]
 
 
+async def test_fetch_top_comments_oauth_falls_back_to_rss_when_oauth_fails():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test/1.0")
+    client = AsyncMock()
+
+    with (
+        patch.object(scraper, "_request_oauth_json", new=AsyncMock(side_effect=RuntimeError("oauth comments down"))),
+        patch.object(scraper, "_fetch_comments_rss", new=AsyncMock(return_value=["rss comment"])) as rss_mock,
+    ):
+        comments = await scraper._fetch_top_comments_oauth(client=client, post_id="reddit:abc1", limit=2)
+
+    assert comments == ["rss comment"]
+    rss_mock.assert_awaited_once_with(client=client, post_id="reddit:abc1", limit=2)
+
+
+async def test_fetch_top_comments_oauth_falls_back_to_rss_when_listing_has_no_comments():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test/1.0")
+    client = AsyncMock()
+
+    with (
+        patch.object(scraper, "_request_oauth_json", new=AsyncMock(return_value=[{}, {"data": {"children": []}}])),
+        patch.object(scraper, "_fetch_comments_rss", new=AsyncMock(return_value=["rss comment"])) as rss_mock,
+    ):
+        comments = await scraper._fetch_top_comments_oauth(client=client, post_id="reddit:abc1", limit=2)
+
+    assert comments == ["rss comment"]
+    rss_mock.assert_awaited_once_with(client=client, post_id="reddit:abc1", limit=2)
+
+
 async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
     respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
         return_value=httpx.Response(

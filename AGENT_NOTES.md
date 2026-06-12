@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - OAuth comment enrichment falls back to RSS
+
+- Reason: authenticated Reddit collection used OAuth for top-comment hydration, but an OAuth comment failure or empty/malformed listing returned no comments instead of using the existing old.reddit RSS fallback, weakening downstream consensus/workaround scoring.
+- Change: Route OAuth top-comment failures and empty comment listings through `_fetch_comments_rss()`, matching the public JSON enrichment path.
+- Verification: Added scraper regressions for OAuth comment failure and empty OAuth listing falling back to RSS.
+- Impact: Improves authenticated Reddit collection quality and keeps comment-market signals available when the OAuth comments endpoint degrades.
+
 ## 2026-06-12 - Optional DSPy install path fails closed on known CVE
 
 - Reason: `python -m pip_audit -r requirements-dspy.txt` still reports `diskcache 5.6.3` / `CVE-2025-69872` through optional DSPy, with no fixed version reported, so the documented optional install path remained known-vulnerable.
