@@ -369,6 +369,11 @@ def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
     cases = [
         ("LLM_MAX_TOKENS", "0", "LLM_MAX_TOKENS must be at least 1"),
         ("PRIMARY_MAX_OUTPUT_TOKENS", "0", "PRIMARY_MAX_OUTPUT_TOKENS must be at least 1"),
+        (
+            {"LLM_MAX_TOKENS": "100", "PRIMARY_MAX_OUTPUT_TOKENS": "101"},
+            None,
+            "PRIMARY_MAX_OUTPUT_TOKENS must be less than or equal to LLM_MAX_TOKENS",
+        ),
         ("CLASSIFIER_MAX_CONCURRENCY", "0", "CLASSIFIER_MAX_CONCURRENCY must be at least 1"),
         ("DEDUP_SIMILARITY_THRESHOLD", "1.5", "DEDUP_SIMILARITY_THRESHOLD must be between 0 and 1"),
         ("TREND_CLUSTER_SIMILARITY", "-0.1", "TREND_CLUSTER_SIMILARITY must be between 0 and 1"),
@@ -390,10 +395,16 @@ def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
         monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.setenv(env_name, env_value)
+        env_names = [env_name] if isinstance(env_name, str) else list(env_name)
+        if isinstance(env_name, str):
+            monkeypatch.setenv(env_name, env_value)
+        else:
+            for key, value in env_name.items():
+                monkeypatch.setenv(key, value)
         with pytest.raises(ValueError, match=expected_message):
             importlib.reload(config_module)
-        monkeypatch.delenv(env_name)
+        for key in env_names:
+            monkeypatch.delenv(key)
         config_module = importlib.reload(config_module)
 
 

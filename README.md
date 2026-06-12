@@ -101,6 +101,7 @@ Classifier/deep dive controls:
 - `CLASSIFIER_MODE` (`legacy|b2b|dual`, default `dual`)
 - `CLASSIFIER_MAX_CONCURRENCY` (default `8`)
 - `LLM_MAX_CLASSIFICATIONS_PER_RUN` (default `0`, disabled when `0`; set >0 to cap classifications per analysis run)
+- `PRIMARY_MAX_OUTPUT_TOKENS` (default `min(1200, LLM_MAX_TOKENS)`; must not exceed `LLM_MAX_TOKENS`)
 - `DEEP_DIVE_WTP_THRESHOLD` (default `8`)
 - `DEEP_DIVE_MAX_COMMENTS` (default `250`)
 

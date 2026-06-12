@@ -916,3 +916,10 @@
 - Change: Add local safe text/int/float coercion for digest filtering, sorting, cluster rendering, and row rendering; non-finite or malformed numeric values degrade to zero.
 - Verification: Added a digest regression with malformed row and cluster values proving the DOCX still renders with defaulted metrics; full gates are run after this note.
 - Impact: Keeps daily digest delivery available under partial data corruption or schema drift, preserving visibility into the rest of the collected data.
+
+## 2026-06-12 - Primary output cap cannot exceed global LLM cap
+
+- Reason: `PRIMARY_MAX_OUTPUT_TOKENS` overrides the per-request output cap for primary classification but was only validated as positive, so a deploy typo could bypass the global `LLM_MAX_TOKENS` ceiling for the hottest LLM path.
+- Change: Fail config import when `PRIMARY_MAX_OUTPUT_TOKENS > LLM_MAX_TOKENS` and document the constraint in README.
+- Verification: Added a config regression for the cross-env invalid combination; full gates are run after this note.
+- Impact: Prevents misconfigured primary classification from sending unexpectedly large or provider-rejected LLM requests.
