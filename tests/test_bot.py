@@ -337,6 +337,7 @@ async def test_cmd_export_uses_export_service_with_warning(tmp_path):
     csv_path.write_text("header\n", encoding="utf-8")
 
     export_service = AsyncMock()
+    export_service.reports_dir = str(tmp_path)
     export_service.export.return_value = ExportResult(
         csv_path=str(csv_path),
         row_count=3,
@@ -366,6 +367,7 @@ async def test_cmd_export_truncates_long_sheet_warning(tmp_path):
     csv_path.write_text("header\n", encoding="utf-8")
 
     export_service = AsyncMock()
+    export_service.reports_dir = str(tmp_path)
     export_service.export.return_value = ExportResult(
         csv_path=str(csv_path),
         row_count=3,
@@ -387,6 +389,34 @@ async def test_cmd_export_truncates_long_sheet_warning(tmp_path):
     text = update.message.reply_text.await_args.args[0]
     assert len(text) <= TELEGRAM_TEXT_LIMIT
     assert "[truncated]" in text
+
+
+async def test_cmd_export_service_rejects_csv_path_outside_reports_dir(tmp_path):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    outside_path = tmp_path / "outside.csv"
+    outside_path.write_text("secret\n", encoding="utf-8")
+
+    export_service = AsyncMock()
+    export_service.reports_dir = str(reports_dir)
+    export_service.export.return_value = ExportResult(
+        csv_path=str(outside_path),
+        row_count=1,
+    )
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        export_service=export_service,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    update.message.reply_document.assert_not_awaited()
+    update.message.reply_text.assert_awaited_once_with("Export path is outside the configured reports directory.")
 
 
 async def test_cmd_export_legacy_sends_report_inside_reports_dir(tmp_path, monkeypatch):

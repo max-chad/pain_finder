@@ -944,3 +944,10 @@
 - Change: Add safe text/int coercion at the digest boundary and ignore non-finite opportunity scores before falling back to pain/WTP scoring.
 - Verification: Added a pipeline regression with malformed digest row values; full gates are run after this note.
 - Impact: Keeps operator digest reporting available under partial data corruption instead of failing the entire Telegram command.
+
+## 2026-06-12 - Export service file sends stay inside reports root
+
+- Reason: The legacy report export path checked that a file stayed inside `REPORTS_DIR`, but the newer CSV export-service path sent `result.csv_path` directly; a bad service result could make the bot send an arbitrary local CSV path.
+- Change: Resolve export-service CSV paths, require `.csv`, require existence, and require the file to be inside the service reports directory or configured `REPORTS_DIR` before `reply_document`.
+- Verification: Added bot regressions for export-service paths inside and outside the reports root; full gates are run after this note.
+- Impact: Hardens the Telegram file-send surface against accidental or compromised export path leakage.

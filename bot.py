@@ -539,10 +539,26 @@ class PainFinderBot:
 
         if self.export_service:
             result: ExportResult = await self.export_service.export(subreddit=subreddit)
-            with open(result.csv_path, "rb") as export_file:
+            import config
+
+            export_path = Path(str(result.csv_path)).expanduser().resolve()
+            service_reports_dir = getattr(self.export_service, "reports_dir", None)
+            if not isinstance(service_reports_dir, (str, os.PathLike)):
+                service_reports_dir = config.REPORTS_DIR
+            reports_root = Path(service_reports_dir).expanduser().resolve()
+            if export_path.suffix.lower() != ".csv":
+                await update.message.reply_text("Export path is not a CSV file.")
+                return
+            if not _is_path_inside(export_path, reports_root):
+                await update.message.reply_text("Export path is outside the configured reports directory.")
+                return
+            if not export_path.exists():
+                await update.message.reply_text(f"Export file not found: {result.csv_path}")
+                return
+            with open(export_path, "rb") as export_file:
                 await update.message.reply_document(
                     document=export_file,
-                    filename=os.path.basename(result.csv_path),
+                    filename=export_path.name,
                     caption=f"Export rows: {result.row_count}",
                 )
             if result.sheet_url:
