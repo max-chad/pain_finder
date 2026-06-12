@@ -414,6 +414,56 @@ async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monke
     assert usage_kwargs["completion_tokens"] == 45
 
 
+async def test_openai_codex_provider_tracks_usage_for_empty_output(monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter(())
+
+        def get_final_response(self):
+            return SimpleNamespace(
+                output=[],
+                output_text="",
+                usage=SimpleNamespace(input_tokens=90, output_tokens=12),
+                status="completed",
+            )
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("openrouter.OpenAI", FakeClient)
+
+    budget = AsyncMock()
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        api_base="https://chatgpt.com/backend-api/codex",
+        budget_guard=budget,
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful", post_id="reddit:empty")
+
+    assert result is None
+    budget.record_usage.assert_awaited_once()
+    usage_kwargs = budget.record_usage.await_args.kwargs
+    assert usage_kwargs["prompt_tokens"] == 90
+    assert usage_kwargs["completion_tokens"] == 12
+    assert usage_kwargs["post_id"] == "reddit:empty"
+
+
 async def test_openai_codex_provider_rejects_oversized_streamed_response(monkeypatch):
     from types import SimpleNamespace
 

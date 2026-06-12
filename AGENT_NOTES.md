@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Codex empty responses still record usage
+
+- Reason: the OpenAI Codex Responses path returned `(None, usage)` for empty model output, but `_request_json_response()` exited before recording usage, so failed/empty provider calls could bypass the LLM spend ledger.
+- Change: Record Codex Responses usage immediately after the provider call, before returning on `payload is None` or validating/cache-checking the payload.
+- Verification: Added an OpenRouter regression where an empty Codex response with usage returns `None` but still calls `BudgetGuard.record_usage()`.
+- Impact: Keeps budget accounting accurate for spend-producing Codex calls even when the model returns unusable output.
+
 ## 2026-06-12 - OAuth comment enrichment falls back to RSS
 
 - Reason: authenticated Reddit collection used OAuth for top-comment hydration, but an OAuth comment failure or empty/malformed listing returned no comments instead of using the existing old.reddit RSS fallback, weakening downstream consensus/workaround scoring.

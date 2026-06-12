@@ -653,6 +653,16 @@ class OpenRouterClient:
             except Exception as e:
                 logger.warning("OpenAI Codex request failed: %s", e)
                 return None
+            await self._record_usage_from_usage_dict(
+                usage=usage,
+                model=model,
+                operation=operation,
+                post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                candidate_stage=candidate_stage,
+            )
             if payload is None:
                 return None
             is_valid_payload = validate_payload(payload) if validate_payload is not None else True
@@ -665,16 +675,6 @@ class OpenRouterClient:
                     operation,
                     cache_key,
                 )
-            await self._record_usage_from_usage_dict(
-                usage=usage,
-                model=model,
-                operation=operation,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                candidate_stage=candidate_stage,
-            )
             return payload
 
         headers = self._build_headers()
