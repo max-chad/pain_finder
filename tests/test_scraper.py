@@ -471,6 +471,69 @@ async def test_fetch_public_json_keeps_successful_feed_when_peer_feed_fails():
     assert [post.post_id for post in posts] == ["reddit:newonly"]
 
 
+async def test_fetch_public_json_skips_malformed_listing_children(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        "not-a-child-object",
+                        {"data": "not-a-post-object"},
+                        {
+                            "data": {
+                                "id": "valid",
+                                "title": "Valid feed pain",
+                                "selftext": "manual sync still breaks",
+                                "url": "https://reddit.com/valid",
+                                "score": 8,
+                                "permalink": "/r/python/comments/valid/valid-feed-pain/",
+                            }
+                        },
+                    ]
+                }
+            },
+        )
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+    )
+
+    posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:valid"]
+
+
+async def test_fetch_posts_falls_back_to_rss_when_public_json_listing_is_malformed(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, json={"data": {"children": {}}})
+    )
+    feed_xml = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>tag:reddit.com,2005:comments/rssfallback</id>
+        <title>RSS fallback pain</title>
+        <summary>Manual fallback still matters.</summary>
+        <link href="https://old.reddit.com/r/python/comments/rssfallback/rss_fallback_pain/" />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+    )
+
+    posts = await scraper.fetch_posts("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:rssfallback"]
+
+
 async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_query(respx_mock):
     respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
         return_value=httpx.Response(
@@ -988,6 +1051,42 @@ async def test_fetch_oauth_json_keeps_successful_feed_when_peer_feed_fails():
         posts = await scraper._fetch_oauth_json("python", limit=10)
 
     assert [post.post_id for post in posts] == ["reddit:oauthnew"]
+
+
+async def test_fetch_oauth_json_skips_malformed_listing_children():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+    )
+
+    async def payload(*, client, path, params):
+        return {
+            "data": {
+                "children": [
+                    "not-a-child-object",
+                    {"data": "not-a-post-object"},
+                    {
+                        "data": {
+                            "id": "oauthvalid",
+                            "title": "OAuth valid pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/oauthvalid",
+                            "score": 8,
+                            "permalink": "/r/python/comments/oauthvalid/oauth-valid-pain/",
+                        }
+                    },
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_oauth_json", side_effect=payload):
+        posts = await scraper._fetch_oauth_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:oauthvalid"]
 
 
 async def test_fetch_top_comments_oauth_falls_back_to_rss_when_oauth_fails():

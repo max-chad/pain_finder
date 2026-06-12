@@ -867,3 +867,10 @@
 - Change: Write report artifacts with `allow_nan=False` while preserving the existing atomic `.tmp` + `os.replace` behavior.
 - Verification: Added a pipeline regression proving non-standard report payloads fail and leave no `.tmp` or final `.json` artifact; full gates are run after this note.
 - Impact: Keeps generated report files standards-compliant and prevents malformed analysis artifacts from being saved or exported.
+
+## 2026-06-12 - Reddit listing shape drift does not break collection
+
+- Reason: Reddit public/OAuth JSON feed parsing trusted `data.children` and child object shapes after successful HTTP/JSON parsing, so one malformed upstream listing could abort source collection or skip the RSS fallback path.
+- Change: Validate Reddit listing payload shapes, treat fully malformed core feeds as feed failures so RSS fallback remains available, and skip malformed child entries while preserving valid posts.
+- Verification: Added scraper regressions for malformed public child entries, malformed public listing fallback to RSS, and malformed OAuth child entries; full gates are run after this note.
+- Impact: Keeps scheduled Reddit ingestion collecting valid posts during partial upstream schema drift instead of dropping an entire run.

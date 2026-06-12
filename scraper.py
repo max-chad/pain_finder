@@ -179,6 +179,8 @@ class RedditScraper:
 
     @staticmethod
     def _build_post(subreddit: str, post_data: dict[str, Any], *, discovery_query: str = "") -> Post | None:
+        if not isinstance(post_data, dict):
+            return None
         post_id = post_data.get("id")
         if not post_id:
             return None
@@ -279,6 +281,18 @@ class RedditScraper:
             return []
         children = data.get("children", [])
         return children if isinstance(children, list) else []
+
+    @staticmethod
+    def _post_listing_children(payload: Any) -> list[Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+        children = data.get("children")
+        if not isinstance(children, list):
+            return None
+        return children
 
     @staticmethod
     def _parse_datetime_text(raw_text: str) -> tuple[str | None, int | None]:
@@ -523,14 +537,24 @@ class RedditScraper:
             if all(payload is None for payload in payloads) and feed_error is not None:
                 raise feed_error
 
+            valid_feed_payload_seen = False
             for payload in payloads:
                 if payload is None:
                     continue
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}))
+                children = self._post_listing_children(payload)
+                if children is None:
+                    feed_error = ValueError("Reddit feed payload missing data.children")
+                    logger.warning("Reddit public feed returned malformed listing for r/%s", subreddit)
+                    continue
+                valid_feed_payload_seen = True
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
+            if not valid_feed_payload_seen and feed_error is not None:
+                raise feed_error
 
             async def fetch_search(query: str, params: dict[str, Any]) -> Any:
                 url = f"https://www.reddit.com/r/{subreddit}/search.json"
@@ -551,8 +575,13 @@ class RedditScraper:
             for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
                 if payload is None:
                     continue
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                children = self._post_listing_children(payload)
+                if children is None:
+                    logger.warning("Reddit public search returned malformed listing for r/%s query=%r", subreddit, query)
+                    continue
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data, discovery_query=query)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
@@ -690,14 +719,24 @@ class RedditScraper:
             if all(payload is None for payload in payloads) and feed_error is not None:
                 raise feed_error
 
+            valid_feed_payload_seen = False
             for payload in payloads:
                 if payload is None:
                     continue
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}))
+                children = self._post_listing_children(payload)
+                if children is None:
+                    feed_error = ValueError("Reddit OAuth feed payload missing data.children")
+                    logger.warning("Reddit OAuth feed returned malformed listing for r/%s", subreddit)
+                    continue
+                valid_feed_payload_seen = True
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
+            if not valid_feed_payload_seen and feed_error is not None:
+                raise feed_error
 
             async def fetch_search(query: str, params: dict[str, Any]) -> Any:
                 try:
@@ -716,8 +755,13 @@ class RedditScraper:
             for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
                 if payload is None:
                     continue
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                children = self._post_listing_children(payload)
+                if children is None:
+                    logger.warning("Reddit OAuth search returned malformed listing for r/%s query=%r", subreddit, query)
+                    continue
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data, discovery_query=query)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
