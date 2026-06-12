@@ -650,3 +650,10 @@
 - Change: Add `digest_delivery.py` to the README quality gate and GitHub Actions mypy command.
 - Verification: Run the updated mypy command locally after this note.
 - Impact: Prevents digest delivery type regressions from passing CI unchecked.
+
+## 2026-06-12 - Healthcheck strict readiness mode
+
+- Reason: Docker liveness intentionally reports scheduled job errors without failing, but deploy/readiness gates need an explicit way to fail when scheduled ingestion or digest jobs have active errors.
+- Change: Add `python healthcheck.py --fail-on-job-errors`, which preserves default liveness behavior while raising on active scheduled job errors in strict mode.
+- Verification: Added healthcheck tests for strict mode failure and CLI flag wiring.
+- Impact: Lets deployment checks catch a degraded collector without making Docker restart a live container for historical job diagnostics.

@@ -31,6 +31,29 @@ async def test_run_healthcheck_validates_storage_and_returns_summary(monkeypatch
     assert (tmp_path / "reports").is_dir()
 
 
+async def test_run_healthcheck_strict_mode_fails_on_scheduled_job_errors(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "health.db"))
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
+
+    import config
+    import healthcheck
+    import pytest
+    from db import Database
+
+    importlib.reload(config)
+    (tmp_path / "data").mkdir()
+    db = Database(config.DB_PATH)
+    await db.init()
+    await db.mark_scheduled_job_failure("reviews_ingest", "rate limited")
+    await db.close()
+
+    with pytest.raises(RuntimeError, match="scheduled job errors present: 1"):
+        await healthcheck.run_healthcheck(fail_on_job_errors=True)
+
+
 async def test_run_healthcheck_does_not_initialize_database(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
@@ -123,9 +146,30 @@ async def test_run_healthcheck_fails_when_database_missing(monkeypatch, tmp_path
 def test_main_returns_failure_when_healthcheck_raises(monkeypatch):
     import healthcheck
 
-    async def fail_healthcheck():
+    async def fail_healthcheck(*, fail_on_job_errors=False):
         raise RuntimeError("storage unavailable")
 
     monkeypatch.setattr(healthcheck, "run_healthcheck", fail_healthcheck)
 
-    assert healthcheck.main() == 1
+    assert healthcheck.main([]) == 1
+
+
+def test_main_passes_strict_job_error_flag(monkeypatch):
+    import healthcheck
+
+    captured = {}
+
+    async def fake_healthcheck(*, fail_on_job_errors=False):
+        captured["fail_on_job_errors"] = fail_on_job_errors
+        return {
+            "db_path": "db.sqlite",
+            "reports_dir": "reports",
+            "llm_paused": False,
+            "monitored": 0,
+            "scheduled_job_errors": 0,
+        }
+
+    monkeypatch.setattr(healthcheck, "run_healthcheck", fake_healthcheck)
+
+    assert healthcheck.main(["--fail-on-job-errors"]) == 0
+    assert captured["fail_on_job_errors"] is True

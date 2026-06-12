@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import os
 import tempfile
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 import aiosqlite
@@ -23,7 +25,7 @@ def _assert_writable_dir(path: str) -> None:
             pass
 
 
-async def run_healthcheck() -> dict[str, Any]:
+async def run_healthcheck(*, fail_on_job_errors: bool = False) -> dict[str, Any]:
     import config
 
     _assert_writable_dir(config.REPORTS_DIR)
@@ -39,13 +41,17 @@ async def run_healthcheck() -> dict[str, Any]:
     finally:
         await db.close()
 
+    scheduled_job_errors = int(summary.get("scheduled_job_errors", 0))
+    if fail_on_job_errors and scheduled_job_errors:
+        raise RuntimeError(f"scheduled job errors present: {scheduled_job_errors}")
+
     return {
         "ok": True,
         "db_path": config.DB_PATH,
         "reports_dir": config.REPORTS_DIR,
         "llm_paused": bool(flags.get("llm_paused", 0)),
         "monitored": int(summary.get("monitored", 0)),
-        "scheduled_job_errors": int(summary.get("scheduled_job_errors", 0)),
+        "scheduled_job_errors": scheduled_job_errors,
     }
 
 
@@ -109,9 +115,16 @@ async def _table_exists(db: aiosqlite.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Local liveness/readiness checks for pain_finder.")
+    parser.add_argument(
+        "--fail-on-job-errors",
+        action="store_true",
+        help="Fail when scheduled_job_status contains active errors; use for readiness gates, not Docker liveness.",
+    )
+    args = parser.parse_args(argv)
     try:
-        result = asyncio.run(run_healthcheck())
+        result = asyncio.run(run_healthcheck(fail_on_job_errors=args.fail_on_job_errors))
     except Exception as exc:
         print(f"healthcheck failed: {exc}")
         return 1

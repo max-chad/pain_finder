@@ -247,6 +247,14 @@ docker compose up -d --build
 The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, report-directory writability, and read-only access to an already initialized SQLite database without calling external APIs or running migrations. Its output includes `scheduled_job_errors` as a diagnostic counter; historical scheduled-job failures are reported but do not fail liveness.
 The runtime handles `SIGTERM`/`SIGINT` through the asyncio loop so Docker stops and manual interrupts drain through scheduler/database cleanup.
 
+For deployment readiness checks outside Docker liveness, use strict scheduled-job validation:
+
+```bash
+python healthcheck.py --fail-on-job-errors
+```
+
+This keeps container liveness tolerant of historical job errors while allowing release gates to fail when scheduled ingestion/digest jobs have active errors.
+
 Persisted mounts in `docker-compose.yml`:
 
 - `./data -> /app/data` (`DB_PATH=/app/data/pain_finder.db`)
