@@ -818,3 +818,10 @@
 - Change: Validate macro run counters, cluster aggregate fields, and member similarities before DB writes; make `MacroTrendClusterer` ignore non-finite legacy candidate values while still using valid members.
 - Verification: Added DB regressions for invalid macro aggregate/member values and clusterer regression for legacy rows with infinite WTP, authority, opportunity score, and source timestamp; full gates are run after this note.
 - Impact: Keeps the central macro-cluster/digest signal path available and prevents corrupted numeric rows from poisoning canonical cluster ranking.
+
+## 2026-06-12 - Source timestamps tolerate overflow payloads
+
+- Reason: Reddit `created_utc` and Hacker News `created_at_i`/`points` come from external JSON; non-finite or out-of-range numeric values could raise `OverflowError`/platform timestamp errors and abort collection for an otherwise usable response.
+- Change: Reject non-finite source timestamps, catch timestamp conversion overflow, and treat overflowing external scores as zero.
+- Verification: Added Reddit and HN regressions for infinite external score/timestamp payloads; full gates are run after this note.
+- Impact: Keeps source collection resilient to malformed upstream rows instead of dropping an entire subreddit or keyword query.

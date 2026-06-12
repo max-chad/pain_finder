@@ -1,5 +1,6 @@
 import logging
 import json
+import math
 from json import JSONDecodeError
 from datetime import UTC, datetime, timedelta
 
@@ -24,11 +25,16 @@ def _parse_source_timestamp(hit: dict[str, object]) -> tuple[str | None, int | N
     ts = 0
     if isinstance(raw_ts, str | int | float) and not isinstance(raw_ts, bool):
         try:
-            ts = int(raw_ts)
-        except ValueError:
+            numeric_ts = float(raw_ts)
+            if math.isfinite(numeric_ts):
+                ts = int(numeric_ts)
+        except (TypeError, ValueError, OverflowError):
             ts = 0
     if ts > 0:
-        dt = datetime.fromtimestamp(ts, tz=UTC)
+        try:
+            dt = datetime.fromtimestamp(ts, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None, None
         return dt.isoformat(), ts
 
     raw_created_at = _clean_text(hit.get("created_at"))
@@ -42,7 +48,11 @@ def _parse_source_timestamp(hit: dict[str, object]) -> tuple[str | None, int | N
         dt = dt.replace(tzinfo=UTC)
     else:
         dt = dt.astimezone(UTC)
-    return dt.isoformat(), int(dt.timestamp())
+    try:
+        ts = int(dt.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return None, None
+    return dt.isoformat(), ts
 
 
 def _merge_duplicate_post(existing: Post, incoming: Post) -> None:
@@ -132,7 +142,7 @@ class HackerNewsScraper:
                     url = _clean_text(hit.get("url") or hit.get("story_url")) or f"https://news.ycombinator.com/item?id={object_id}"
                     try:
                         score = int(hit.get("points") or 0)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         score = 0
                     source_created_at, source_created_ts = _parse_source_timestamp(hit)
 

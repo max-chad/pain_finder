@@ -208,19 +208,25 @@ class RedditScraper:
         if raw_ts in {None, ""}:
             return None, None
         try:
-            ts = int(float(raw_ts))
-        except (TypeError, ValueError):
+            numeric_ts = float(raw_ts)
+            if not math.isfinite(numeric_ts):
+                return None, None
+            ts = int(numeric_ts)
+        except (TypeError, ValueError, OverflowError):
             return None, None
         if ts <= 0:
             return None, None
-        dt = datetime.fromtimestamp(ts, UTC)
+        try:
+            dt = datetime.fromtimestamp(ts, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None, None
         return dt.isoformat(), ts
 
     @staticmethod
     def _safe_int(raw_value: Any, default: int = 0) -> int:
         try:
             return int(raw_value or default)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
 
     @staticmethod

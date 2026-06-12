@@ -115,11 +115,10 @@ async def test_fetch_posts_handles_malformed_payload_per_keyword(respx_mock):
             httpx.Response(200, text="not-json"),
             httpx.Response(
                 200,
-                json={
-                    "hits": [
-                        {"objectID": "9", "title": "Need better internal tooling", "story_text": "pain", "points": "bad"}
-                    ]
-                },
+                content=(
+                    b'{"hits":[{"objectID":"9","title":"Need better internal tooling",'
+                    b'"story_text":"pain","points":Infinity,"created_at_i":Infinity}]}'
+                ),
             ),
         ]
     )
@@ -129,6 +128,8 @@ async def test_fetch_posts_handles_malformed_payload_per_keyword(respx_mock):
     assert len(posts) == 1
     assert posts[0].post_id == "hn:9"
     assert posts[0].score == 0
+    assert posts[0].source_created_at is None
+    assert posts[0].source_created_ts is None
 
 
 async def test_fetch_posts_handles_oversized_payload_per_keyword(respx_mock):

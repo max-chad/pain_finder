@@ -177,7 +177,7 @@ def test_merge_post_keeps_earliest_source_timestamp():
     assert posts_by_id["reddit:abc123"].source_created_ts == 1776586500
 
 
-def test_build_post_tolerates_malformed_score():
+def test_build_post_tolerates_malformed_score_and_timestamp():
     post = RedditScraper._build_post(
         "python",
         {
@@ -185,7 +185,8 @@ def test_build_post_tolerates_malformed_score():
             "title": "Manual workflow pain",
             "selftext": "body",
             "url": "https://reddit.com/abc1",
-            "score": "not-an-int",
+            "score": float("inf"),
+            "created_utc": float("inf"),
             "permalink": "/r/python/comments/abc1/manual/",
         },
     )
@@ -193,6 +194,8 @@ def test_build_post_tolerates_malformed_score():
     assert post is not None
     assert post.post_id == "reddit:abc1"
     assert post.score == 0
+    assert post.source_created_at is None
+    assert post.source_created_ts is None
 
 
 async def test_fetch_public_json_handles_http_error(respx_mock):
