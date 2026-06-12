@@ -950,6 +950,33 @@ async def test_usage_ledger_and_runtime_flags(db):
     assert await db.is_llm_paused() is False
 
 
+async def test_record_llm_usage_rejects_negative_cost(db):
+    for cost in (-0.12, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="cost_usd must be finite and non-negative"):
+            await db.record_llm_usage(
+                model="model-a",
+                operation="classify_primary",
+                prompt_tokens=100,
+                completion_tokens=50,
+                cost_usd=cost,
+            )
+
+    assert await db.get_daily_spend_usd() == 0.0
+
+
+async def test_record_llm_usage_rejects_negative_token_counts(db):
+    with pytest.raises(ValueError, match="token counts must be non-negative"):
+        await db.record_llm_usage(
+            model="model-a",
+            operation="classify_primary",
+            prompt_tokens=-1,
+            completion_tokens=50,
+            cost_usd=0.12,
+        )
+
+    assert await db.get_daily_spend_usd() == 0.0
+
+
 async def test_gtm_assets_persist(db):
     asset_id = await db.save_gtm_asset(
         post_id="reddit:g1",

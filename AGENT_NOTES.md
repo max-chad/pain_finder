@@ -783,3 +783,10 @@
 - Change: Require literal and resolved IP addresses to be globally routable and non-multicast.
 - Verification: Added URL safety regressions for literal CGNAT addresses and DNS results resolving into CGNAT space; full gates are run after this note.
 - Impact: Tightens SSRF protection for operator-configured review targets and blocks another internal/non-public address range.
+
+## 2026-06-12 - LLM usage ledger rejects invalid spend values
+
+- Reason: The database usage ledger accepted negative and non-finite cost values, which could corrupt daily spend totals and budget-pause decisions.
+- Change: Validate usage events before insert so token counts are non-negative and `cost_usd` is finite and non-negative.
+- Verification: Added DB regressions for negative, NaN, and infinite costs plus negative token counts; full gates are run after this note.
+- Impact: Keeps budget accounting monotonic and prevents malformed telemetry from lowering or corrupting spend totals.

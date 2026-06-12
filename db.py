@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -1171,6 +1172,10 @@ class Database:
         request_path: str | None = None,
         candidate_stage: str | None = None,
     ) -> int:
+        if prompt_tokens < 0 or completion_tokens < 0:
+            raise ValueError("token counts must be non-negative")
+        if not math.isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError("cost_usd must be finite and non-negative")
         async with self._conn.execute(
             """
             INSERT INTO llm_usage_events (
