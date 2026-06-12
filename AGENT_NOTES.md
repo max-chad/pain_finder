@@ -797,3 +797,10 @@
 - Change: Include active monitor rows with `last_error` in the strict job-error count while preserving read-only compatibility with legacy databases that lack the column.
 - Verification: Added healthcheck regressions for strict failure on monitor errors and for legacy databases without `scheduled_job_status` or `last_error`; full gates are run after this note.
 - Impact: Makes readiness fail when the core subreddit collector is degraded instead of reporting green while ingestion is broken.
+
+## 2026-06-12 - Pain point score fields require finite values
+
+- Reason: The pain-point insert/upsert boundary accepted non-finite score values, so malformed scoring data could persist into ranking, export, digest, and macro-clustering queries.
+- Change: Validate all floating score fields in `insert_pain_point()` with a shared finite-number coercion helper before writing to SQLite.
+- Verification: Added DB regressions for infinite opportunity score and NaN comment shill risk, plus adjacent insert/upsert checks; full gates are run after this note.
+- Impact: Prevents corrupted score values from entering operator-facing prioritization surfaces.

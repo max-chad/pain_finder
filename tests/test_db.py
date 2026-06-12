@@ -1054,6 +1054,40 @@ async def test_insert_pain_point_duplicate_post_id_does_not_raise(db):
     assert row["title"] == "Second insert"
 
 
+async def test_insert_pain_point_rejects_non_finite_scores(db):
+    with pytest.raises(ValueError, match="opportunity_score must be finite"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_score",
+            url="",
+            title="Bad score",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            opportunity_score=float("inf"),
+        )
+
+    assert await db.get_pain_point("bad_score") is None
+
+
+async def test_insert_pain_point_rejects_non_finite_comment_score(db):
+    with pytest.raises(ValueError, match="comment_shill_risk must be finite"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_comment_score",
+            url="",
+            title="Bad comment score",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            comment_shill_risk=float("nan"),
+        )
+
+    assert await db.get_pain_point("bad_comment_score") is None
+
+
 async def test_get_pain_points_by_ids_returns_matching_rows(db):
     """get_pain_points_by_ids fetches all matching rows in a single query."""
     for post_id, title in [("batch1", "Alpha"), ("batch2", "Beta"), ("batch3", "Gamma")]:

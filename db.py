@@ -443,6 +443,16 @@ class Database:
             out.append(clean)
         return out
 
+    @staticmethod
+    def _finite_float(value: Any, field_name: str) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be a number") from exc
+        if not math.isfinite(parsed):
+            raise ValueError(f"{field_name} must be finite")
+        return parsed
+
     async def _replace_competitor_tags(self, post_id: str, tags: list[str]) -> None:
         await self._conn.execute("DELETE FROM pain_point_competitors WHERE post_id = ?", (post_id,))
         for tag in tags:
@@ -519,6 +529,16 @@ class Database:
         ][:5]
         normalized_comment_tool_mentions = self._normalize_competitor_tags(comment_tool_mentions)
         score_components_json = json.dumps(score_components or {}, ensure_ascii=False)
+        buyer_authority_score_value = self._finite_float(buyer_authority_score, "buyer_authority_score")
+        workflow_frequency_score_value = self._finite_float(workflow_frequency_score, "workflow_frequency_score")
+        impact_score_value = self._finite_float(impact_score, "impact_score")
+        consensus_score_value = self._finite_float(consensus_score, "consensus_score")
+        incumbent_failure_score_value = self._finite_float(incumbent_failure_score, "incumbent_failure_score")
+        recency_score_value = self._finite_float(recency_score, "recency_score")
+        stale_penalty_value = self._finite_float(stale_penalty, "stale_penalty")
+        solved_penalty_value = self._finite_float(solved_penalty, "solved_penalty")
+        opportunity_score_value = self._finite_float(opportunity_score, "opportunity_score")
+        comment_shill_risk_value = self._finite_float(comment_shill_risk, "comment_shill_risk")
 
         try:
             await self._conn.execute(
@@ -605,21 +625,21 @@ class Database:
                     buyer_authority,
                     json.dumps(normalized_evidence_spans, ensure_ascii=False),
                     json.dumps(normalized_comment_sample, ensure_ascii=False),
-                    float(buyer_authority_score),
-                    float(workflow_frequency_score),
-                    float(impact_score),
-                    float(consensus_score),
-                    float(incumbent_failure_score),
-                    float(recency_score),
-                    float(stale_penalty),
-                    float(solved_penalty),
-                    float(opportunity_score),
+                    buyer_authority_score_value,
+                    workflow_frequency_score_value,
+                    impact_score_value,
+                    consensus_score_value,
+                    incumbent_failure_score_value,
+                    recency_score_value,
+                    stale_penalty_value,
+                    solved_penalty_value,
+                    opportunity_score_value,
                     score_components_json,
                     int(comment_consensus_count),
                     int(comment_same_here_count),
                     int(comment_workaround_count),
                     json.dumps(normalized_comment_tool_mentions, ensure_ascii=False),
-                    float(comment_shill_risk),
+                    comment_shill_risk_value,
                     triage_status,
                     analysis_mode,
                     deep_dive_status,
