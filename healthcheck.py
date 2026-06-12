@@ -92,6 +92,13 @@ async def _get_monitoring_summary(db: aiosqlite.Connection) -> dict[str, int]:
         monitored = await cursor.fetchone()
     async with db.execute("SELECT COUNT(*) AS total FROM pain_points WHERE triage_status = 'favorite'") as cursor:
         favorites = await cursor.fetchone()
+    monitor_error_count = 0
+    if await _column_exists(db, "monitored_subreddits", "last_error"):
+        async with db.execute(
+            "SELECT COUNT(*) AS total FROM monitored_subreddits WHERE active = 1 AND last_error IS NOT NULL"
+        ) as cursor:
+            monitor_errors = await cursor.fetchone()
+        monitor_error_count = int(monitor_errors["total"] if monitor_errors else 0)
     scheduled_job_errors = 0
     if await _table_exists(db, "scheduled_job_status"):
         async with db.execute(
@@ -99,6 +106,7 @@ async def _get_monitoring_summary(db: aiosqlite.Connection) -> dict[str, int]:
         ) as cursor:
             failed_jobs = await cursor.fetchone()
         scheduled_job_errors = int(failed_jobs["total"] if failed_jobs else 0)
+    scheduled_job_errors += monitor_error_count
     return {
         "monitored": int(monitored["total"] if monitored else 0),
         "favorites": int(favorites["total"] if favorites else 0),
@@ -113,6 +121,12 @@ async def _table_exists(db: aiosqlite.Connection, table_name: str) -> bool:
     ) as cursor:
         row = await cursor.fetchone()
     return row is not None
+
+
+async def _column_exists(db: aiosqlite.Connection, table_name: str, column_name: str) -> bool:
+    async with db.execute(f"PRAGMA table_info({table_name})") as cursor:
+        rows = await cursor.fetchall()
+    return any(row["name"] == column_name for row in rows)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

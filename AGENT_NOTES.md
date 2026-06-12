@@ -790,3 +790,10 @@
 - Change: Validate usage events before insert so token counts are non-negative and `cost_usd` is finite and non-negative.
 - Verification: Added DB regressions for negative, NaN, and infinite costs plus negative token counts; full gates are run after this note.
 - Impact: Keeps budget accounting monotonic and prevents malformed telemetry from lowering or corrupting spend totals.
+
+## 2026-06-12 - Strict healthcheck includes subreddit monitor failures
+
+- Reason: `healthcheck.py --fail-on-job-errors` counted `scheduled_job_status` failures but ignored active subreddit monitor failures stored on `monitored_subreddits.last_error`.
+- Change: Include active monitor rows with `last_error` in the strict job-error count while preserving read-only compatibility with legacy databases that lack the column.
+- Verification: Added healthcheck regressions for strict failure on monitor errors and for legacy databases without `scheduled_job_status` or `last_error`; full gates are run after this note.
+- Impact: Makes readiness fail when the core subreddit collector is degraded instead of reporting green while ingestion is broken.

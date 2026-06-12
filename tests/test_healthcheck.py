@@ -54,6 +54,30 @@ async def test_run_healthcheck_strict_mode_fails_on_scheduled_job_errors(monkeyp
         await healthcheck.run_healthcheck(fail_on_job_errors=True)
 
 
+async def test_run_healthcheck_strict_mode_fails_on_monitor_errors(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "health.db"))
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
+
+    import config
+    import healthcheck
+    import pytest
+    from db import Database
+
+    importlib.reload(config)
+    (tmp_path / "data").mkdir()
+    db = Database(config.DB_PATH)
+    await db.init()
+    await db.add_monitored_subreddit("python", interval_hours=1)
+    await db.mark_monitor_failed("python", "collector down")
+    await db.close()
+
+    with pytest.raises(RuntimeError, match="scheduled job errors present: 1"):
+        await healthcheck.run_healthcheck(fail_on_job_errors=True)
+
+
 async def test_run_healthcheck_does_not_initialize_database(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
