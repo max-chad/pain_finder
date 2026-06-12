@@ -630,6 +630,7 @@ class Database:
             await self._replace_competitor_tags(post_id, normalized_tags)
             await self._conn.commit()
         except Exception as e:
+            await self._conn.rollback()
             logger.error("Failed to insert pain point %s: %s", post_id, e)
             raise
 

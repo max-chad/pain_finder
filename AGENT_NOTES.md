@@ -1,5 +1,12 @@
 # AGENT_NOTES
 
+## 2026-06-12 - Roll back pain point writes on secondary index failures
+
+- Reason: `Database.insert_pain_point()` could fail after the main `pain_points` upsert but before competitor index replacement, then leave the uncommitted row visible on the connection and eligible to be committed by a later successful operation.
+- Change: Roll back the SQLite transaction in the insert error path before re-raising.
+- Verification: Added a regression that forces `_replace_competitor_tags()` to fail and proves the partially inserted pain point is absent after the exception.
+- Impact: Prevents partial pain-point persistence when secondary writes fail, preserving DB consistency across ingestion errors.
+
 ## 2026-06-12 - Budget pause only gates real LLM classification work
 
 - Reason: `AnalysisPipeline._analyze_posts()` checked budget/pause state before filtering already-seen posts or empty batches, so a run with no fresh LLM candidates could be blocked as if it would spend tokens.

@@ -983,6 +983,28 @@ async def test_insert_pain_point_propagates_unexpected_db_errors(db):
             )
 
 
+async def test_insert_pain_point_rolls_back_secondary_index_failure(db):
+    async def fail_replace_competitor_tags(post_id, tags):
+        raise RuntimeError("competitor index write failed")
+
+    with patch.object(db, "_replace_competitor_tags", side_effect=fail_replace_competitor_tags):
+        with pytest.raises(RuntimeError, match="competitor index write failed"):
+            await db.insert_pain_point(
+                subreddit="python",
+                post_id="partial1",
+                url="",
+                title="Should rollback",
+                body="",
+                category="complaint",
+                summary="",
+                severity="low",
+                competitor_tags=["shopify"],
+            )
+
+    row = await db.get_pain_point("partial1")
+    assert row is None
+
+
 async def test_insert_pain_point_duplicate_post_id_does_not_raise(db):
     """ON CONFLICT DO UPDATE for duplicate post_id is expected behaviour and must not raise."""
     kwargs = dict(
