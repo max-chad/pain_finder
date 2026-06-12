@@ -643,3 +643,10 @@
 - Change: Add a shared response retry wrapper for size-limited GET requests, route RSS feed/search fallback through it with bounded fallback attempts, and keep optional comment RSS fallback on an even shorter retry budget.
 - Verification: Added RSS regression tests where old.reddit returns `429` with `Retry-After` before a successful feed response, where fallback feed retries are bounded, and where optional comment RSS retries are bounded.
 - Impact: Makes the no-OAuth Reddit fallback more resilient during transient rate limits without turning optional comment hydration into a long-tail collection bottleneck.
+
+## 2026-06-12 - CI type gate covers digest delivery
+
+- Reason: `digest_delivery.py` is a production Hermes/daily-digest path, but the documented and GitHub Actions mypy commands did not include it.
+- Change: Add `digest_delivery.py` to the README quality gate and GitHub Actions mypy command.
+- Verification: Run the updated mypy command locally after this note.
+- Impact: Prevents digest delivery type regressions from passing CI unchecked.
