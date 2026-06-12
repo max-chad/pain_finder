@@ -545,7 +545,11 @@ class Database:
             if isinstance(item, str) and str(item).strip()
         ][:5]
         normalized_comment_tool_mentions = self._normalize_competitor_tags(comment_tool_mentions)
-        score_components_json = json.dumps(score_components or {}, ensure_ascii=False)
+        score_components_json = self._json_dumps_strict(score_components or {}, "score_components")
+        analysis_payload_json = (
+            self._json_dumps_strict(analysis_payload, "analysis_payload") if analysis_payload else None
+        )
+        emb_vector_json = self._json_dumps_strict(emb_vector, "emb_vector") if emb_vector is not None else None
         buyer_authority_score_value = self._finite_float(buyer_authority_score, "buyer_authority_score")
         workflow_frequency_score_value = self._finite_float(workflow_frequency_score, "workflow_frequency_score")
         impact_score_value = self._finite_float(impact_score, "impact_score")
@@ -661,8 +665,8 @@ class Database:
                     analysis_mode,
                     deep_dive_status,
                     deep_dive_summary,
-                    json.dumps(analysis_payload, ensure_ascii=False) if analysis_payload else None,
-                    json.dumps(emb_vector) if emb_vector is not None else None,
+                    analysis_payload_json,
+                    emb_vector_json,
                 ),
             )
             await self._replace_competitor_tags(post_id, normalized_tags)
@@ -686,9 +690,10 @@ class Database:
             return dict(row) if row else None
 
     async def store_embedding(self, post_id: str, emb_vector: list[float]) -> None:
+        emb_vector_json = self._json_dumps_strict(emb_vector, "emb_vector")
         await self._conn.execute(
             "UPDATE pain_points SET emb_vector = ? WHERE post_id = ?",
-            (json.dumps(emb_vector), post_id),
+            (emb_vector_json, post_id),
         )
         await self._conn.commit()
 
@@ -749,6 +754,8 @@ class Database:
         promote_favorite = bool(dup_row and dup_row["triage_status"] == "favorite")
         promote_completed_deep_dive = bool(dup_row and dup_row["deep_dive_status"] == "completed")
         duplicate_deep_dive_summary = dup_row["deep_dive_summary"] if dup_row else None
+        cross_source_ids_json = self._json_dumps_strict(current_ids, "cross_source_ids")
+        dup_emb_vector_json = self._json_dumps_strict(dup_emb_vector, "emb_vector")
 
         try:
             await self._conn.execute(
@@ -765,7 +772,7 @@ class Database:
                 "WHERE post_id = ?",
                 (
                     int(should_increment_count),
-                    json.dumps(current_ids),
+                    cross_source_ids_json,
                     int(promote_favorite),
                     int(promote_completed_deep_dive),
                     int(promote_completed_deep_dive),
@@ -775,7 +782,7 @@ class Database:
             )
             await self._conn.execute(
                 "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
-                (json.dumps(dup_emb_vector), dup_post_id),
+                (dup_emb_vector_json, dup_post_id),
             )
             await self._conn.commit()
         except Exception:

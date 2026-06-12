@@ -1199,6 +1199,57 @@ async def test_insert_pain_point_rejects_non_finite_comment_score(db):
     assert await db.get_pain_point("bad_comment_score") is None
 
 
+async def test_insert_pain_point_rejects_non_standard_score_components_json(db):
+    with pytest.raises(ValueError, match="score_components must be valid JSON"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_score_components_json",
+            url="",
+            title="Bad score components",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            score_components={"impact": float("inf")},
+        )
+
+    assert await db.get_pain_point("bad_score_components_json") is None
+
+
+async def test_insert_pain_point_rejects_non_standard_analysis_payload_json(db):
+    with pytest.raises(ValueError, match="analysis_payload must be valid JSON"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_analysis_payload_json",
+            url="",
+            title="Bad analysis payload",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            analysis_payload={"confidence": float("nan")},
+        )
+
+    assert await db.get_pain_point("bad_analysis_payload_json") is None
+
+
+async def test_insert_pain_point_rejects_non_standard_embedding_json(db):
+    with pytest.raises(ValueError, match="emb_vector must be valid JSON"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_embedding_json",
+            url="",
+            title="Bad embedding",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            emb_vector=[0.1, float("nan")],
+        )
+
+    assert await db.get_pain_point("bad_embedding_json") is None
+
+
 async def test_get_pain_points_by_ids_returns_matching_rows(db):
     """get_pain_points_by_ids fetches all matching rows in a single query."""
     for post_id, title in [("batch1", "Alpha"), ("batch2", "Beta"), ("batch3", "Gamma")]:
@@ -1282,6 +1333,16 @@ async def test_store_and_retrieve_embedding(db):
     assert rows[0]["emb_vector"] == vector
 
 
+async def test_store_embedding_rejects_non_standard_json_vector(db):
+    await _insert_test_point(db, "bad_emb_store")
+
+    with pytest.raises(ValueError, match="emb_vector must be valid JSON"):
+        await db.store_embedding("bad_emb_store", [0.1, float("inf")])
+
+    row = await db.get_pain_point("bad_emb_store")
+    assert row["emb_vector"] is None
+
+
 async def test_get_pain_points_without_embeddings(db):
     await _insert_test_point(db, "no_emb1")
     await _insert_test_point(db, "no_emb2")
@@ -1313,6 +1374,25 @@ async def test_merge_duplicate_increments_count(db):
     assert dup["triage_status"] == "merged"
     stored_vec = json.loads(dup["emb_vector"])
     assert stored_vec == dup_vec
+
+
+async def test_merge_duplicate_rejects_non_standard_embedding_without_partial_update(db):
+    await _insert_test_point(db, "canonical_bad_vec", source="reddit")
+    await _insert_test_point(db, "dup_bad_vec", source="hn")
+
+    with pytest.raises(ValueError, match="emb_vector must be valid JSON"):
+        await db.merge_duplicate(
+            canonical_post_id="canonical_bad_vec",
+            dup_post_id="dup_bad_vec",
+            dup_emb_vector=[0.9, float("nan")],
+        )
+
+    canonical = await db.get_pain_point("canonical_bad_vec")
+    dup = await db.get_pain_point("dup_bad_vec")
+    assert canonical["cross_source_count"] == 1
+    assert canonical["cross_source_ids"] == "[]"
+    assert dup["triage_status"] == "new"
+    assert dup["emb_vector"] is None
 
 
 async def test_merge_duplicate_same_id_is_idempotent_for_count(db):

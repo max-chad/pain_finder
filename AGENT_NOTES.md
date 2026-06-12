@@ -881,3 +881,10 @@
 - Change: Treat non-array `hits` as a malformed keyword response, preserving partial success for other keywords and raising when all keyword responses are invalid.
 - Verification: Added HN scraper regressions for one malformed `hits` response followed by a valid query and for all malformed keyword payloads; full gates are run after this note.
 - Impact: Keeps deploy/readiness diagnostics honest for HN ingestion instead of silently marking broken source responses as empty successful runs.
+
+## 2026-06-12 - Pain point JSON fields reject NaN and Infinity
+
+- Reason: `pain_points` score-component/debug payloads and embedding vectors used Python's default JSON serializer, so non-standard `NaN`/`Infinity` values could persist into ranking diagnostics, export/digest context, and dedup state.
+- Change: Use the strict DB JSON serializer for pain-point score components, analysis payloads, insert-time embeddings, stored embeddings, duplicate merge embeddings, and canonical cross-source id updates.
+- Verification: Added DB regressions for non-standard score components, analysis payloads, insert embeddings, stored embeddings, and duplicate merge embeddings without partial mutation; full gates are run after this note.
+- Impact: Prevents central operator-facing and deduplication state from accumulating invalid JSON that breaks strict tooling or poisons later data processing.
