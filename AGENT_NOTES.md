@@ -923,3 +923,10 @@
 - Change: Fail config import when `PRIMARY_MAX_OUTPUT_TOKENS > LLM_MAX_TOKENS` and document the constraint in README.
 - Verification: Added a config regression for the cross-env invalid combination; full gates are run after this note.
 - Impact: Prevents misconfigured primary classification from sending unexpectedly large or provider-rejected LLM requests.
+
+## 2026-06-12 - GTM bot entrypoints require persisted posts
+
+- Reason: The GTM generator rejects missing pain points before LLM work, but `/gtm` and inline GTM callbacks did not check existence at the bot boundary, causing unhandled command errors or generic callback failures for stale/malformed post ids.
+- Change: Check `db.get_pain_point(post_id)` before invoking `gtm_fn` from both manual command and callback paths, returning a clear `Post not found` response without calling the generator.
+- Verification: Added bot regressions for missing-post `/gtm` and inline GTM callbacks; full gates are run after this note.
+- Impact: Prevents stale operator actions from producing noisy handler failures and avoids unnecessary downstream GTM generation paths.

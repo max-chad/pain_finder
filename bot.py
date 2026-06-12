@@ -716,6 +716,9 @@ class PainFinderBot:
         except ValueError as e:
             await update.message.reply_text(str(e))
             return
+        if await self.db.get_pain_point(post_id) is None:
+            await update.message.reply_text(limit_telegram_text(f"Post {post_id} was not found in the database."))
+            return
         await update.message.reply_text(limit_telegram_text(f"Generating GTM package for {post_id}..."))
         result = await self.gtm_fn(post_id)
         await update.message.reply_text(self._format_gtm_result(result))
@@ -872,6 +875,9 @@ class PainFinderBot:
                     post_id, _scope = parse_scoped_callback_data(data, "gtm:")
                 if not self.gtm_fn:
                     await query.answer("GTM not configured", show_alert=False)
+                    return
+                if await self.db.get_pain_point(post_id) is None:
+                    await query.answer("Post not found", show_alert=False)
                     return
                 await query.answer("Generating GTM...", show_alert=False)
                 result = await self.gtm_fn(post_id)

@@ -760,6 +760,22 @@ async def test_cmd_gtm_usage_on_bad_args():
     update.message.reply_text.assert_awaited_once_with(GTM_USAGE)
 
 
+async def test_cmd_gtm_requires_existing_post():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    gtm_fn = AsyncMock()
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db, gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["missing"]))
+
+    db.get_pain_point.assert_awaited_once_with("missing")
+    gtm_fn.assert_not_awaited()
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert "Post missing was not found" in sent_text
+
+
 async def test_callback_query_runs_gtm():
     gtm_payload = SimpleNamespace(
         name_options=["A", "B", "C"],
@@ -791,6 +807,34 @@ async def test_callback_query_runs_gtm():
     gtm_fn.assert_awaited_once_with("reddit:abc123")
     query.answer.assert_awaited()
     query.message.reply_text.assert_awaited_once()
+
+
+async def test_callback_query_gtm_requires_existing_post():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    gtm_fn = AsyncMock()
+
+    query = SimpleNamespace(
+        data="gtm:missing:reddit",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        gtm_fn=gtm_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.get_pain_point.assert_awaited_once_with("missing")
+    gtm_fn.assert_not_awaited()
+    query.answer.assert_awaited_once_with("Post not found", show_alert=False)
+    query.message.reply_text.assert_not_awaited()
 
 
 async def test_cmd_monitor_usage_on_bad_args():
