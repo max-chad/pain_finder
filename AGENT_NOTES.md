@@ -930,3 +930,10 @@
 - Change: Check `db.get_pain_point(post_id)` before invoking `gtm_fn` from both manual command and callback paths, returning a clear `Post not found` response without calling the generator.
 - Verification: Added bot regressions for missing-post `/gtm` and inline GTM callbacks; full gates are run after this note.
 - Impact: Prevents stale operator actions from producing noisy handler failures and avoids unnecessary downstream GTM generation paths.
+
+## 2026-06-12 - Migrations repair schema despite stale markers
+
+- Reason: `_run_migrations()` skipped column checks when a migration marker already existed, so a partially restored or interrupted SQLite database could keep stale markers while still missing runtime-critical columns such as monitor attempt state or LLM usage lineage.
+- Change: Always reconcile expected additive columns from the live table schema, then mark missing migration receipts only for audit history.
+- Verification: Added a DB regression with pre-existing migration markers but missing monitor and LLM usage columns; targeted migration/idempotency tests pass and full gates are run after this note.
+- Impact: Makes startup migrations resilient to partial migration state and prevents scheduler health/readiness or usage accounting from failing on legacy databases.

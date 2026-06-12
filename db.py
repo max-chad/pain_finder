@@ -363,41 +363,40 @@ class Database:
             "2026_02_27_cross_source_dedup",
             "2026_04_22_source_context_and_opportunity_bucket",
         ]
+        for column_name, ddl in PAIN_POINT_COLUMNS.items():
+            await self._ensure_column("pain_points", column_name, ddl)
         for migration_name in pain_point_migrations:
-            if await self._is_migration_applied(migration_name):
-                continue
-            for column_name, ddl in PAIN_POINT_COLUMNS.items():
-                await self._ensure_column("pain_points", column_name, ddl)
-            await self._mark_migration_applied(migration_name)
+            if not await self._is_migration_applied(migration_name):
+                await self._mark_migration_applied(migration_name)
 
         analysis_run_migration = "2026_04_15_analysis_run_efficiency_metrics"
+        for column_name in ["skipped_existing_count", "dedup_merged_count"]:
+            await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
         if not await self._is_migration_applied(analysis_run_migration):
-            for column_name in ["skipped_existing_count", "dedup_merged_count"]:
-                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_migration)
 
         analysis_run_screening_migration = "2026_04_22_analysis_run_screening_metrics"
+        for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
+            await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
         if not await self._is_migration_applied(analysis_run_screening_migration):
-            for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
-                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_screening_migration)
 
         monitored_observability_migration = "2026_05_25_monitored_subreddit_attempt_state"
+        for column_name, ddl in MONITORED_SUBREDDIT_COLUMNS.items():
+            await self._ensure_column("monitored_subreddits", column_name, ddl)
         if not await self._is_migration_applied(monitored_observability_migration):
-            for column_name, ddl in MONITORED_SUBREDDIT_COLUMNS.items():
-                await self._ensure_column("monitored_subreddits", column_name, ddl)
             await self._mark_migration_applied(monitored_observability_migration)
 
         llm_usage_migration = "2026_04_22_llm_usage_lineage"
+        for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
+            await self._ensure_column("llm_usage_events", column_name, ddl)
         if not await self._is_migration_applied(llm_usage_migration):
-            for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
-                await self._ensure_column("llm_usage_events", column_name, ddl)
             await self._mark_migration_applied(llm_usage_migration)
 
         canonical_cluster_migration = "2026_04_22_canonical_pain_clusters"
+        for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+            await self._ensure_column("macro_trend_clusters", column_name, ddl)
         if not await self._is_migration_applied(canonical_cluster_migration):
-            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
-                await self._ensure_column("macro_trend_clusters", column_name, ddl)
             await self._mark_migration_applied(canonical_cluster_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:

@@ -603,6 +603,72 @@ async def test_init_migrates_existing_analysis_runs_with_old_migration_marker(tm
         await database.close()
 
 
+async def test_init_repairs_columns_even_when_migration_markers_exist(tmp_path):
+    db_path = tmp_path / "partial_migration_markers.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE monitored_subreddits (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            interval_hours INTEGER NOT NULL,
+            last_checked TEXT,
+            active INTEGER DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE llm_usage_events (
+            id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
+            post_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("INSERT INTO schema_migrations (name) VALUES ('2026_05_25_monitored_subreddit_attempt_state')")
+    conn.execute("INSERT INTO schema_migrations (name) VALUES ('2026_04_22_llm_usage_lineage')")
+    conn.commit()
+    conn.close()
+
+    database = Database(str(db_path))
+    await database.init()
+    try:
+        await database.add_monitored_subreddit("ops", interval_hours=1)
+        await database.mark_monitor_failed("ops", "collector down")
+        monitored = await database.get_monitored_subreddits()
+        assert monitored[0]["last_attempted_at"] is not None
+        assert monitored[0]["last_error"] == "collector down"
+
+        await database.record_llm_usage(
+            model="m",
+            operation="classify_primary",
+            prompt_tokens=1,
+            completion_tokens=2,
+            cost_usd=0.01,
+            prompt_hash="hash",
+            fallback_reason="primary_invalid",
+            schema_version="primary_v2",
+            provider="codex",
+            request_path="responses",
+            candidate_stage="primary",
+        )
+        async with database._conn.execute(
+            "SELECT prompt_hash, fallback_reason, schema_version, provider, request_path, candidate_stage FROM llm_usage_events"
+        ) as cursor:
+            usage_row = await cursor.fetchone()
+        assert usage_row["prompt_hash"] == "hash"
+        assert usage_row["candidate_stage"] == "primary"
+    finally:
+        await database.close()
+
+
 async def test_competitor_tags_are_normalized_and_queryable(db):
     await db.insert_pain_point(
         subreddit="python",
