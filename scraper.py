@@ -19,6 +19,7 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 ALLOWED_FEEDS = {"top", "new", "rising"}
 DEFAULT_FEEDS = ("top",)
 MAX_REDDIT_RESPONSE_BYTES = 5_000_000
+MAX_REDDIT_RETRY_DELAY_SECONDS = 60.0
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
@@ -1105,13 +1106,15 @@ class RedditScraper:
             try:
                 parsed = float(retry_after)
                 if parsed > 0:
-                    return parsed
+                    if not math.isfinite(parsed):
+                        return MAX_REDDIT_RETRY_DELAY_SECONDS
+                    return min(parsed, MAX_REDDIT_RETRY_DELAY_SECONDS)
             except ValueError:
                 pass
 
         exponential = self.retry_base_delay * (2 ** (attempt - 1))
         jitter = random.uniform(0, self.retry_base_delay)
-        return exponential + jitter
+        return min(exponential + jitter, MAX_REDDIT_RETRY_DELAY_SECONDS)
 
     @staticmethod
     def _append_comments(body: str, top_comments: list[str]) -> str:

@@ -755,3 +755,10 @@
 - Change: Treat overflow token counts as malformed usage and coerce them to zero in the OpenRouter/Codex client and optional DSPy parser.
 - Verification: Added regression tests for OpenRouter chat usage, Codex Responses usage conversion, and DSPy usage history parsing with overflow values; full gates are run after this note.
 - Impact: Preserves successful classification results and budget-recording attempts when provider telemetry is bad, without inventing spend from untrusted token counts.
+
+## 2026-06-12 - Cap Reddit retry delays from Retry-After
+
+- Reason: A single external `429` response with a huge or non-finite `Retry-After` header could make Reddit collection sleep for days or effectively forever.
+- Change: Cap parsed `Retry-After` and exponential fallback delays at `MAX_REDDIT_RETRY_DELAY_SECONDS`.
+- Verification: Added a scraper regression for huge and infinite `Retry-After` values while preserving the existing short-delay retry behavior; full gates are run after this note.
+- Impact: Keeps scheduled collection responsive under hostile or broken rate-limit headers instead of letting one upstream response stall the collector.

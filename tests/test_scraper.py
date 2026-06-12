@@ -3,7 +3,7 @@ import asyncio
 import pytest
 import httpx
 
-from scraper import Post, RedditScraper
+from scraper import MAX_REDDIT_RETRY_DELAY_SECONDS, Post, RedditScraper
 
 
 async def test_post_dataclass_fields():
@@ -601,6 +601,13 @@ async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_
     assert route.call_count == 2
     sleep_mock.assert_awaited_once()
     assert sleep_mock.await_args.args[0] == 0.2
+
+
+def test_retry_after_delay_is_capped_for_huge_or_infinite_values():
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    assert scraper._compute_backoff_delay(1, retry_after="999999") == MAX_REDDIT_RETRY_DELAY_SECONDS
+    assert scraper._compute_backoff_delay(1, retry_after="inf") == MAX_REDDIT_RETRY_DELAY_SECONDS
 
 
 async def test_fetch_rss_retries_transient_error_with_retry_after(respx_mock):
