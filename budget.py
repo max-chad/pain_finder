@@ -30,6 +30,19 @@ class BudgetGuard:
     def set_on_pause_callback(self, callback: Callable[[str], Awaitable[None]] | None) -> None:
         self._on_pause_callback = callback
 
+    @staticmethod
+    def _resume_override_active(raw_value: object, now: datetime) -> bool:
+        if not raw_value:
+            return False
+        try:
+            resume_until = datetime.fromisoformat(str(raw_value))
+        except ValueError:
+            logger.warning("Invalid resume_override_until value: %s", raw_value)
+            return False
+        if resume_until.tzinfo is None:
+            resume_until = resume_until.replace(tzinfo=UTC)
+        return now <= resume_until
+
     async def get_status(self) -> BudgetStatus:
         flags = await self.db.get_runtime_flags()
         spent_today = await self.db.get_daily_spend_usd()
@@ -45,16 +58,8 @@ class BudgetGuard:
     async def ensure_can_spend(self, operation: str) -> None:
         now = datetime.now(UTC)
         flags = await self.db.get_runtime_flags()
-        resume_override_raw = flags.get("resume_override_until")
-        if resume_override_raw:
-            try:
-                resume_until = datetime.fromisoformat(resume_override_raw)
-                if resume_until.tzinfo is None:
-                    resume_until = resume_until.replace(tzinfo=UTC)
-                if now <= resume_until:
-                    return
-            except ValueError:
-                logger.warning("Invalid resume_override_until value: %s", resume_override_raw)
+        if self._resume_override_active(flags.get("resume_override_until"), now):
+            return
 
         spent_today = await self.db.get_daily_spend_usd(now.date())
         if spent_today >= self.daily_cap_usd:
@@ -101,9 +106,14 @@ class BudgetGuard:
         )
 
         status = await self.get_status()
-        if status.spent_today_usd >= self.daily_cap_usd and not status.llm_paused:
+        now = datetime.now(UTC)
+        if (
+            status.spent_today_usd >= self.daily_cap_usd
+            and not status.llm_paused
+            and not self._resume_override_active(status.resume_override_until, now)
+        ):
             reason = f"budget_cap_reached:{status.spent_today_usd:.4f}/{self.daily_cap_usd:.4f}"
-            await self.db.pause_llm(reason=reason, pause_day=datetime.now(UTC).date())
+            await self.db.pause_llm(reason=reason, pause_day=now.date())
             if self._on_pause_callback is not None:
                 await self._on_pause_callback(reason)
 

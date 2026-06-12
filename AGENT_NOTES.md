@@ -664,3 +664,10 @@
 - Change: Add both recency tuning variables to `.env.example` and README, plus a regression test that keeps the example file aligned for those knobs.
 - Verification: Added `test_env_example_documents_recency_knobs` and run config/docs checks after this note.
 - Impact: Makes deployment freshness/ranking behavior discoverable instead of relying on hidden defaults in `config.py`.
+
+## 2026-06-12 - Resume override survives usage recording
+
+- Reason: `/resume` is intended to override budget pause until the next UTC midnight, but `BudgetGuard.record_usage()` could immediately pause again after the first resumed LLM call when daily spend was already above cap.
+- Change: Share active resume-override parsing between pre-spend checks and post-usage pause checks, and skip automatic re-pause while the override is still valid.
+- Verification: Added a budget regression test where usage above cap records successfully without re-pausing during an active resume override.
+- Impact: Makes operator resume semantics reliable instead of allowing only one resumed request before monitoring pauses again.
