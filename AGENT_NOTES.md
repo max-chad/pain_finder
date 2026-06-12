@@ -888,3 +888,10 @@
 - Change: Use the strict DB JSON serializer for pain-point score components, analysis payloads, insert-time embeddings, stored embeddings, duplicate merge embeddings, and canonical cross-source id updates.
 - Verification: Added DB regressions for non-standard score components, analysis payloads, insert embeddings, stored embeddings, and duplicate merge embeddings without partial mutation; full gates are run after this note.
 - Impact: Prevents central operator-facing and deduplication state from accumulating invalid JSON that breaks strict tooling or poisons later data processing.
+
+## 2026-06-12 - Classification batch isolates per-post failures
+
+- Reason: `classify_batch()` used plain `asyncio.gather()`, so one unexpected parser/classifier exception could abort an entire analysis run and discard otherwise valid posts.
+- Change: Catch and log non-budget per-post classification failures inside the concurrency limiter while still propagating `BudgetCapReachedError` as a hard spending stop.
+- Verification: Added classifier regressions proving one crashed post no longer drops a valid peer and budget pause still propagates; full gates are run after this note.
+- Impact: Improves scheduled ingestion reliability under partial parser/provider failures without weakening budget safety.

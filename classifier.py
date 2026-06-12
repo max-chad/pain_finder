@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from budget import BudgetCapReachedError
 from openrouter import AnalysisResult, OpenRouterClient
 from scraper import Post
 
@@ -627,7 +628,13 @@ class Classifier:
 
         async def _classify_with_limit(post: Post) -> PainSignal | None:
             async with semaphore:
-                return await self.classify(post)
+                try:
+                    return await self.classify(post)
+                except BudgetCapReachedError:
+                    raise
+                except Exception:
+                    logger.exception("classify_post_failed stage=classify post_id=%s", post.post_id)
+                    return None
 
         signals = await asyncio.gather(*(_classify_with_limit(post) for post in posts))
         return [s for s in signals if s is not None]
