@@ -804,3 +804,10 @@
 - Change: Validate all floating score fields in `insert_pain_point()` with a shared finite-number coercion helper before writing to SQLite.
 - Verification: Added DB regressions for infinite opportunity score and NaN comment shill risk, plus adjacent insert/upsert checks; full gates are run after this note.
 - Impact: Prevents corrupted score values from entering operator-facing prioritization surfaces.
+
+## 2026-06-12 - Source smoke rejects non-finite float env
+
+- Reason: `smoke_collect.py` has an independent env parser and accepted `SCRAPER_RETRY_BASE_DELAY=inf`, allowing the deploy smoke gate to enter network retry paths with an unbounded delay.
+- Change: Require finite float env values in the smoke collector before any source fetch starts.
+- Verification: Added a smoke regression for non-finite retry delay; full gates are run after this note.
+- Impact: Keeps the read-only source smoke gate fast-failing on invalid deploy env instead of hanging during collection probes.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -72,6 +73,8 @@ def _env_float(name: str, default: float, minimum: float) -> float:
         value = float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
     if value < minimum:
         raise ValueError(f"{name} must be at least {minimum:g}")
     return value

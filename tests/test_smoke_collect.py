@@ -95,6 +95,24 @@ async def test_run_smoke_rejects_invalid_source_numeric_env(monkeypatch):
     ]
 
 
+async def test_run_smoke_rejects_non_finite_float_env(monkeypatch):
+    import smoke_collect
+
+    monkeypatch.setenv("SCRAPER_RETRY_BASE_DELAY", "inf")
+
+    exit_code, payload = await smoke_collect.run_smoke(["--source", "reddit"])
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["errors"] == [
+        {
+            "source": "config",
+            "reason": "exception",
+            "error": "SCRAPER_RETRY_BASE_DELAY must be finite",
+        }
+    ]
+
+
 async def test_run_smoke_rejects_non_positive_cli_limit(monkeypatch):
     import smoke_collect
 
