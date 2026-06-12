@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -30,6 +31,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 PROMOTION_SCORE_CAP = 35.0
+
+
+def _safe_text(value: Any, *, default: str = "") -> str:
+    text = str(default if value is None else value).strip()
+    return text or default
+
+
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
@@ -442,12 +455,12 @@ class AnalysisPipeline:
                     row_copy["score_components"] = {}
             scored_rows.append(row_copy)
 
-            niche = (row.get("niche_category") or "Uncategorized").strip() or "Uncategorized"
+            niche = _safe_text(row.get("niche_category"), default="Uncategorized")
             niche_counts[niche] = niche_counts.get(niche, 0) + 1
-            source_name = (row.get("source") or "unknown").strip() or "unknown"
+            source_name = _safe_text(row.get("source"), default="unknown")
             source_counts[source_name] = source_counts.get(source_name, 0) + 1
 
-            summary = (row.get("deep_dive_summary") or "").strip()
+            summary = _safe_text(row.get("deep_dive_summary"))
             if summary:
                 blockers[summary] = blockers.get(summary, 0) + 1
 
@@ -455,9 +468,9 @@ class AnalysisPipeline:
             key=lambda row: (
                 self._row_opportunity_score(row),
                 len(row.get("evidence_spans") or []),
-                int(row.get("source_created_ts") or 0),
-                int(row.get("willingness_to_pay") or 0),
-                int(row.get("pain_level") or 0),
+                _safe_int(row.get("source_created_ts")),
+                _safe_int(row.get("willingness_to_pay")),
+                _safe_int(row.get("pain_level")),
             ),
             reverse=True,
         )
@@ -700,13 +713,16 @@ class AnalysisPipeline:
     @staticmethod
     def _row_opportunity_score(row: dict[str, Any]) -> float:
         raw = row.get("opportunity_score")
-        try:
-            if raw is not None:
-                return round(float(raw), 2)
-        except (TypeError, ValueError):
-            pass
-        pain_level = int(row.get("pain_level") or 0)
-        wtp = int(row.get("willingness_to_pay") or 0)
+        if raw is not None:
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                if math.isfinite(parsed):
+                    return round(parsed, 2)
+        pain_level = _safe_int(row.get("pain_level"))
+        wtp = _safe_int(row.get("willingness_to_pay"))
         return round((pain_level + wtp) / 2, 2)
 
     def _classify_opportunity_bucket(self, post: Post) -> str:

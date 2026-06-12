@@ -675,6 +675,40 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
     assert "Need better alerts" in digest["recurring_blockers"]
 
 
+async def test_generate_digest_tolerates_malformed_row_values(tmp_path):
+    fake_db = AsyncMock()
+    fake_db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "bad-values",
+            "niche_category": 123,
+            "source": 456,
+            "deep_dive_summary": None,
+            "opportunity_score": "NaN",
+            "source_created_ts": "not-a-timestamp",
+            "willingness_to_pay": "not-an-int",
+            "pain_level": "not-an-int",
+            "score_components_json": "{bad-json",
+            "evidence_spans": None,
+        }
+    ]
+    fake_db.get_latest_canonical_clusters.return_value = []
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=fake_db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    digest = await pipeline.generate_digest(subreddit=None, hours=24)
+
+    assert digest["total"] == 1
+    assert digest["top_items"][0]["post_id"] == "bad-values"
+    assert digest["top_items"][0]["opportunity_score"] == 0.0
+    assert digest["niche_counts"] == {"123": 1}
+    assert digest["source_counts"] == {"456": 1}
+    assert digest["recurring_blockers"] == []
+
+
 async def test_generate_digest_returns_no_clusters_when_no_rows(db, tmp_path):
     run_id = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
     await db.save_macro_cluster(

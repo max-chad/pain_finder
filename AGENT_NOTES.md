@@ -937,3 +937,10 @@
 - Change: Always reconcile expected additive columns from the live table schema, then mark missing migration receipts only for audit history.
 - Verification: Added a DB regression with pre-existing migration markers but missing monitor and LLM usage columns; targeted migration/idempotency tests pass and full gates are run after this note.
 - Impact: Makes startup migrations resilient to partial migration state and prevents scheduler health/readiness or usage accounting from failing on legacy databases.
+
+## 2026-06-12 - Telegram digest tolerates malformed row values
+
+- Reason: `generate_digest()` trusted row text and numeric field shapes, so one malformed imported/legacy row could crash `/digest` when sorting, grouping, or counting sources.
+- Change: Add safe text/int coercion at the digest boundary and ignore non-finite opportunity scores before falling back to pain/WTP scoring.
+- Verification: Added a pipeline regression with malformed digest row values; full gates are run after this note.
+- Impact: Keeps operator digest reporting available under partial data corruption instead of failing the entire Telegram command.
