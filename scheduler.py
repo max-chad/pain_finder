@@ -80,10 +80,11 @@ class MonitoringScheduler:
         else:
             subs = await self.db.get_monitored_subreddits()
             for sub in subs:
+                interval_hours = max(1, int(sub["interval_hours"] or 1))
                 self.scheduler.add_job(
                     self._run_analysis,
                     trigger="interval",
-                    hours=sub["interval_hours"],
+                    hours=interval_hours,
                     id=f"monitor_{sub['name']}",
                     args=[sub["name"]],
                     replace_existing=True,
@@ -91,7 +92,7 @@ class MonitoringScheduler:
                 logger.info(
                     "scheduler_job_loaded stage=scheduler job=monitor subreddit=%s interval_hours=%d",
                     sub["name"],
-                    sub["interval_hours"],
+                    interval_hours,
                 )
 
             if self.macro_enabled and self.macro_fn is not None:

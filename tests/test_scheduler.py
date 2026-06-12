@@ -35,6 +35,22 @@ async def test_reload_jobs_creates_job_per_subreddit():
     sched.stop()
 
 
+async def test_reload_jobs_clamps_legacy_non_positive_monitor_interval():
+    mock_db = AsyncMock()
+    mock_db.get_monitored_subreddits.return_value = [
+        {"name": "python", "interval_hours": 0},
+    ]
+    mock_db.is_llm_paused.return_value = False
+    sched = MonitoringScheduler(db=mock_db, analyze_fn=AsyncMock())
+    sched.start()
+    await sched.reload_jobs()
+
+    python_job = sched.scheduler.get_job("monitor_python")
+    assert python_job is not None
+    assert python_job.trigger.interval.total_seconds() == 3600
+    sched.stop()
+
+
 async def test_reload_jobs_removes_old_jobs_before_adding():
     mock_db = AsyncMock()
     mock_db.get_monitored_subreddits.return_value = [

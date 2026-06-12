@@ -1381,9 +1381,12 @@ class Database:
         }
 
     async def add_monitored_subreddit(self, name: str, interval_hours: int) -> None:
+        interval_hours_value = self._non_negative_int(interval_hours, "interval_hours")
+        if interval_hours_value <= 0:
+            raise ValueError("interval_hours must be positive")
         await self._conn.execute(
             "INSERT INTO monitored_subreddits (name, interval_hours) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET interval_hours = excluded.interval_hours, active = 1",
-            (name, interval_hours),
+            (name, interval_hours_value),
         )
         await self._conn.commit()
 

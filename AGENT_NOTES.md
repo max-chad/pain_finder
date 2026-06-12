@@ -846,3 +846,10 @@
 - Change: Add a strict JSON serializer for DB payload boundaries and use it for deep-dive payloads, cached LLM payloads, and GTM asset payloads.
 - Verification: Added DB regressions for non-finite deep-dive, cached payload, and GTM asset payload values; full gates are run after this note.
 - Impact: Keeps persisted model artifacts compatible with standard JSON tooling and prevents corrupted cache/asset rows from becoming operator-facing data debt.
+
+## 2026-06-12 - Monitor intervals stay positive
+
+- Reason: Subreddit monitor intervals were validated by the Telegram parser but not by the DB boundary, and scheduler reload used persisted `interval_hours` directly; a legacy/corrupt zero interval could fail job reload after existing jobs were removed.
+- Change: Reject non-positive monitor intervals on `add_monitored_subreddit()` and clamp legacy non-positive persisted intervals to one hour during scheduler reload.
+- Verification: Added DB regression for interval `0` rejection and scheduler regression proving a legacy `interval_hours=0` row still schedules a one-hour monitor job; full gates are run after this note.
+- Impact: Prevents one bad monitor row from breaking scheduled collection reload and leaving ingestion unscheduled.

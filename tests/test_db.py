@@ -82,6 +82,13 @@ async def test_monitor_subreddit_crud(db):
     assert not any(s["name"] == "webdev" for s in subs)
 
 
+async def test_monitor_subreddit_rejects_non_positive_interval(db):
+    with pytest.raises(ValueError, match="interval_hours must be positive"):
+        await db.add_monitored_subreddit("webdev", interval_hours=0)
+
+    assert await db.get_monitored_subreddits() == []
+
+
 async def test_update_last_checked(db):
     await db.add_monitored_subreddit("python", interval_hours=12)
     await db.mark_monitor_failed("python", "temporary failure")
