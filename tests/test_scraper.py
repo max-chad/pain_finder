@@ -1,5 +1,4 @@
 import asyncio
-import time
 
 import pytest
 import httpx
@@ -505,17 +504,22 @@ async def test_fetch_public_json_requests_feeds_concurrently():
         feed_mix=["top", "new", "rising"],
     )
 
+    active_requests = 0
+    max_active_requests = 0
+
     async def delayed_payload(*, client, url, params, headers):
+        nonlocal active_requests, max_active_requests
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
         await asyncio.sleep(0.05)
+        active_requests -= 1
         return {"data": {"children": []}}
 
     with patch.object(scraper, "_request_json_with_retries", side_effect=delayed_payload):
-        started = time.perf_counter()
         posts = await scraper._fetch_public_json("python", limit=30)
-        elapsed = time.perf_counter() - started
 
     assert posts == []
-    assert elapsed < 0.12
+    assert max_active_requests == 3
 
 
 async def test_fetch_posts_falls_back_to_rss_when_public_json_is_blocked():
@@ -608,17 +612,22 @@ async def test_fetch_oauth_json_requests_feeds_concurrently():
         feed_mix=["top", "new", "rising"],
     )
 
+    active_requests = 0
+    max_active_requests = 0
+
     async def delayed_payload(*, client, path, params):
+        nonlocal active_requests, max_active_requests
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
         await asyncio.sleep(0.05)
+        active_requests -= 1
         return {"data": {"children": []}}
 
     with patch.object(scraper, "_request_oauth_json", side_effect=delayed_payload):
-        started = time.perf_counter()
         posts = await scraper._fetch_oauth_json("python", limit=30)
-        elapsed = time.perf_counter() - started
 
     assert posts == []
-    assert elapsed < 0.12
+    assert max_active_requests == 3
 
 
 async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
