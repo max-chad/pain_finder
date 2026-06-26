@@ -91,6 +91,8 @@ def sample_labels():
             "first_handness": "unknown",
             "buyer_authority": "unknown",
             "reference_now_ts": REFERENCE_NOW_TS,
+            "hard_negative_type": "generic_question",
+            "evidence_quality": "none",
         },
         {
             "post_id": "reddit:p3",
@@ -101,6 +103,8 @@ def sample_labels():
             "first_handness": "first_hand",
             "buyer_authority": "manager",
             "reference_now_ts": REFERENCE_NOW_TS,
+            "hard_negative_type": "solved_issue",
+            "evidence_quality": "exact_quote",
         },
     ]
 
@@ -119,6 +123,7 @@ def sample_predictions():
             "buyer_authority": "founder_owner",
             "opportunity_bucket": "current_opportunity",
             "analysis_mode": "dspy_b2b",
+            "exact_evidence_count": 1,
         },
         {
             "post_id": "reddit:p2",
@@ -131,6 +136,8 @@ def sample_predictions():
             "buyer_authority": "unknown",
             "opportunity_bucket": "current_opportunity",
             "analysis_mode": "legacy_llm",
+            "hard_negative_type": "",
+            "exact_evidence_count": 0,
         },
         {
             "post_id": "reddit:p3",
@@ -143,6 +150,8 @@ def sample_predictions():
             "buyer_authority": "unknown",
             "opportunity_bucket": "evergreen_pain",
             "analysis_mode": "screened_out",
+            "hard_negative_type": "solved_issue",
+            "exact_evidence_count": 0,
         },
     ]
 
@@ -173,6 +182,10 @@ def test_evaluate_predictions_computes_core_metrics(eval_harness_module, sample_
     assert metrics["stale_leakage"]["rate"] == pytest.approx(0.5)
     assert metrics["screening_false_negative_count"] == 1
     assert metrics["screening_false_negative_post_ids"] == ["reddit:p3"]
+    assert metrics["hard_negative_false_positive"]["candidate_count"] == 2
+    assert metrics["hard_negative_false_positive"]["count"] == 1
+    assert metrics["verified_evidence"]["expected_count"] == 1
+    assert metrics["verified_evidence"]["exact_match_count"] == 0
     assert metrics["post_type_confusion"]["vendor_rant"]["unclassified"] == 1
     assert metrics["first_handness_accuracy"] == pytest.approx(0.667)
     assert metrics["buyer_authority_accuracy"] == pytest.approx(0.667)

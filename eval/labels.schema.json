@@ -66,6 +66,37 @@
       "type": "integer",
       "minimum": 1
     },
+    "hard_negative_type": {
+      "type": "string",
+      "enum": [
+        "",
+        "generic_question",
+        "consumer_rant",
+        "founder_pitch",
+        "news_analysis",
+        "low_context",
+        "no_evidence",
+        "solved_issue",
+        "shill_risk",
+        "duplicate",
+        "discarded",
+        "not_monetizable",
+        "out_of_scope"
+      ]
+    },
+    "evidence_quality": {
+      "type": "string",
+      "enum": [
+        "none",
+        "unverified",
+        "fuzzy_quote",
+        "exact_quote",
+        "multi_quote"
+      ]
+    },
+    "feedback_useful": {
+      "type": "boolean"
+    },
     "notes": {
       "type": "string"
     }

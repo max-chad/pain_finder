@@ -22,7 +22,9 @@ from classifier import (
     first_handness_score,
 )
 from db import Database
+from evidence import EvidenceSource, VerifiedEvidence, verified_evidence_to_dicts, verify_evidence_spans
 from openrouter import DeepDiveResult
+from rejected_noise import hard_negative_type_for_signal
 from scraper import Post, RedditScraper
 
 if TYPE_CHECKING:
@@ -532,6 +534,11 @@ class AnalysisPipeline:
                 "first_handness": signal.first_handness,
                 "buyer_authority": signal.buyer_authority,
                 "evidence_spans": signal.evidence_spans,
+                "verified_evidence": (
+                    signal.analysis_payload.get("verified_evidence")
+                    if isinstance(signal.analysis_payload, dict)
+                    else []
+                ),
                 "promotion_eligible": bool(
                     signal.analysis_payload.get("promotion_eligible")
                     if isinstance(signal.analysis_payload, dict)
@@ -565,7 +572,11 @@ class AnalysisPipeline:
     def _enrich_signal(self, signal: PainSignal) -> None:
         comment_signals = extract_comment_market_signals(signal.post, competitor_tags=signal.competitor_tags)
         recency_score, stale_penalty = self._recency_profile(signal.post, signal.opportunity_bucket)
-        evidence_score = min(1.0, len(signal.evidence_spans) / 3) if signal.evidence_spans else 0.0
+        verified_evidence = self._verified_evidence(signal)
+        verified_evidence_dicts = verified_evidence_to_dicts(verified_evidence)
+        anchored_evidence_count = sum(1 for item in verified_evidence if item.match_type != "none")
+        exact_evidence_count = sum(1 for item in verified_evidence if item.match_type == "exact")
+        evidence_score = min(1.0, anchored_evidence_count / 3) if signal.evidence_spans else 0.0
         authority_score = buyer_authority_score(signal.buyer_authority)
         first_hand_score = first_handness_score(signal.first_handness)
         workflow_frequency_score = estimate_workflow_frequency_score(signal.post, signal)
@@ -629,6 +640,8 @@ class AnalysisPipeline:
             "stale_penalty": signal.stale_penalty,
             "solved_penalty": signal.solved_penalty,
             "evidence_score": round(evidence_score, 3),
+            "verified_evidence_count": anchored_evidence_count,
+            "exact_evidence_count": exact_evidence_count,
             "type_penalty": round(type_penalty, 3),
             "comment_consensus_count": signal.comment_consensus_count,
             "comment_same_here_count": signal.comment_same_here_count,
@@ -641,7 +654,13 @@ class AnalysisPipeline:
         if isinstance(signal.analysis_payload, dict):
             signal.analysis_payload.setdefault("comment_sample", signal.comment_sample)
             signal.analysis_payload.setdefault("score_components", signal.score_components)
+            signal.analysis_payload["verified_evidence"] = verified_evidence_dicts
         promotion_rejection_reason = self._promotion_rejection_reason(signal)
+        hard_negative_type = hard_negative_type_for_signal(
+            post_type=signal.post_type,
+            niche_category=signal.niche_category,
+            rejection_reason=promotion_rejection_reason,
+        )
         promotion_eligible = promotion_rejection_reason is None
         if not promotion_eligible:
             signal.opportunity_score = min(signal.opportunity_score, PROMOTION_SCORE_CAP)
@@ -650,22 +669,52 @@ class AnalysisPipeline:
         if signal.score_components is not None:
             signal.score_components["promotion_eligible"] = promotion_eligible
             signal.score_components["evidence_rejection_reason"] = promotion_rejection_reason
+            signal.score_components["hard_negative_type"] = hard_negative_type
         if isinstance(signal.analysis_payload, dict):
             signal.analysis_payload["promotion_eligible"] = promotion_eligible
             signal.analysis_payload["evidence_rejection_reason"] = promotion_rejection_reason
+            signal.analysis_payload["hard_negative_type"] = hard_negative_type
             signal.analysis_payload["score_components"] = signal.score_components
 
     @staticmethod
-    def _grounded_evidence_spans(signal: PainSignal) -> list[str]:
-        source_text = "\n".join(
-            part for part in [signal.post.title, signal.post.body, *signal.post.top_comments] if isinstance(part, str)
-        ).lower()
-        grounded: list[str] = []
-        for span in signal.evidence_spans:
-            clean = str(span or "").strip()
-            if clean and clean.lower() in source_text:
-                grounded.append(clean)
-        return grounded
+    def _evidence_sources(post: Post) -> list[EvidenceSource]:
+        sources = [
+            EvidenceSource(
+                source_type="title",
+                text=post.title,
+                post_id=post.post_id,
+                permalink=post.permalink or post.url,
+                created_utc=post.source_created_ts,
+            ),
+            EvidenceSource(
+                source_type="body",
+                text=post.body,
+                post_id=post.post_id,
+                permalink=post.permalink or post.url,
+                created_utc=post.source_created_ts,
+            ),
+        ]
+        for index, comment in enumerate(post.top_comments):
+            if isinstance(comment, str) and comment.strip():
+                sources.append(
+                    EvidenceSource(
+                        source_type="comment",
+                        text=comment,
+                        post_id=post.post_id,
+                        comment_id=f"comment:{index}",
+                        permalink=post.permalink or post.url,
+                        created_utc=post.source_created_ts,
+                    )
+                )
+        return sources
+
+    @classmethod
+    def _verified_evidence(cls, signal: PainSignal) -> list[VerifiedEvidence]:
+        return verify_evidence_spans(signal.evidence_spans, cls._evidence_sources(signal.post))
+
+    @classmethod
+    def _grounded_evidence_spans(cls, signal: PainSignal) -> list[str]:
+        return [item.quote for item in cls._verified_evidence(signal) if item.match_type != "none"]
 
     def _promotion_rejection_reason(self, signal: PainSignal) -> str | None:
         if not signal.is_monetizable:

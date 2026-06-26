@@ -138,6 +138,8 @@ async def test_export_service_includes_promotion_gate_columns(tmp_path):
                 {
                     "promotion_eligible": False,
                     "evidence_rejection_reason": "insufficient_first_hand_evidence",
+                    "hard_negative_type": "founder_pitch",
+                    "verified_evidence": [{"quote": "No exact evidence", "match_type": "none"}],
                 }
             ),
             "triage_status": "new",
@@ -155,6 +157,8 @@ async def test_export_service_includes_promotion_gate_columns(tmp_path):
     assert row["opportunity_score"] == "35.0"
     assert row["promotion_eligible"] == "False"
     assert row["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert row["hard_negative_type"] == "founder_pitch"
+    assert row["verified_evidence_count"] == "0"
 
 
 async def test_export_service_cleans_tmp_file_on_atomic_replace_error(tmp_path, monkeypatch):
@@ -317,6 +321,8 @@ def test_upsert_google_sheet_escapes_spreadsheet_formulas(tmp_path):
                 "opportunity_score",
                 "promotion_eligible",
                 "evidence_rejection_reason",
+                "hard_negative_type",
+                "verified_evidence_count",
                 "triage_status",
                 "deep_dive_status",
                 "deep_dive_summary",

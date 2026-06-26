@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Literal, TypedDict
 
 from classifier import PainSignal
 from export_sheets import ExportResult
+from feedback import FEEDBACK_VALUES
 
 if TYPE_CHECKING:
     from budget import BudgetStatus
@@ -346,6 +347,16 @@ class PainFinderBot:
                 InlineKeyboardButton("\u2717 Discard", callback_data=f"triage:discard:{token}:{idx}"),
             ],
             [
+                InlineKeyboardButton("Useful", callback_data=f"feedback:useful:{token}:{idx}"),
+                InlineKeyboardButton("Not pain", callback_data=f"feedback:not_a_pain:{token}:{idx}"),
+                InlineKeyboardButton("Bad evidence", callback_data=f"feedback:bad_evidence:{token}:{idx}"),
+            ],
+            [
+                InlineKeyboardButton("Duplicate", callback_data=f"feedback:duplicate:{token}:{idx}"),
+                InlineKeyboardButton("Too generic", callback_data=f"feedback:too_generic:{token}:{idx}"),
+                InlineKeyboardButton("Wrong segment", callback_data=f"feedback:wrong_segment:{token}:{idx}"),
+            ],
+            [
                 InlineKeyboardButton(
                     "\U0001f48e Deep Dive",
                     callback_data=f"deepdive:{token}:{idx}",
@@ -516,6 +527,12 @@ class PainFinderBot:
                 f"skipped_existing={latest_run.get('skipped_existing_count', 0)} "
                 f"dedup_merged={latest_run.get('dedup_merged_count', 0)}"
             )
+        feedback_total = int(summary.get("feedback_total") or 0)
+        feedback_counts = summary.get("feedback") if isinstance(summary.get("feedback"), dict) else {}
+        if feedback_total:
+            useful_count = int(feedback_counts.get("useful", 0))
+            bad_evidence_count = int(feedback_counts.get("bad_evidence", 0))
+            lines.append(f"Feedback: total={feedback_total} useful={useful_count} bad_evidence={bad_evidence_count}")
         failed_jobs = [job for job in scheduled_jobs if job.get("last_error")]
         if failed_jobs:
             lines.append("Scheduled job errors:")
@@ -802,6 +819,37 @@ class PainFinderBot:
                     await query.answer("Could not update message \u2014 try again.", show_alert=True)
                     return
                 await query.answer()
+                return
+
+            if data.startswith("feedback:"):
+                feedback_parts = data.split(":", 3)
+                if len(feedback_parts) < 3:
+                    await query.answer("Malformed callback", show_alert=False)
+                    return
+                _, feedback_value = feedback_parts[:2]
+                if feedback_value not in FEEDBACK_VALUES:
+                    await query.answer("Unknown feedback", show_alert=False)
+                    return
+                if len(feedback_parts) == 4 and SESSION_TOKEN_RE.match(feedback_parts[2]):
+                    signal_status, signal = self._resolve_session_signal(feedback_parts[2], feedback_parts[3])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                else:
+                    legacy_parts = data.split(":", 2)
+                    if len(legacy_parts) != 3:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = legacy_parts[2]
+                await self.db.record_feedback(post_id=post_id, feedback_value=feedback_value, source="telegram")
+                await query.answer(f"Feedback recorded: {feedback_value}", show_alert=False)
                 return
 
             if data.startswith("triage:"):

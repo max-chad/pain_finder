@@ -1343,6 +1343,38 @@ async def test_get_pain_points_by_ids_empty_input_returns_empty_dict(db):
     assert result == {}
 
 
+async def test_feedback_storage_and_summary(db):
+    useful_id = await db.record_feedback(
+        post_id="reddit:feedback1",
+        feedback_value="useful",
+        source="telegram",
+        metadata={"message_id": "42"},
+    )
+    bad_evidence_id = await db.record_feedback(
+        post_id="reddit:feedback1",
+        feedback_value="bad_evidence",
+        source="telegram",
+    )
+
+    assert useful_id > 0
+    assert bad_evidence_id > useful_id
+    with pytest.raises(ValueError, match="Unsupported feedback"):
+        await db.record_feedback(post_id="reddit:feedback1", feedback_value="interesting", source="telegram")
+
+    rows = await db.list_feedback(post_id="reddit:feedback1")
+    assert [row["feedback_value"] for row in rows] == ["useful", "bad_evidence"]
+    assert json.loads(rows[0]["metadata_json"]) == {"message_id": "42"}
+
+    summary = await db.get_feedback_summary()
+    assert summary["useful"] == 1
+    assert summary["bad_evidence"] == 1
+    assert summary["not_a_pain"] == 0
+
+    monitoring_summary = await db.get_monitoring_summary()
+    assert monitoring_summary["feedback_total"] == 2
+    assert monitoring_summary["feedback"]["useful"] == 1
+
+
 async def test_get_pain_points_by_ids_missing_ids_not_in_result(db):
     """post_ids that do not exist in the DB are simply absent from the returned dict."""
     await db.insert_pain_point(

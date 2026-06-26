@@ -224,6 +224,7 @@ async def test_promotion_gate_caps_noisy_signals_and_skips_deep_dive(db, tmp_pat
 
     assert report_payload["founder_noise"]["promotion_eligible"] is False
     assert report_payload["founder_noise"]["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert report_payload["founder_noise"]["verified_evidence"][0]["match_type"] == "none"
     assert report_payload["founder_noise"]["opportunity_score"] <= 35.0
     assert report_payload["news_noise"]["promotion_eligible"] is False
     assert report_payload["news_noise"]["evidence_rejection_reason"] == "unsupported_post_type"
@@ -235,6 +236,8 @@ async def test_promotion_gate_caps_noisy_signals_and_skips_deep_dive(db, tmp_pat
     analysis_payload = json.loads(founder_row["analysis_payload_json"])
     assert analysis_payload["promotion_eligible"] is False
     assert analysis_payload["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert analysis_payload["hard_negative_type"] == "founder_pitch"
+    assert analysis_payload["verified_evidence"][0]["match_type"] == "none"
     assert analysis_payload["score_components"]["promotion_score_cap"] == 35.0
 
 
@@ -295,6 +298,7 @@ async def test_promotion_gate_allows_grounded_first_hand_founder_signal(db, tmp_
         report_payload = json.load(handle)
     assert report_payload[0]["promotion_eligible"] is True
     assert report_payload[0]["evidence_rejection_reason"] is None
+    assert report_payload[0]["verified_evidence"][0]["match_type"] == "exact"
     assert report_payload[0]["opportunity_score"] > 35.0
 
 

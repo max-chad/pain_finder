@@ -6,6 +6,8 @@ from typing import Any
 
 import aiosqlite
 
+from feedback import empty_feedback_summary, encode_feedback_metadata, normalize_feedback_value
+
 logger = logging.getLogger(__name__)
 
 PAIN_POINT_STATUSES = {"new", "favorite", "discarded", "merged"}
@@ -216,6 +218,16 @@ CREATE TABLE IF NOT EXISTS scheduled_job_status (
     updated_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_FEEDBACK_EVENTS = """
+CREATE TABLE IF NOT EXISTS feedback_events (
+    id INTEGER PRIMARY KEY,
+    post_id TEXT NOT NULL,
+    feedback_value TEXT NOT NULL,
+    source TEXT DEFAULT 'telegram',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+)"""
+
 CREATE_SCHEMA_MIGRATIONS = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
@@ -242,6 +254,8 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_events_stage ON llm_usage_events(candidate_stage, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_llm_response_cache_updated ON llm_response_cache(updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_gtm_assets_post ON gtm_assets(post_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_events_post ON feedback_events(post_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_events_value ON feedback_events(feedback_value, created_at DESC)",
 ]
 
 PAIN_POINT_COLUMNS = {
@@ -342,6 +356,7 @@ class Database:
         await self._conn.execute(CREATE_LLM_RESPONSE_CACHE)
         await self._conn.execute(CREATE_GTM_ASSETS)
         await self._conn.execute(CREATE_SCHEDULED_JOB_STATUS)
+        await self._conn.execute(CREATE_FEEDBACK_EVENTS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
         await self._run_migrations()
@@ -1378,17 +1393,63 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def get_monitoring_summary(self) -> dict[str, int]:
+    async def get_monitoring_summary(self) -> dict[str, Any]:
         async with self._conn.execute("SELECT COUNT(*) AS total FROM monitored_subreddits WHERE active = 1") as cursor:
             monitored_row = await cursor.fetchone()
         async with self._conn.execute("SELECT COUNT(*) AS total FROM pain_points WHERE triage_status = 'favorite'") as cursor:
             favorites_row = await cursor.fetchone()
         paused = await self.is_llm_paused()
+        feedback = await self.get_feedback_summary()
         return {
             "monitored": int(monitored_row["total"] if monitored_row else 0),
             "favorites": int(favorites_row["total"] if favorites_row else 0),
             "llm_paused": int(paused),
+            "feedback_total": sum(feedback.values()),
+            "feedback": feedback,
         }
+
+    async def record_feedback(
+        self,
+        *,
+        post_id: str,
+        feedback_value: str,
+        source: str = "telegram",
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        value = normalize_feedback_value(feedback_value)
+        metadata_json = encode_feedback_metadata(metadata)
+        async with self._conn.execute(
+            """
+            INSERT INTO feedback_events (post_id, feedback_value, source, metadata_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (post_id, value, source, metadata_json),
+        ) as cursor:
+            await self._conn.commit()
+            return int(cursor.lastrowid)
+
+    async def list_feedback(self, post_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM feedback_events"
+        params: tuple[Any, ...] = ()
+        if post_id is not None:
+            query += " WHERE post_id = ?"
+            params = (post_id,)
+        query += " ORDER BY created_at ASC, id ASC"
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_feedback_summary(self) -> dict[str, int]:
+        summary = empty_feedback_summary()
+        async with self._conn.execute(
+            "SELECT feedback_value, COUNT(*) AS count FROM feedback_events GROUP BY feedback_value"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            value = str(row["feedback_value"])
+            if value in summary:
+                summary[value] = int(row["count"])
+        return summary
 
     async def add_monitored_subreddit(self, name: str, interval_hours: int) -> None:
         interval_hours_value = self._non_negative_int(interval_hours, "interval_hours")

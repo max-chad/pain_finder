@@ -62,6 +62,13 @@ def _promotion_text(row: dict[str, Any], key: str) -> str:
     return "" if value is None else str(value)
 
 
+def _verified_evidence_count(row: dict[str, Any]) -> int:
+    raw = _promotion_value(row, "verified_evidence")
+    if not isinstance(raw, list):
+        return 0
+    return sum(1 for item in raw if isinstance(item, dict) and str(item.get("match_type") or "none") != "none")
+
+
 def _safe_worksheet_name(prefix: str, scope: str | None) -> str:
     safe_prefix = _safe_artifact_stem(prefix, default="pain_finder")
     safe_scope = _safe_artifact_stem(scope or "all", default="all")
@@ -123,6 +130,8 @@ class ExportService:
             "opportunity_score",
             "promotion_eligible",
             "evidence_rejection_reason",
+            "hard_negative_type",
+            "verified_evidence_count",
             "triage_status",
             "deep_dive_status",
             "deep_dive_summary",
@@ -152,6 +161,8 @@ class ExportService:
                         "evidence_rejection_reason": _safe_spreadsheet_cell(
                             _promotion_text(row, "evidence_rejection_reason")
                         ),
+                        "hard_negative_type": _safe_spreadsheet_cell(_promotion_text(row, "hard_negative_type")),
+                        "verified_evidence_count": _verified_evidence_count(row),
                         "triage_status": _safe_spreadsheet_cell(row.get("triage_status", "new")),
                         "deep_dive_status": _safe_spreadsheet_cell(row.get("deep_dive_status", "not_requested")),
                         "deep_dive_summary": _safe_spreadsheet_cell(row.get("deep_dive_summary", "")),
@@ -225,6 +236,8 @@ class ExportService:
                 str(_safe_spreadsheet_cell(str(row.get("opportunity_score", "")))),
                 str(_safe_spreadsheet_cell(_promotion_text(row, "promotion_eligible"))),
                 str(_safe_spreadsheet_cell(_promotion_text(row, "evidence_rejection_reason"))),
+                str(_safe_spreadsheet_cell(_promotion_text(row, "hard_negative_type"))),
+                str(_safe_spreadsheet_cell(str(_verified_evidence_count(row)))),
                 str(_safe_spreadsheet_cell(str(row.get("triage_status", "new")))),
                 str(_safe_spreadsheet_cell(str(row.get("deep_dive_status", "not_requested")))),
                 str(_safe_spreadsheet_cell(str(row.get("deep_dive_summary", "")))),

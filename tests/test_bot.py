@@ -258,6 +258,34 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
     assert "reviews_ingest" not in text
 
 
+async def test_cmd_status_includes_feedback_counts():
+    db = AsyncMock()
+    db.get_monitoring_summary.return_value = {
+        "monitored": 1,
+        "favorites": 0,
+        "llm_paused": False,
+        "feedback_total": 3,
+        "feedback": {
+            "useful": 2,
+            "not_a_pain": 0,
+            "duplicate": 0,
+            "too_generic": 0,
+            "wrong_segment": 0,
+            "bad_evidence": 1,
+        },
+    }
+    db.get_latest_analysis_run.return_value = None
+    db.get_scheduled_job_statuses.return_value = []
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_status(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "Feedback: total=3 useful=2 bad_evidence=1" in text
+
+
 async def test_cmd_list_truncates_large_monitoring_output():
     db = AsyncMock()
     db.get_monitored_subreddits.return_value = [
@@ -581,6 +609,30 @@ async def test_callback_query_updates_triage_status():
 
     db.update_triage_status.assert_awaited_once_with("abc123", "favorite")
     query.answer.assert_awaited_once()
+
+
+async def test_callback_query_records_feedback():
+    db = AsyncMock()
+    db.record_feedback.return_value = 7
+
+    query = SimpleNamespace(
+        data="feedback:bad_evidence:reddit:abc123",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.record_feedback.assert_awaited_once_with(
+        post_id="reddit:abc123",
+        feedback_value="bad_evidence",
+        source="telegram",
+    )
+    query.answer.assert_awaited_once_with("Feedback recorded: bad_evidence", show_alert=False)
 
 
 async def test_callback_query_runs_deep_dive():
