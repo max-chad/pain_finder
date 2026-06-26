@@ -13,6 +13,7 @@ from bot import (
     MONITOR_USAGE,
     UNMONITOR_USAGE,
     PainFinderBot,
+    TELEGRAM_TEXT_LIMIT,
     format_report,
     normalize_subreddit,
     parse_analyze_args,
@@ -229,6 +230,18 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
         "skipped_existing_count": 12,
         "dedup_merged_count": 3,
     }
+    db.get_scheduled_job_statuses.return_value = [
+        {
+            "job_name": "hn_ingest",
+            "last_attempted_at": "2026-06-01T10:00:00+00:00",
+            "last_error": "HN fetch failed",
+        },
+        {
+            "job_name": "reviews_ingest",
+            "last_attempted_at": "2026-06-01T11:00:00+00:00",
+            "last_error": None,
+        },
+    ]
 
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
     bot._is_authorized = lambda update: True
@@ -240,6 +253,100 @@ async def test_cmd_status_includes_efficiency_counters_when_latest_run_exists():
     assert "pain_finder running" in text
     assert "Monitored subreddits: 2" in text
     assert "Last run: r/python posts=100 pain=20 monetizable=5 skipped_existing=12 dedup_merged=3" in text
+    assert "Scheduled job errors:" in text
+    assert "- hn_ingest last error at 2026-06-01T10:00:00+00:00: HN fetch failed" in text
+    assert "reviews_ingest" not in text
+
+
+async def test_cmd_status_includes_feedback_counts():
+    db = AsyncMock()
+    db.get_monitoring_summary.return_value = {
+        "monitored": 1,
+        "favorites": 0,
+        "llm_paused": False,
+        "feedback_total": 3,
+        "feedback": {
+            "useful": 2,
+            "not_a_pain": 0,
+            "duplicate": 0,
+            "too_generic": 0,
+            "wrong_segment": 0,
+            "bad_evidence": 1,
+        },
+    }
+    db.get_latest_analysis_run.return_value = None
+    db.get_scheduled_job_statuses.return_value = []
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_status(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "Feedback: total=3 useful=2 bad_evidence=1" in text
+
+
+async def test_cmd_list_truncates_large_monitoring_output():
+    db = AsyncMock()
+    db.get_monitored_subreddits.return_value = [
+        {"name": f"subreddit_{idx}", "interval_hours": 1, "last_checked": "never"}
+        for idx in range(500)
+    ]
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_list(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
+
+
+async def test_cmd_list_shows_monitor_errors():
+    db = AsyncMock()
+    db.get_monitored_subreddits.return_value = [
+        {
+            "name": "python",
+            "interval_hours": 1,
+            "last_checked": None,
+            "last_attempted_at": "2026-05-25T10:00:00+00:00",
+            "last_error": "network down",
+        }
+    ]
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+    update = _make_update()
+
+    await bot.cmd_list(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert "last success: never" in text
+    assert "last error at 2026-05-25T10:00:00+00:00: network down" in text
+
+
+async def test_cmd_budget_truncates_long_pause_reason():
+    status = SimpleNamespace(
+        daily_cap_usd=2.0,
+        spent_today_usd=1.125,
+        llm_paused=True,
+        pause_reason="budget_cap_reached:" + ("x" * 6000),
+        resume_override_until=None,
+    )
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        budget_status_fn=AsyncMock(return_value=status),
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_budget(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
 
 
 async def test_cmd_export_usage_for_too_many_args():
@@ -258,6 +365,7 @@ async def test_cmd_export_uses_export_service_with_warning(tmp_path):
     csv_path.write_text("header\n", encoding="utf-8")
 
     export_service = AsyncMock()
+    export_service.reports_dir = str(tmp_path)
     export_service.export.return_value = ExportResult(
         csv_path=str(csv_path),
         row_count=3,
@@ -282,6 +390,101 @@ async def test_cmd_export_uses_export_service_with_warning(tmp_path):
     assert update.message.reply_text.await_count == 1
 
 
+async def test_cmd_export_truncates_long_sheet_warning(tmp_path):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text("header\n", encoding="utf-8")
+
+    export_service = AsyncMock()
+    export_service.reports_dir = str(tmp_path)
+    export_service.export.return_value = ExportResult(
+        csv_path=str(csv_path),
+        row_count=3,
+        sheet_url=None,
+        warning="Google Sheets export failed: " + ("x" * 6000),
+    )
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        export_service=export_service,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    text = update.message.reply_text.await_args.args[0]
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
+
+
+async def test_cmd_export_service_rejects_csv_path_outside_reports_dir(tmp_path):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    outside_path = tmp_path / "outside.csv"
+    outside_path.write_text("secret\n", encoding="utf-8")
+
+    export_service = AsyncMock()
+    export_service.reports_dir = str(reports_dir)
+    export_service.export.return_value = ExportResult(
+        csv_path=str(outside_path),
+        row_count=1,
+    )
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=AsyncMock(),
+        export_service=export_service,
+    )
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    update.message.reply_document.assert_not_awaited()
+    update.message.reply_text.assert_awaited_once_with("Export path is outside the configured reports directory.")
+
+
+async def test_cmd_export_legacy_sends_report_inside_reports_dir(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report_path = reports_dir / "report.json"
+    report_path.write_text("[]\n", encoding="utf-8")
+    monkeypatch.setattr("config.REPORTS_DIR", str(reports_dir))
+
+    db = AsyncMock()
+    db.get_latest_report.return_value = {"subreddit": "python", "json_path": str(report_path)}
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    update.message.reply_document.assert_awaited_once()
+    assert update.message.reply_document.await_args.kwargs["filename"] == "report.json"
+
+
+async def test_cmd_export_legacy_rejects_report_path_outside_reports_dir(tmp_path, monkeypatch):
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    outside_path = tmp_path / "secrets.json"
+    outside_path.write_text('{"secret": true}\n', encoding="utf-8")
+    monkeypatch.setattr("config.REPORTS_DIR", str(reports_dir))
+
+    db = AsyncMock()
+    db.get_latest_report.return_value = {"subreddit": "python", "json_path": str(outside_path)}
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_export(update, _make_ctx([]))
+
+    update.message.reply_document.assert_not_awaited()
+    update.message.reply_text.assert_awaited_once_with("Report path is outside the configured reports directory.")
+
+
 async def test_cmd_deepdive_runs_injected_function():
     db = AsyncMock()
     db.get_pain_point.return_value = {"subreddit": "python"}
@@ -301,6 +504,35 @@ async def test_cmd_deepdive_runs_injected_function():
 
     deep_dive_fn.assert_awaited_once_with("abc123", "python", "manual")
     assert update.message.reply_text.await_count == 2
+
+
+async def test_cmd_deepdive_truncates_long_summary_reply():
+    db = AsyncMock()
+    db.get_pain_point.return_value = {"subreddit": "python"}
+    deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="S" * 6000, error=None))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db, deep_dive_fn=deep_dive_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_deepdive(update, _make_ctx(["abc123"]))
+
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
+async def test_cmd_deepdive_truncates_long_post_id_not_found_reply():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_deepdive(update, _make_ctx(["reddit:" + ("a" * 6000)]))
+
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
 
 
 async def test_cmd_deepdive_usage_on_bad_args():
@@ -379,8 +611,53 @@ async def test_callback_query_updates_triage_status():
     query.answer.assert_awaited_once()
 
 
+async def test_legacy_triage_callback_preserves_source_prefixed_post_id():
+    db = AsyncMock()
+    db.update_triage_status.return_value = True
+
+    query = SimpleNamespace(
+        data="triage:favorite:reddit:abc123",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.update_triage_status.assert_awaited_once_with("reddit:abc123", "favorite")
+    query.answer.assert_awaited_once()
+
+
+async def test_callback_query_records_feedback():
+    db = AsyncMock()
+    db.record_feedback.return_value = 7
+
+    query = SimpleNamespace(
+        data="feedback:bad_evidence:reddit:abc123",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.record_feedback.assert_awaited_once_with(
+        post_id="reddit:abc123",
+        feedback_value="bad_evidence",
+        source="telegram",
+    )
+    query.answer.assert_awaited_once_with("Feedback recorded: bad_evidence", show_alert=False)
+
+
 async def test_callback_query_runs_deep_dive():
     db = AsyncMock()
+    db.get_pain_point.return_value = {"post_id": "abc123"}
     deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="Done", error=None))
 
     query = SimpleNamespace(
@@ -402,6 +679,34 @@ async def test_callback_query_runs_deep_dive():
 
     deep_dive_fn.assert_awaited_once_with("abc123", "python", "callback")
     assert query.message.reply_text.await_count == 1
+
+
+async def test_callback_query_deep_dive_requires_existing_post():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    deep_dive_fn = AsyncMock()
+
+    query = SimpleNamespace(
+        data="deepdive:missing:python",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        deep_dive_fn=deep_dive_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.get_pain_point.assert_awaited_once_with("missing")
+    deep_dive_fn.assert_not_awaited()
+    query.answer.assert_awaited_once_with("Post not found", show_alert=False)
+    query.message.reply_text.assert_not_awaited()
 
 
 async def test_cmd_macro_triggers_injected_clusterer():
@@ -505,6 +810,48 @@ async def test_cmd_gtm_success():
     assert "GTM package for reddit:abc123" in update.message.reply_text.await_args.args[0]
 
 
+async def test_cmd_gtm_truncates_long_generated_reply():
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1" * 2000,
+        hero_h2="H2" * 2000,
+        mvp_features=["feature" * 500],
+        pricing_tier="$19",
+        positioning_rationale="why" * 2000,
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="reddit:abc123", payload=gtm_payload))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["reddit:abc123"]))
+
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
+async def test_cmd_gtm_truncates_long_post_id_progress_reply():
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1",
+        hero_h2="H2",
+        mvp_features=["feature"],
+        pricing_tier="$19",
+        positioning_rationale="why",
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="placeholder", payload=gtm_payload))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["reddit:" + ("a" * 6000)]))
+
+    sent_text = update.message.reply_text.await_args_list[0].args[0]
+    assert len(sent_text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in sent_text
+
+
 async def test_cmd_gtm_usage_on_bad_args():
     bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=AsyncMock(), gtm_fn=AsyncMock())
     bot._is_authorized = lambda update: True
@@ -513,6 +860,22 @@ async def test_cmd_gtm_usage_on_bad_args():
     await bot.cmd_gtm(update, _make_ctx([]))
 
     update.message.reply_text.assert_awaited_once_with(GTM_USAGE)
+
+
+async def test_cmd_gtm_requires_existing_post():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    gtm_fn = AsyncMock()
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db, gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+
+    update = _make_update()
+    await bot.cmd_gtm(update, _make_ctx(["missing"]))
+
+    db.get_pain_point.assert_awaited_once_with("missing")
+    gtm_fn.assert_not_awaited()
+    sent_text = update.message.reply_text.await_args.args[0]
+    assert "Post missing was not found" in sent_text
 
 
 async def test_callback_query_runs_gtm():
@@ -546,6 +909,34 @@ async def test_callback_query_runs_gtm():
     gtm_fn.assert_awaited_once_with("reddit:abc123")
     query.answer.assert_awaited()
     query.message.reply_text.assert_awaited_once()
+
+
+async def test_callback_query_gtm_requires_existing_post():
+    db = AsyncMock()
+    db.get_pain_point.return_value = None
+    gtm_fn = AsyncMock()
+
+    query = SimpleNamespace(
+        data="gtm:missing:reddit",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        gtm_fn=gtm_fn,
+    )
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.get_pain_point.assert_awaited_once_with("missing")
+    gtm_fn.assert_not_awaited()
+    query.answer.assert_awaited_once_with("Post not found", show_alert=False)
+    query.message.reply_text.assert_not_awaited()
 
 
 async def test_cmd_monitor_usage_on_bad_args():
@@ -644,6 +1035,26 @@ def test_render_list_view_no_load_more_when_all_shown():
     assert not any("Load more" in b for b in buttons_flat)
 
 
+def test_render_list_view_text_stays_under_telegram_limit_for_many_items():
+    bot = _make_bot()
+    signals = [
+        _make_signal(
+            f"p{i}",
+            "complaint",
+            f"Very long source complaint summary number {i} " + ("x" * 200),
+        )
+        for i in range(100)
+    ]
+    token = bot._create_session(signals, "r/python")
+    session = bot._sessions[token]
+    session["shown_count"] = len(signals)
+
+    text, _ = bot._render_list_view(token, session)
+
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
+
+
 def test_render_card_view_contains_post_details():
     bot = _make_bot()
     signal = _make_signal("post_abc", "complaint", "Really annoying bug")
@@ -663,6 +1074,34 @@ def test_render_card_view_contains_post_details():
     assert any("Discard" in b for b in buttons_flat)
     assert any("Deep Dive" in b for b in buttons_flat)
     assert any("GTM" in b for b in buttons_flat)
+
+
+def test_render_card_view_callback_data_stays_under_telegram_limit_for_long_ids():
+    bot = _make_bot()
+    long_post_id = "review:g2:" + ("very-long-product-name-" * 4) + "abcdef1234567890"
+    signal = _make_signal(long_post_id, "complaint", "Long review id")
+    token = bot._create_session([signal], "Reviews")
+    session = bot._sessions[token]
+
+    _, keyboard = bot._render_card_view(token, session, 0)
+
+    callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+    assert all(callback is not None and len(callback.encode()) <= 64 for callback in callbacks)
+    assert all(long_post_id not in callback for callback in callbacks if callback)
+
+
+def test_render_card_view_text_stays_under_telegram_limit_for_long_external_fields():
+    bot = _make_bot()
+    signal = _make_signal("p1", "complaint", "S" * 3000)
+    signal.post.title = "T" * 2500
+    signal.post.url = "https://example.com/" + ("u" * 1200)
+    token = bot._create_session([signal], "Reviews")
+    session = bot._sessions[token]
+
+    text, _ = bot._render_card_view(token, session, 0)
+
+    assert len(text) <= TELEGRAM_TEXT_LIMIT
+    assert "[truncated]" in text
 
 
 def test_sel_callback_data_format():
@@ -743,6 +1182,45 @@ async def test_sel_callback_edits_message_to_card_view():
     update.callback_query.edit_message_text.assert_awaited_once()
     text = update.callback_query.edit_message_text.call_args.args[0]
     assert "Item 1 of 5" in text
+
+
+async def test_session_triage_callback_resolves_long_post_id():
+    db = AsyncMock()
+    db.update_triage_status.return_value = True
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+    long_post_id = "review:g2:" + ("very-long-product-name-" * 4) + "abcdef1234567890"
+    token = bot._create_session([_make_signal(long_post_id, "complaint", "Long review id")], "Reviews")
+
+    update = _make_callback_update(f"triage:favorite:{token}:0")
+    await bot.on_callback_query(update, None)
+
+    db.update_triage_status.assert_awaited_once_with(long_post_id, "favorite")
+    update.callback_query.answer.assert_awaited_once()
+
+
+async def test_session_deepdive_and_gtm_callbacks_resolve_long_post_id():
+    db = AsyncMock()
+    deep_dive_fn = AsyncMock(return_value=SimpleNamespace(status="completed", summary="Done", error=None))
+    gtm_payload = SimpleNamespace(
+        name_options=["A", "B", "C"],
+        hero_h1="H1",
+        hero_h2="H2",
+        mvp_features=["f1", "f2", "f3"],
+        pricing_tier="$19",
+        positioning_rationale="why",
+    )
+    gtm_fn = AsyncMock(return_value=SimpleNamespace(post_id="placeholder", payload=gtm_payload))
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db, deep_dive_fn=deep_dive_fn, gtm_fn=gtm_fn)
+    bot._is_authorized = lambda update: True
+    long_post_id = "review:g2:" + ("very-long-product-name-" * 4) + "abcdef1234567890"
+    token = bot._create_session([_make_signal(long_post_id, "complaint", "Long review id")], "Reviews")
+
+    await bot.on_callback_query(_make_callback_update(f"deepdive:{token}:0"), None)
+    await bot.on_callback_query(_make_callback_update(f"gtm:{token}:0"), None)
+
+    deep_dive_fn.assert_awaited_once_with(long_post_id, "python", "callback")
+    gtm_fn.assert_awaited_once_with(long_post_id)
 
 
 async def test_loadmore_callback_shows_more_items():

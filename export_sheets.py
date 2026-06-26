@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -15,6 +16,64 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 from db import Database
 
 logger = logging.getLogger(__name__)
+
+
+SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
+ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+MAX_WORKSHEET_TITLE_LENGTH = 100
+
+
+def _safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
+    stem = ARTIFACT_STEM_RE.sub("_", str(raw or "").strip())
+    stem = stem.strip("._-")
+    return stem or default
+
+
+def _safe_spreadsheet_cell(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped.startswith(SPREADSHEET_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def _analysis_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw = row.get("analysis_payload_json") or row.get("analysis_payload") or {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _promotion_value(row: dict[str, Any], key: str) -> Any:
+    if key in row and row.get(key) is not None:
+        return row.get(key)
+    return _analysis_payload(row).get(key)
+
+
+def _promotion_text(row: dict[str, Any], key: str) -> str:
+    value = _promotion_value(row, key)
+    return "" if value is None else str(value)
+
+
+def _verified_evidence_count(row: dict[str, Any]) -> int:
+    raw = _promotion_value(row, "verified_evidence")
+    if not isinstance(raw, list):
+        return 0
+    return sum(1 for item in raw if isinstance(item, dict) and str(item.get("match_type") or "none") != "none")
+
+
+def _safe_worksheet_name(prefix: str, scope: str | None) -> str:
+    safe_prefix = _safe_artifact_stem(prefix, default="pain_finder")
+    safe_scope = _safe_artifact_stem(scope or "all", default="all")
+    name = f"{safe_prefix}_{safe_scope}"
+    return name[:MAX_WORKSHEET_TITLE_LENGTH].rstrip("._-") or "pain_finder"
 
 
 @dataclass
@@ -50,9 +109,10 @@ class ExportService:
         )
 
         os.makedirs(self.reports_dir, exist_ok=True)
-        scope = subreddit or "all"
-        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        scope = _safe_artifact_stem(subreddit or "all", default="all")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         csv_path = os.path.join(self.reports_dir, f"export_{scope}_{timestamp}.csv")
+        tmp_path = f"{csv_path}.tmp"
 
         headers = [
             "created_at",
@@ -67,34 +127,53 @@ class ExportService:
             "competitor_tags",
             "category",
             "severity",
+            "opportunity_score",
+            "promotion_eligible",
+            "evidence_rejection_reason",
+            "hard_negative_type",
+            "verified_evidence_count",
             "triage_status",
             "deep_dive_status",
             "deep_dive_summary",
             "url",
         ]
 
-        with open(csv_path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=headers)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({
-                    "created_at": row.get("created_at", ""),
-                    "subreddit": row.get("subreddit", ""),
-                    "source": row.get("source", ""),
-                    "post_id": row.get("post_id", ""),
-                    "title": row.get("title", ""),
-                    "summary": row.get("summary", ""),
-                    "pain_level": row.get("pain_level", 0),
-                    "willingness_to_pay": row.get("willingness_to_pay", 0),
-                    "niche_category": row.get("niche_category", ""),
-                    "competitor_tags": row.get("competitor_tags", "[]"),
-                    "category": row.get("category", ""),
-                    "severity": row.get("severity", ""),
-                    "triage_status": row.get("triage_status", "new"),
-                    "deep_dive_status": row.get("deep_dive_status", "not_requested"),
-                    "deep_dive_summary": row.get("deep_dive_summary", ""),
-                    "url": row.get("url", ""),
-                })
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=headers)
+                writer.writeheader()
+                for row in rows:
+                    export_row = {
+                        "created_at": _safe_spreadsheet_cell(row.get("created_at", "")),
+                        "subreddit": _safe_spreadsheet_cell(row.get("subreddit", "")),
+                        "source": _safe_spreadsheet_cell(row.get("source", "")),
+                        "post_id": _safe_spreadsheet_cell(row.get("post_id", "")),
+                        "title": _safe_spreadsheet_cell(row.get("title", "")),
+                        "summary": _safe_spreadsheet_cell(row.get("summary", "")),
+                        "pain_level": row.get("pain_level", 0),
+                        "willingness_to_pay": row.get("willingness_to_pay", 0),
+                        "niche_category": _safe_spreadsheet_cell(row.get("niche_category", "")),
+                        "competitor_tags": _safe_spreadsheet_cell(row.get("competitor_tags", "[]")),
+                        "category": _safe_spreadsheet_cell(row.get("category", "")),
+                        "severity": _safe_spreadsheet_cell(row.get("severity", "")),
+                        "opportunity_score": row.get("opportunity_score", ""),
+                        "promotion_eligible": _safe_spreadsheet_cell(_promotion_text(row, "promotion_eligible")),
+                        "evidence_rejection_reason": _safe_spreadsheet_cell(
+                            _promotion_text(row, "evidence_rejection_reason")
+                        ),
+                        "hard_negative_type": _safe_spreadsheet_cell(_promotion_text(row, "hard_negative_type")),
+                        "verified_evidence_count": _verified_evidence_count(row),
+                        "triage_status": _safe_spreadsheet_cell(row.get("triage_status", "new")),
+                        "deep_dive_status": _safe_spreadsheet_cell(row.get("deep_dive_status", "not_requested")),
+                        "deep_dive_summary": _safe_spreadsheet_cell(row.get("deep_dive_summary", "")),
+                        "url": _safe_spreadsheet_cell(row.get("url", "")),
+                    }
+                    writer.writerow({key: _safe_spreadsheet_cell(value) for key, value in export_row.items()})
+            os.replace(tmp_path, csv_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
         sheet_url = None
         warning = None
@@ -128,7 +207,7 @@ class ExportService:
         client = gspread.service_account_from_dict(creds)
         spreadsheet = client.open_by_key(self.sheets_spreadsheet_id)
 
-        worksheet_name = f"{self.sheets_worksheet_prefix}_{subreddit or 'all'}"
+        worksheet_name = _safe_worksheet_name(self.sheets_worksheet_prefix, subreddit)
         try:
             worksheet = spreadsheet.worksheet(worksheet_name)
             worksheet.clear()
@@ -142,22 +221,27 @@ class ExportService:
         values = [headers]
         for row in rows:
             values.append([
-                str(row.get("created_at", "")),
-                str(row.get("subreddit", "")),
-                str(row.get("source", "")),
-                str(row.get("post_id", "")),
-                str(row.get("title", "")),
-                str(row.get("summary", "")),
-                str(row.get("pain_level", 0)),
-                str(row.get("willingness_to_pay", 0)),
-                str(row.get("niche_category", "")),
-                str(row.get("competitor_tags", "[]")),
-                str(row.get("category", "")),
-                str(row.get("severity", "")),
-                str(row.get("triage_status", "new")),
-                str(row.get("deep_dive_status", "not_requested")),
-                str(row.get("deep_dive_summary", "")),
-                str(row.get("url", "")),
+                str(_safe_spreadsheet_cell(str(row.get("created_at", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("subreddit", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("source", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("post_id", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("title", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("summary", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("pain_level", 0)))),
+                str(_safe_spreadsheet_cell(str(row.get("willingness_to_pay", 0)))),
+                str(_safe_spreadsheet_cell(str(row.get("niche_category", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("competitor_tags", "[]")))),
+                str(_safe_spreadsheet_cell(str(row.get("category", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("severity", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("opportunity_score", "")))),
+                str(_safe_spreadsheet_cell(_promotion_text(row, "promotion_eligible"))),
+                str(_safe_spreadsheet_cell(_promotion_text(row, "evidence_rejection_reason"))),
+                str(_safe_spreadsheet_cell(_promotion_text(row, "hard_negative_type"))),
+                str(_safe_spreadsheet_cell(str(_verified_evidence_count(row)))),
+                str(_safe_spreadsheet_cell(str(row.get("triage_status", "new")))),
+                str(_safe_spreadsheet_cell(str(row.get("deep_dive_status", "not_requested")))),
+                str(_safe_spreadsheet_cell(str(row.get("deep_dive_summary", "")))),
+                str(_safe_spreadsheet_cell(str(row.get("url", "")))),
             ])
 
         worksheet.update("A1", values)

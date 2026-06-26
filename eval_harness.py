@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from classifier import PainSignal
+from rejected_noise import HARD_NEGATIVE_TYPES, normalize_rejection_reason
 from scraper import Post
 
 VALID_POST_TYPES = {
@@ -29,6 +30,7 @@ VALID_BUYER_AUTHORITY = {
     "agency_operator",
     "unknown",
 }
+VALID_EVIDENCE_QUALITY = {"none", "unverified", "fuzzy_quote", "exact_quote", "multi_quote"}
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -147,6 +149,12 @@ def posts_from_jsonl(path: str | Path) -> list[Post]:
 def _normalize_label_row(row: dict[str, Any]) -> dict[str, Any]:
     if not row.get("post_id"):
         raise ValueError("label row is missing post_id")
+    hard_negative_type = normalize_rejection_reason(row.get("hard_negative_type"))
+    if hard_negative_type and hard_negative_type not in HARD_NEGATIVE_TYPES:
+        raise ValueError(f"invalid hard_negative_type: {row.get('hard_negative_type')!r}")
+    evidence_quality = str(row.get("evidence_quality") or "none").strip().lower()
+    if evidence_quality not in VALID_EVIDENCE_QUALITY:
+        raise ValueError(f"invalid evidence_quality: {row.get('evidence_quality')!r}")
     return {
         "post_id": str(row["post_id"]),
         "is_pain": _require_label_bool(row.get("is_pain"), field_name="is_pain"),
@@ -156,6 +164,9 @@ def _normalize_label_row(row: dict[str, Any]) -> dict[str, Any]:
         "first_handness": _require_label_choice(row.get("first_handness"), field_name="first_handness", allowed=VALID_FIRST_HANDNESS),
         "buyer_authority": _require_label_choice(row.get("buyer_authority"), field_name="buyer_authority", allowed=VALID_BUYER_AUTHORITY),
         "reference_now_ts": _parse_optional_reference_now_ts(row.get("reference_now_ts")),
+        "hard_negative_type": hard_negative_type,
+        "evidence_quality": evidence_quality,
+        "feedback_useful": _safe_bool(row.get("feedback_useful")),
         "notes": str(row.get("notes", "")),
     }
 
@@ -210,6 +221,9 @@ def _default_prediction(post: Post, *, reference_now_ts: int, current_opportunit
             reference_now_ts=reference_now_ts,
         ),
         "analysis_mode": "missing",
+        "hard_negative_type": "",
+        "verified_evidence_count": 0,
+        "exact_evidence_count": 0,
     }
 
 
@@ -239,7 +253,15 @@ def prediction_from_signal(
             "buyer_authority": "unknown",
             "opportunity_bucket": bucket,
             "analysis_mode": prediction_status,
+            "hard_negative_type": "",
+            "verified_evidence_count": 0,
+            "exact_evidence_count": 0,
         }
+    analysis_payload = signal.analysis_payload if isinstance(signal.analysis_payload, dict) else {}
+    score_components = signal.score_components if isinstance(signal.score_components, dict) else {}
+    hard_negative_type = normalize_rejection_reason(
+        analysis_payload.get("hard_negative_type") or score_components.get("hard_negative_type")
+    )
 
     return {
         "post_id": post.post_id,
@@ -252,6 +274,9 @@ def prediction_from_signal(
         "buyer_authority": _normalized_choice(signal.buyer_authority, allowed=VALID_BUYER_AUTHORITY, fallback="unknown"),
         "opportunity_bucket": bucket,
         "analysis_mode": str(signal.analysis_mode or "classified"),
+        "hard_negative_type": hard_negative_type,
+        "verified_evidence_count": _safe_int(score_components.get("verified_evidence_count"), default=0),
+        "exact_evidence_count": _safe_int(score_components.get("exact_evidence_count"), default=0),
         "category": str(signal.category or ""),
         "summary": str(signal.summary or ""),
         "pain_level": _safe_int(signal.pain_level, default=0),
@@ -342,6 +367,10 @@ def evaluate_predictions(
     buyer_authority_matches = 0
     evaluated_count = 0
     prediction_status_counts: dict[str, int] = defaultdict(int)
+    hard_negative_candidate_count = 0
+    hard_negative_false_positive_count = 0
+    exact_evidence_expected_count = 0
+    exact_evidence_match_count = 0
 
     for post_id, label in label_by_post_id.items():
         post = posts_by_id.get(post_id)
@@ -367,10 +396,14 @@ def evaluate_predictions(
             current_opportunity_max_age_days=current_opportunity_max_age_days,
             reference_now_ts=resolved_reference_now_ts,
         ))
+        predicted_hard_negative_type = normalize_rejection_reason(prediction.get("hard_negative_type"))
+        predicted_exact_evidence_count = _safe_int(prediction.get("exact_evidence_count"), default=0)
 
         label_is_pain = bool(label["is_pain"])
         label_is_monetizable = bool(label["is_monetizable"])
         label_is_current = bool(label["is_current_opportunity"])
+        label_hard_negative_type = str(label.get("hard_negative_type") or "")
+        label_evidence_quality = str(label.get("evidence_quality") or "none")
 
         if predicted_is_pain and label_is_pain:
             pain_tp += 1
@@ -393,6 +426,20 @@ def evaluate_predictions(
 
         if label_is_pain and prediction_status == "screened_out":
             screening_false_negative_post_ids.append(post_id)
+
+        if label_hard_negative_type:
+            hard_negative_candidate_count += 1
+            if (
+                predicted_is_monetizable
+                or (predicted_is_pain and not predicted_hard_negative_type)
+                or (predicted_hard_negative_type and predicted_hard_negative_type != label_hard_negative_type)
+            ):
+                hard_negative_false_positive_count += 1
+
+        if label_evidence_quality in {"exact_quote", "multi_quote"}:
+            exact_evidence_expected_count += 1
+            if predicted_exact_evidence_count > 0:
+                exact_evidence_match_count += 1
 
         post_type_confusion[label["post_type"]][predicted_post_type] += 1
         evaluated_count += 1
@@ -420,6 +467,20 @@ def evaluate_predictions(
         },
         "screening_false_negative_count": len(screening_false_negative_post_ids),
         "screening_false_negative_post_ids": screening_false_negative_post_ids,
+        "hard_negative_false_positive": {
+            "count": hard_negative_false_positive_count,
+            "candidate_count": hard_negative_candidate_count,
+            "rate": round(hard_negative_false_positive_count / hard_negative_candidate_count, 3)
+            if hard_negative_candidate_count
+            else 0.0,
+        },
+        "verified_evidence": {
+            "exact_match_count": exact_evidence_match_count,
+            "expected_count": exact_evidence_expected_count,
+            "exact_match_rate": round(exact_evidence_match_count / exact_evidence_expected_count, 3)
+            if exact_evidence_expected_count
+            else 0.0,
+        },
         "post_type_confusion": ordered_confusion,
         "first_handness_accuracy": round(first_handness_matches / evaluated_count, 3) if evaluated_count else 0.0,
         "buyer_authority_accuracy": round(buyer_authority_matches / evaluated_count, 3) if evaluated_count else 0.0,

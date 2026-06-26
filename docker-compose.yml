@@ -3,9 +3,13 @@
     build: .
     container_name: pain_finder
     env_file:
-      - .env
+      - path: .env
+        required: false
+    environment:
+      DB_PATH: /app/data/pain_finder.db
+      REPORTS_DIR: /app/reports
     restart: unless-stopped
     volumes:
-      - ./pain_finder.db:/app/pain_finder.db
+      - ./data:/app/data
       - ./reports:/app/reports
 

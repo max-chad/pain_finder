@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import os
+import signal
 
 import config
-from bot import PainFinderBot
+from bot import PainFinderBot, limit_telegram_text
 from budget import BudgetGuard
 from classifier import Classifier
 from clusterer import MacroTrendClusterer
@@ -28,6 +29,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _send_grouped_notification_safely(
+    bot: PainFinderBot, *, chat_id: int, signals: list, label: str
+) -> None:
+    try:
+        await bot.send_grouped_notification(chat_id=chat_id, signals=signals, label=label)
+    except Exception:
+        logger.exception("telegram_grouped_notification_failed stage=notification label=%s", label)
+
+
+async def _send_telegram_message_safely(bot, *, chat_id: int, text: str, context: str) -> None:
+    try:
+        await bot.send_message(chat_id=chat_id, text=limit_telegram_text(text))
+    except Exception:
+        logger.exception("telegram_message_failed stage=notification context=%s", context)
+
+
 def _build_review_targets() -> list[ReviewTarget]:
     targets: list[ReviewTarget] = []
     for raw in config.REVIEW_TARGETS:
@@ -36,11 +53,63 @@ def _build_review_targets() -> list[ReviewTarget]:
         site = str(raw.get("site", "")).strip().lower()
         name = str(raw.get("name", "")).strip()
         url = str(raw.get("url", "")).strip()
-        enabled = bool(raw.get("enabled", True))
+        enabled = _target_enabled(raw.get("enabled", True))
         if not site or not name or not url:
             continue
         targets.append(ReviewTarget(site=site, name=name, url=url, enabled=enabled))
     return targets
+
+
+def _target_enabled(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "on", "yes"}:
+        return True
+    if normalized in {"0", "false", "off", "no"}:
+        return False
+    raise ValueError("REVIEW_TARGETS_JSON target enabled must be a boolean: 1/0, true/false, on/off, or yes/no")
+
+
+def _build_dspy_parser(*, budget_guard=None):
+    if not config.DSPY_REDDIT_PARSER_ENABLED:
+        return None
+    if not config.DSPY_API_KEY:
+        logger.warning("DSPy Reddit parser enabled but no API key was provided; falling back to the configured LLM client")
+        return None
+    dspy_available = getattr(DSPyRedditPainParser, "is_available", lambda: True)()
+    if not dspy_available:
+        logger.warning("DSPy Reddit parser enabled but the dspy package is not installed; falling back to the configured LLM client")
+        return None
+    return DSPyRedditPainParser(
+        api_key=config.DSPY_API_KEY,
+        provider=config.DSPY_PROVIDER,
+        model=config.DSPY_MODEL,
+        api_base=config.DSPY_API_BASE,
+        reasoning_effort=config.DSPY_REASONING_EFFORT,
+        temperature=config.DSPY_TEMPERATURE,
+        max_tokens=config.DSPY_MAX_TOKENS,
+        timeout_seconds=config.DSPY_TIMEOUT_SECONDS,
+        budget_guard=budget_guard,
+        pricing_map=config.LLM_MODEL_PRICING,
+    )
+
+
+def _build_shutdown_event() -> asyncio.Event:
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def request_shutdown(signame: str) -> None:
+        if not shutdown_event.is_set():
+            logger.info("shutdown_requested stage=runtime signal=%s", signame)
+            shutdown_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_shutdown, sig.name)
+        except (AttributeError, NotImplementedError, RuntimeError, ValueError):
+            logger.debug("Signal handler unavailable for %s on this event loop", sig.name)
+    return shutdown_event
 
 
 async def _publish_daily_digest(*, digest_service: DailyDigestDocumentService):
@@ -101,6 +170,7 @@ async def run() -> None:
         retry_base_delay=config.SCRAPER_RETRY_BASE_DELAY,
         feed_mix=config.SCRAPER_FEED_MIX,
         search_queries=config.SCRAPER_SEARCH_QUERIES,
+        max_response_bytes=config.SCRAPER_MAX_RESPONSE_BYTES,
     )
     openrouter = OpenRouterClient(
         api_key=config.LLM_API_KEY,
@@ -118,19 +188,7 @@ async def run() -> None:
         max_tokens=config.LLM_MAX_TOKENS,
         primary_max_output_tokens=config.PRIMARY_MAX_OUTPUT_TOKENS,
     )
-    dspy_parser = None
-    if config.DSPY_REDDIT_PARSER_ENABLED and config.DSPY_API_KEY:
-        dspy_parser = DSPyRedditPainParser(
-            api_key=config.DSPY_API_KEY,
-            provider=config.DSPY_PROVIDER,
-            model=config.DSPY_MODEL,
-            api_base=config.DSPY_API_BASE,
-            reasoning_effort=config.DSPY_REASONING_EFFORT,
-            temperature=config.DSPY_TEMPERATURE,
-            max_tokens=config.DSPY_MAX_TOKENS,
-        )
-    elif config.DSPY_REDDIT_PARSER_ENABLED:
-        logger.warning("DSPy Reddit parser enabled but no API key was provided; falling back to the configured LLM client")
+    dspy_parser = _build_dspy_parser(budget_guard=budget_guard)
 
     classifier = Classifier(
         openrouter=openrouter,
@@ -162,8 +220,8 @@ async def run() -> None:
     )
     gtm_generator = GTMGenerator(db=db, openrouter=openrouter)
 
-    hn_scraper = HackerNewsScraper(user_agent=config.REDDIT_USER_AGENT)
-    review_scraper = ReviewScraper(user_agent=config.REDDIT_USER_AGENT)
+    hn_scraper = HackerNewsScraper(user_agent=config.REDDIT_USER_AGENT, max_response_bytes=config.HN_MAX_RESPONSE_BYTES)
+    review_scraper = ReviewScraper(user_agent=config.REDDIT_USER_AGENT, max_html_bytes=config.REVIEWS_MAX_HTML_BYTES)
     review_targets = _build_review_targets()
 
     export_service = ExportService(
@@ -219,7 +277,8 @@ async def run() -> None:
     async def analyze_and_notify(subreddit: str) -> None:
         run_result = await pipeline.analyze_subreddit(subreddit=subreddit, limit=100)
         if notifications_enabled and run_result.pain_count:
-            await bot.send_grouped_notification(
+            await _send_grouped_notification_safely(
+                bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label=f"r/{subreddit}",
@@ -229,13 +288,15 @@ async def run() -> None:
         result = await clusterer.run(window_days=config.TREND_LOOKBACK_DAYS)
         if notifications_enabled and bot.app and result.clusters:
             top = result.clusters[0]
-            await bot.app.bot.send_message(
+            await _send_telegram_message_safely(
+                bot.app.bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 text=(
                     f"Macro trend detected ({len(result.clusters)} clusters, {result.candidate_count} candidates).\n"
                     f"Top: {top.label} | items={top.item_count} | signal={top.estimated_monetization_signal}\n"
                     f"{top.summary}"
                 ),
+                context="macro_trend",
             )
 
     async def run_hn_job() -> None:
@@ -250,7 +311,8 @@ async def run() -> None:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="hn", run_scope="hackernews")
         if notifications_enabled and run_result.pain_count:
-            await bot.send_grouped_notification(
+            await _send_grouped_notification_safely(
+                bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label="HN",
@@ -267,7 +329,8 @@ async def run() -> None:
             return
         run_result = await pipeline.analyze_external_posts(posts=posts, source="reviews", run_scope="reviews")
         if notifications_enabled and run_result.pain_count:
-            await bot.send_grouped_notification(
+            await _send_grouped_notification_safely(
+                bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 signals=run_result.signals,
                 label="Reviews",
@@ -299,14 +362,17 @@ async def run() -> None:
     async def on_budget_pause(reason: str) -> None:
         await scheduler.reload_jobs()
         if bot.app:
-            await bot.app.bot.send_message(
+            await _send_telegram_message_safely(
+                bot.app.bot,
                 chat_id=config.TELEGRAM_CHAT_ID,
                 text=f"Budget cap reached. Monitoring paused. Reason: {reason}. Use /resume to override.",
+                context="budget_pause",
             )
 
     budget_guard.set_on_pause_callback(on_budget_pause)
 
     scheduler_started = False
+    shutdown_event = _build_shutdown_event()
     try:
         scheduler.start()
         scheduler_started = True
@@ -322,13 +388,13 @@ async def run() -> None:
                 await tg_app.updater.start_polling()
                 logger.info("Bot is running. Send /status in Telegram to verify.")
                 try:
-                    await asyncio.Event().wait()
+                    await shutdown_event.wait()
                 finally:
                     await tg_app.updater.stop()
                     await tg_app.stop()
         else:
             logger.info("Hermes mode enabled: skipping Telegram polling and keeping scheduler alive.")
-            await asyncio.Event().wait()
+            await shutdown_event.wait()
     finally:
         if scheduler_started:
             scheduler.stop()

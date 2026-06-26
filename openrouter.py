@@ -45,6 +45,7 @@ LEGACY_SCHEMA_VERSION = "legacy_v2"
 DEEP_DIVE_SCHEMA_VERSION = "deep_dive_v1"
 CLUSTER_SCHEMA_VERSION = "cluster_v1"
 GTM_SCHEMA_VERSION = "gtm_v1"
+MAX_LLM_RESPONSE_BYTES = 5_000_000
 
 
 PRIMARY_PROMPT_TEMPLATE = """You are a B2B SaaS product manager analyzing Reddit pain signals.
@@ -242,6 +243,7 @@ class OpenRouterClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         primary_max_output_tokens: int | None = None,
+        max_response_bytes: int = MAX_LLM_RESPONSE_BYTES,
         app_url: str = "https://github.com/max-chad/pain_finder",
         app_name: str = "pain_finder",
     ):
@@ -259,15 +261,19 @@ class OpenRouterClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.primary_max_output_tokens = primary_max_output_tokens
+        self.max_response_bytes = max(1, max_response_bytes)
         self.app_url = app_url
         self.app_name = app_name
         self.base_url = self._resolve_base_url()
 
     def _resolve_base_url(self) -> str:
         if self.api_base:
+            api_base = self.api_base.rstrip("/")
             if self.provider == "openai-codex":
-                return self.api_base.rstrip("/")
-            return f"{self.api_base.rstrip('/')}/chat/completions"
+                return api_base.removesuffix("/responses")
+            if api_base.endswith("/chat/completions"):
+                return api_base
+            return f"{api_base}/chat/completions"
         return self.DEFAULT_BASE_URLS.get(self.provider, self.DEFAULT_BASE_URLS["openai"])
 
     def _uses_openai_codex_backend(self) -> bool:
@@ -327,31 +333,71 @@ class OpenRouterClient:
             request_body["reasoning_effort"] = self.reasoning_effort
         return request_body
 
-    @staticmethod
-    def _extract_responses_text(final_response: Any, streamed_parts: list[str]) -> str:
+    async def _post_json_with_response_limit(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        async with client.stream("POST", url, json=payload, headers=headers) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > self.max_response_bytes:
+                    raise RuntimeError(f"LLM response exceeded {self.max_response_bytes} bytes")
+            bounded_response = httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+                extensions=response.extensions,
+            )
+        bounded_response.raise_for_status()
+        return json.loads(bounded_response.content.decode(bounded_response.encoding or "utf-8", errors="replace"))
+
+    def _ensure_responses_text_within_limit(self, text: str) -> None:
+        if len(text.encode("utf-8")) > self.max_response_bytes:
+            raise RuntimeError(f"OpenAI Responses text exceeded {self.max_response_bytes} bytes")
+
+    def _extract_responses_text(self, final_response: Any, streamed_parts: list[str]) -> str:
         text = "".join(part for part in streamed_parts if part).strip()
         if text:
+            self._ensure_responses_text_within_limit(text)
             return text
         direct = getattr(final_response, "output_text", "")
         if isinstance(direct, str) and direct.strip():
-            return direct.strip()
+            stripped = direct.strip()
+            self._ensure_responses_text_within_limit(stripped)
+            return stripped
         for item in getattr(final_response, "output", []) or []:
             for content in getattr(item, "content", []) or []:
                 maybe_text = getattr(content, "text", "")
                 if isinstance(maybe_text, str) and maybe_text.strip():
-                    return maybe_text.strip()
+                    stripped = maybe_text.strip()
+                    self._ensure_responses_text_within_limit(stripped)
+                    return stripped
         return ""
 
     @staticmethod
     def _responses_usage_to_dict(usage: Any) -> dict[str, int] | None:
         if usage is None:
             return None
-        prompt_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-        completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        prompt_tokens = OpenRouterClient._usage_token_count(getattr(usage, "input_tokens", 0))
+        completion_tokens = OpenRouterClient._usage_token_count(getattr(usage, "output_tokens", 0))
         return {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
         }
+
+    @staticmethod
+    def _usage_token_count(value: Any) -> int:
+        try:
+            parsed = int(value or 0)
+        except (OverflowError, TypeError, ValueError):
+            return 0
+        return max(0, parsed)
 
     async def _request_codex_responses_payload(
         self,
@@ -383,12 +429,16 @@ class OpenRouterClient:
                 stream_kwargs["max_output_tokens"] = token_limit
             if self.reasoning_effort:
                 stream_kwargs["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
+            streamed_bytes = 0
             with client.responses.stream(**stream_kwargs) as stream:
                 for event in stream:
                     event_type = getattr(event, "type", "")
                     if event_type in {"response.output_text.delta", "output_text.delta"}:
                         delta = getattr(event, "delta", "")
                         if delta:
+                            streamed_bytes += len(delta.encode("utf-8"))
+                            if streamed_bytes > self.max_response_bytes:
+                                raise RuntimeError(f"OpenAI Responses stream exceeded {self.max_response_bytes} bytes")
                             streamed_parts.append(delta)
                 final_response = stream.get_final_response()
             raw_text = self._extract_responses_text(final_response, streamed_parts)
@@ -414,25 +464,34 @@ class OpenRouterClient:
     ) -> None:
         if not usage:
             return
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        prompt_tokens = self._usage_token_count(usage.get("prompt_tokens", 0))
+        completion_tokens = self._usage_token_count(usage.get("completion_tokens", 0))
         cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
         if self.budget_guard is not None:
-            await self.budget_guard.record_usage(
-                model=model,
-                operation=operation,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=cost_usd,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                provider=self.provider,
-                request_path=self._request_path(),
-                candidate_stage=candidate_stage,
-            )
+            try:
+                await self.budget_guard.record_usage(
+                    model=model,
+                    operation=operation,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    post_id=post_id,
+                    prompt_hash=prompt_hash,
+                    fallback_reason=fallback_reason,
+                    schema_version=schema_version,
+                    provider=self.provider,
+                    request_path=self._request_path(),
+                    candidate_stage=candidate_stage,
+                )
+            except Exception as e:
+                logger.warning(
+                    "llm_usage_record_failed model=%s operation=%s post_id=%s error=%s",
+                    model,
+                    operation,
+                    post_id,
+                    e,
+                )
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -556,6 +615,7 @@ class OpenRouterClient:
         fallback_reason: str | None = None,
         max_output_tokens: int | None = None,
     ) -> dict[str, Any] | None:
+        token_limit = max_output_tokens if max_output_tokens is not None else self.max_tokens
         cache_key = self._build_cache_key(
             model=model,
             operation=operation,
@@ -563,7 +623,8 @@ class OpenRouterClient:
             provider=self.provider,
             request_path=self._request_path(),
             reasoning_effort=self.reasoning_effort,
-            max_output_tokens=max_output_tokens,
+            temperature=self.temperature,
+            token_limit=token_limit,
         )
         prompt_hash = self._prompt_hash(prompt)
         cached_payload = await self._get_cached_payload(cache_key)
@@ -592,6 +653,16 @@ class OpenRouterClient:
             except Exception as e:
                 logger.warning("OpenAI Codex request failed: %s", e)
                 return None
+            await self._record_usage_from_usage_dict(
+                usage=usage,
+                model=model,
+                operation=operation,
+                post_id=post_id,
+                prompt_hash=prompt_hash,
+                fallback_reason=fallback_reason,
+                schema_version=schema_version,
+                candidate_stage=candidate_stage,
+            )
             if payload is None:
                 return None
             is_valid_payload = validate_payload(payload) if validate_payload is not None else True
@@ -604,16 +675,6 @@ class OpenRouterClient:
                     operation,
                     cache_key,
                 )
-            await self._record_usage_from_usage_dict(
-                usage=usage,
-                model=model,
-                operation=operation,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                candidate_stage=candidate_stage,
-            )
             return payload
 
         headers = self._build_headers()
@@ -624,9 +685,22 @@ class OpenRouterClient:
             async with httpx.AsyncClient(timeout=45) as client:
                 for attempt in range(1, _max_attempts + 1):
                     try:
-                        response = await client.post(self.base_url, json=request_body, headers=headers)
-                        response.raise_for_status()
-                        response_json = response.json()
+                        response_json = await self._post_json_with_response_limit(
+                            client=client,
+                            url=self.base_url,
+                            payload=request_body,
+                            headers=headers,
+                        )
+                        await self._record_usage_from_response(
+                            response_json=response_json,
+                            model=model,
+                            operation=operation,
+                            post_id=post_id,
+                            prompt_hash=prompt_hash,
+                            fallback_reason=fallback_reason,
+                            schema_version=schema_version,
+                            candidate_stage=candidate_stage,
+                        )
                         content = response_json["choices"][0]["message"]["content"]
                         payload = self._safe_json_load(content)
                         is_valid_payload = validate_payload(payload) if validate_payload is not None else True
@@ -639,16 +713,6 @@ class OpenRouterClient:
                                 operation,
                                 cache_key,
                             )
-                        await self._record_usage_from_response(
-                            response_json=response_json,
-                            model=model,
-                            operation=operation,
-                            post_id=post_id,
-                            prompt_hash=prompt_hash,
-                            fallback_reason=fallback_reason,
-                            schema_version=schema_version,
-                            candidate_stage=candidate_stage,
-                        )
                         return payload
                     except httpx.HTTPStatusError as e:
                         status_code = e.response.status_code if e.response else None
@@ -681,7 +745,7 @@ class OpenRouterClient:
                             await asyncio.sleep(delay)
                             continue
                         raise
-        except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError) as e:
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, RuntimeError, json.JSONDecodeError) as e:
             logger.warning("OpenRouter request failed: %s", e)
             return None
 
@@ -704,7 +768,8 @@ class OpenRouterClient:
         provider: str,
         request_path: str,
         reasoning_effort: str,
-        max_output_tokens: int | None,
+        temperature: float | None,
+        token_limit: int | None,
     ) -> str:
         digest = cls._prompt_hash(prompt)
         config_fingerprint = hashlib.sha256(
@@ -713,7 +778,8 @@ class OpenRouterClient:
                     "provider": provider,
                     "request_path": request_path,
                     "reasoning_effort": reasoning_effort,
-                    "max_output_tokens": max_output_tokens,
+                    "temperature": temperature,
+                    "token_limit": token_limit,
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -766,25 +832,34 @@ class OpenRouterClient:
         if not isinstance(usage, dict):
             return
 
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        prompt_tokens = self._usage_token_count(usage.get("prompt_tokens", 0))
+        completion_tokens = self._usage_token_count(usage.get("completion_tokens", 0))
         cost_usd = self._estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
         if self.budget_guard is not None:
-            await self.budget_guard.record_usage(
-                model=model,
-                operation=operation,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost_usd=cost_usd,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                provider=self.provider,
-                request_path=self._request_path(),
-                candidate_stage=candidate_stage,
-            )
+            try:
+                await self.budget_guard.record_usage(
+                    model=model,
+                    operation=operation,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    post_id=post_id,
+                    prompt_hash=prompt_hash,
+                    fallback_reason=fallback_reason,
+                    schema_version=schema_version,
+                    provider=self.provider,
+                    request_path=self._request_path(),
+                    candidate_stage=candidate_stage,
+                )
+            except Exception as e:
+                logger.warning(
+                    "llm_usage_record_failed model=%s operation=%s post_id=%s error=%s",
+                    model,
+                    operation,
+                    post_id,
+                    e,
+                )
 
     def _estimate_cost_usd(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         pricing = self.pricing_map.get(model, {})

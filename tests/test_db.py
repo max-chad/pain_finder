@@ -82,12 +82,48 @@ async def test_monitor_subreddit_crud(db):
     assert not any(s["name"] == "webdev" for s in subs)
 
 
+async def test_monitor_subreddit_rejects_non_positive_interval(db):
+    with pytest.raises(ValueError, match="interval_hours must be positive"):
+        await db.add_monitored_subreddit("webdev", interval_hours=0)
+
+    assert await db.get_monitored_subreddits() == []
+
+
 async def test_update_last_checked(db):
     await db.add_monitored_subreddit("python", interval_hours=12)
+    await db.mark_monitor_failed("python", "temporary failure")
     await db.update_last_checked("python")
     subs = await db.get_monitored_subreddits()
     sub = next(s for s in subs if s["name"] == "python")
     assert sub["last_checked"] is not None
+    assert sub["last_attempted_at"] is not None
+    assert sub["last_error"] is None
+
+
+async def test_mark_monitor_failed_records_attempt_and_error(db):
+    await db.add_monitored_subreddit("python", interval_hours=12)
+    await db.mark_monitor_failed("python", "x" * 1200)
+    subs = await db.get_monitored_subreddits()
+    sub = next(s for s in subs if s["name"] == "python")
+    assert sub["last_checked"] is None
+    assert sub["last_attempted_at"] is not None
+    assert sub["last_error"] == "x" * 1000
+
+
+async def test_scheduled_job_status_records_failure_and_clears_on_success(db):
+    await db.mark_scheduled_job_failure("hn_ingest", "x" * 1200)
+    statuses = await db.get_scheduled_job_statuses()
+    status = next(item for item in statuses if item["job_name"] == "hn_ingest")
+    assert status["last_attempted_at"] is not None
+    assert status["last_success_at"] is None
+    assert status["last_error"] == "x" * 1000
+
+    await db.mark_scheduled_job_success("hn_ingest")
+    statuses = await db.get_scheduled_job_statuses()
+    status = next(item for item in statuses if item["job_name"] == "hn_ingest")
+    assert status["last_attempted_at"] is not None
+    assert status["last_success_at"] is not None
+    assert status["last_error"] is None
 
 
 async def test_save_and_get_latest_report(db):
@@ -214,6 +250,19 @@ async def test_triage_and_deep_dive_helpers(db):
     assert row["deep_dive_status"] == "completed"
 
 
+async def test_save_deep_dive_rejects_non_standard_json_payload(db):
+    with pytest.raises(ValueError, match="deep-dive payload must be valid JSON"):
+        await db.save_deep_dive(
+            post_id="deep_bad",
+            subreddit="python",
+            source="manual",
+            status="completed",
+            payload={"confidence": float("nan")},
+        )
+
+    assert await db.get_deep_dive("deep_bad") is None
+
+
 async def test_list_export_rows_filters_discarded_and_wtp(db):
     await db.insert_pain_point(
         subreddit="python",
@@ -287,6 +336,66 @@ async def test_list_export_rows_filters_discarded_and_wtp(db):
     assert "r3" in ids
     assert "r1" not in ids
     assert "r4" not in ids
+
+
+async def test_list_export_rows_prioritizes_opportunity_score_after_favorites(db):
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="capped_noise",
+        url="",
+        title="Founder announcement without buyer evidence",
+        body="",
+        category="complaint",
+        summary="weak evidence",
+        severity="high",
+        willingness_to_pay=10,
+        pain_level=10,
+        is_monetizable=True,
+        opportunity_score=35.0,
+        source_created_ts=1776775200,
+        opportunity_bucket="current_opportunity",
+    )
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="grounded_buyer_pain",
+        url="",
+        title="Buyer needs audit exports",
+        body="",
+        category="complaint",
+        summary="strong evidence",
+        severity="high",
+        willingness_to_pay=8,
+        pain_level=8,
+        is_monetizable=True,
+        opportunity_score=82.0,
+        source_created_ts=1776775201,
+        opportunity_bucket="current_opportunity",
+    )
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="manual_favorite",
+        url="",
+        title="Manually promoted lead",
+        body="",
+        category="complaint",
+        summary="operator override",
+        severity="medium",
+        willingness_to_pay=1,
+        pain_level=1,
+        is_monetizable=False,
+        opportunity_score=5.0,
+        triage_status="favorite",
+        source_created_ts=1776775202,
+        opportunity_bucket="current_opportunity",
+    )
+
+    rows = await db.list_export_rows(subreddit="python", min_wtp=8, include_favorites=True)
+
+    assert [row["post_id"] for row in rows] == [
+        "manual_favorite",
+        "grounded_buyer_pain",
+        "capped_noise",
+    ]
 
 
 async def test_get_recent_pain_points_filters_by_opportunity_bucket_and_source_age(db):
@@ -478,6 +587,84 @@ async def test_init_migrates_existing_analysis_runs_with_old_migration_marker(tm
         assert latest["screen_rule_dropped_count"] == 3
         assert latest["screen_kept_count"] == 5
         assert latest["screen_capped_count"] == 1
+
+        await database.add_monitored_subreddit("ops", interval_hours=1)
+        await database.mark_monitor_failed("ops", "boom")
+        monitored = await database.get_monitored_subreddits()
+        assert monitored[0]["last_attempted_at"] is not None
+        assert monitored[0]["last_error"] == "boom"
+
+        await database.mark_scheduled_job_failure("digest_delivery", "digest failed")
+        statuses = await database.get_scheduled_job_statuses()
+        digest_status = next(item for item in statuses if item["job_name"] == "digest_delivery")
+        assert digest_status["last_attempted_at"] is not None
+        assert digest_status["last_error"] == "digest failed"
+    finally:
+        await database.close()
+
+
+async def test_init_repairs_columns_even_when_migration_markers_exist(tmp_path):
+    db_path = tmp_path / "partial_migration_markers.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE monitored_subreddits (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            interval_hours INTEGER NOT NULL,
+            last_checked TEXT,
+            active INTEGER DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE llm_usage_events (
+            id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
+            post_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))) ")
+    conn.execute("INSERT INTO schema_migrations (name) VALUES ('2026_05_25_monitored_subreddit_attempt_state')")
+    conn.execute("INSERT INTO schema_migrations (name) VALUES ('2026_04_22_llm_usage_lineage')")
+    conn.commit()
+    conn.close()
+
+    database = Database(str(db_path))
+    await database.init()
+    try:
+        await database.add_monitored_subreddit("ops", interval_hours=1)
+        await database.mark_monitor_failed("ops", "collector down")
+        monitored = await database.get_monitored_subreddits()
+        assert monitored[0]["last_attempted_at"] is not None
+        assert monitored[0]["last_error"] == "collector down"
+
+        await database.record_llm_usage(
+            model="m",
+            operation="classify_primary",
+            prompt_tokens=1,
+            completion_tokens=2,
+            cost_usd=0.01,
+            prompt_hash="hash",
+            fallback_reason="primary_invalid",
+            schema_version="primary_v2",
+            provider="codex",
+            request_path="responses",
+            candidate_stage="primary",
+        )
+        async with database._conn.execute(
+            "SELECT prompt_hash, fallback_reason, schema_version, provider, request_path, candidate_stage FROM llm_usage_events"
+        ) as cursor:
+            usage_row = await cursor.fetchone()
+        assert usage_row["prompt_hash"] == "hash"
+        assert usage_row["candidate_stage"] == "primary"
     finally:
         await database.close()
 
@@ -509,6 +696,36 @@ async def test_competitor_tags_are_normalized_and_queryable(db):
 
     top_tags = await db.get_top_competitor_tags(days=30, limit=10)
     assert any(item["tag"] == "shopify" for item in top_tags)
+
+
+async def test_competitor_queries_exclude_discarded_and_merged_rows(db):
+    for post_id, status in [
+        ("reddit:active", "new"),
+        ("reddit:discarded", "discarded"),
+        ("hn:merged", "merged"),
+    ]:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url="",
+            title=f"{status} competitor pain",
+            body="",
+            category="complaint",
+            summary="Shopify API breaks often",
+            severity="high",
+            competitor_tags=["shopify"],
+            willingness_to_pay=9,
+            pain_level=8,
+            is_monetizable=True,
+            triage_status=status,
+        )
+
+    by_tag = await db.get_competitor_pain("shopify", days=30, limit=10)
+    assert [row["post_id"] for row in by_tag] == ["reddit:active"]
+
+    top_tags = await db.get_top_competitor_tags(days=30, limit=10)
+    shopify = next(item for item in top_tags if item["tag"] == "shopify")
+    assert shopify["mention_count"] == 1
 
 
 async def test_macro_tables_persist_and_query(db):
@@ -584,6 +801,107 @@ async def test_macro_tables_persist_and_query(db):
     candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
     ids = {row["post_id"] for row in candidates}
     assert {"reddit:m1", "reddit:m2"}.issubset(ids)
+
+
+async def test_save_macro_cluster_rejects_invalid_numeric_values(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+    base_kwargs = {
+        "run_id": run_id,
+        "canonical_key": "invalid-cluster",
+        "cluster_key": "reddit:bad",
+        "label": "Invalid cluster",
+        "summary": "Should not persist invalid numeric aggregates.",
+        "estimated_monetization_signal": "high",
+        "item_count": 2,
+        "aggregate_wtp": 17.0,
+        "fresh_post_count": 1,
+        "evergreen_post_count": 1,
+        "median_buyer_authority": 0.8,
+        "incumbents": ["quickbooks"],
+        "avg_opportunity_score": 84.5,
+        "latest_source_created_ts": 1713772800,
+        "members": [("reddit:m1", 0.9), ("reddit:m2", 0.88)],
+    }
+
+    with pytest.raises(ValueError, match="aggregate_wtp must be finite"):
+        await db.save_macro_cluster(**(base_kwargs | {"aggregate_wtp": float("inf")}))
+
+    with pytest.raises(ValueError, match="avg_opportunity_score must be finite"):
+        await db.save_macro_cluster(**(base_kwargs | {"avg_opportunity_score": float("nan")}))
+
+    with pytest.raises(ValueError, match="member similarity must be finite"):
+        await db.save_macro_cluster(**(base_kwargs | {"members": [("reddit:m1", float("inf"))]}))
+
+    with pytest.raises(ValueError, match="latest_source_created_ts must be a non-negative integer"):
+        await db.save_macro_cluster(**(base_kwargs | {"latest_source_created_ts": float("inf")}))
+
+    assert await db.get_macro_clusters(run_id) == []
+
+
+async def test_save_macro_cluster_rolls_back_partial_member_failure(db):
+    run_id = await db.create_macro_trend_run(window_days=30, candidate_count=2, cluster_count=1)
+
+    with pytest.raises(Exception):
+        await db.save_macro_cluster(
+            run_id=run_id,
+            canonical_key="partial-cluster",
+            cluster_key="reddit:partial",
+            label="Partial cluster",
+            summary="Member insert should fail after cluster insert.",
+            estimated_monetization_signal="high",
+            item_count=2,
+            aggregate_wtp=17.0,
+            fresh_post_count=1,
+            evergreen_post_count=1,
+            median_buyer_authority=0.8,
+            incumbents=["quickbooks"],
+            avg_opportunity_score=84.5,
+            latest_source_created_ts=1713772800,
+            members=[(object(), 0.9)],
+        )
+
+    assert await db.get_macro_clusters(run_id) == []
+
+
+async def test_create_macro_trend_run_rejects_invalid_counts(db):
+    with pytest.raises(ValueError, match="window_days must be positive"):
+        await db.create_macro_trend_run(window_days=0, candidate_count=0, cluster_count=0)
+
+    with pytest.raises(ValueError, match="candidate_count must be non-negative"):
+        await db.create_macro_trend_run(window_days=30, candidate_count=-1, cluster_count=0)
+
+
+async def test_get_macro_candidates_prioritizes_opportunity_score(db):
+    now_ts = int(datetime.now(UTC).timestamp())
+    for post_id, wtp, pain, score in [
+        ("macro_capped_noise", 10, 10, 35.0),
+        ("macro_grounded_signal", 8, 8, 84.0),
+        ("macro_mid_signal", 9, 9, 62.0),
+    ]:
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id=post_id,
+            url="",
+            title=post_id,
+            body="",
+            category="complaint",
+            summary=post_id,
+            severity="high",
+            triage_status="new",
+            willingness_to_pay=wtp,
+            pain_level=pain,
+            is_monetizable=True,
+            opportunity_score=score,
+            source_created_ts=now_ts,
+        )
+
+    candidates = await db.get_macro_candidates(window_days=30, min_wtp=8)
+
+    assert [row["post_id"] for row in candidates] == [
+        "macro_grounded_signal",
+        "macro_mid_signal",
+        "macro_capped_noise",
+    ]
 
 
 async def test_get_latest_canonical_clusters_filters_before_limit(db):
@@ -726,6 +1044,18 @@ async def test_llm_response_cache_roundtrip(db):
     assert cached == payload
 
 
+async def test_llm_response_cache_rejects_non_standard_json(db):
+    with pytest.raises(ValueError, match="cached LLM payload must be valid JSON"):
+        await db.set_cached_llm_payload(
+            cache_key="classify_primary:test-model:bad",
+            model="test-model",
+            operation="classify_primary",
+            payload={"score": float("nan")},
+        )
+
+    assert await db.get_cached_llm_payload("classify_primary:test-model:bad") is None
+
+
 async def test_usage_ledger_and_runtime_flags(db):
     await db.record_llm_usage(
         model="model-a",
@@ -786,6 +1116,33 @@ async def test_usage_ledger_and_runtime_flags(db):
     assert await db.is_llm_paused() is False
 
 
+async def test_record_llm_usage_rejects_negative_cost(db):
+    for cost in (-0.12, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="cost_usd must be finite and non-negative"):
+            await db.record_llm_usage(
+                model="model-a",
+                operation="classify_primary",
+                prompt_tokens=100,
+                completion_tokens=50,
+                cost_usd=cost,
+            )
+
+    assert await db.get_daily_spend_usd() == 0.0
+
+
+async def test_record_llm_usage_rejects_negative_token_counts(db):
+    with pytest.raises(ValueError, match="token counts must be non-negative"):
+        await db.record_llm_usage(
+            model="model-a",
+            operation="classify_primary",
+            prompt_tokens=-1,
+            completion_tokens=50,
+            cost_usd=0.12,
+        )
+
+    assert await db.get_daily_spend_usd() == 0.0
+
+
 async def test_gtm_assets_persist(db):
     asset_id = await db.save_gtm_asset(
         post_id="reddit:g1",
@@ -797,6 +1154,17 @@ async def test_gtm_assets_persist(db):
     latest = await db.get_latest_gtm_asset("reddit:g1")
     assert latest is not None
     assert latest["model"] == "model-g"
+
+
+async def test_gtm_assets_reject_non_standard_json_payload(db):
+    with pytest.raises(ValueError, match="GTM payload must be valid JSON"):
+        await db.save_gtm_asset(
+            post_id="reddit:g_bad",
+            model="model-g",
+            payload={"name_options": ["A"], "score": float("inf")},
+        )
+
+    assert await db.get_latest_gtm_asset("reddit:g_bad") is None
 
 
 async def test_insert_pain_point_propagates_unexpected_db_errors(db):
@@ -819,6 +1187,28 @@ async def test_insert_pain_point_propagates_unexpected_db_errors(db):
             )
 
 
+async def test_insert_pain_point_rolls_back_secondary_index_failure(db):
+    async def fail_replace_competitor_tags(post_id, tags):
+        raise RuntimeError("competitor index write failed")
+
+    with patch.object(db, "_replace_competitor_tags", side_effect=fail_replace_competitor_tags):
+        with pytest.raises(RuntimeError, match="competitor index write failed"):
+            await db.insert_pain_point(
+                subreddit="python",
+                post_id="partial1",
+                url="",
+                title="Should rollback",
+                body="",
+                category="complaint",
+                summary="",
+                severity="low",
+                competitor_tags=["shopify"],
+            )
+
+    row = await db.get_pain_point("partial1")
+    assert row is None
+
+
 async def test_insert_pain_point_duplicate_post_id_does_not_raise(db):
     """ON CONFLICT DO UPDATE for duplicate post_id is expected behaviour and must not raise."""
     kwargs = dict(
@@ -839,6 +1229,91 @@ async def test_insert_pain_point_duplicate_post_id_does_not_raise(db):
     row = await db.get_pain_point("dup_ok")
     assert row is not None
     assert row["title"] == "Second insert"
+
+
+async def test_insert_pain_point_rejects_non_finite_scores(db):
+    with pytest.raises(ValueError, match="opportunity_score must be finite"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_score",
+            url="",
+            title="Bad score",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            opportunity_score=float("inf"),
+        )
+
+    assert await db.get_pain_point("bad_score") is None
+
+
+async def test_insert_pain_point_rejects_non_finite_comment_score(db):
+    with pytest.raises(ValueError, match="comment_shill_risk must be finite"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_comment_score",
+            url="",
+            title="Bad comment score",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            comment_shill_risk=float("nan"),
+        )
+
+    assert await db.get_pain_point("bad_comment_score") is None
+
+
+async def test_insert_pain_point_rejects_non_standard_score_components_json(db):
+    with pytest.raises(ValueError, match="score_components must be valid JSON"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_score_components_json",
+            url="",
+            title="Bad score components",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            score_components={"impact": float("inf")},
+        )
+
+    assert await db.get_pain_point("bad_score_components_json") is None
+
+
+async def test_insert_pain_point_rejects_non_standard_analysis_payload_json(db):
+    with pytest.raises(ValueError, match="analysis_payload must be valid JSON"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_analysis_payload_json",
+            url="",
+            title="Bad analysis payload",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            analysis_payload={"confidence": float("nan")},
+        )
+
+    assert await db.get_pain_point("bad_analysis_payload_json") is None
+
+
+async def test_insert_pain_point_rejects_non_standard_embedding_json(db):
+    with pytest.raises(ValueError, match="emb_vector must be valid JSON"):
+        await db.insert_pain_point(
+            subreddit="python",
+            post_id="bad_embedding_json",
+            url="",
+            title="Bad embedding",
+            body="",
+            category="complaint",
+            summary="s",
+            severity="low",
+            emb_vector=[0.1, float("nan")],
+        )
+
+    assert await db.get_pain_point("bad_embedding_json") is None
 
 
 async def test_get_pain_points_by_ids_returns_matching_rows(db):
@@ -866,6 +1341,38 @@ async def test_get_pain_points_by_ids_empty_input_returns_empty_dict(db):
     """get_pain_points_by_ids with an empty list must return {} without querying the DB."""
     result = await db.get_pain_points_by_ids([])
     assert result == {}
+
+
+async def test_feedback_storage_and_summary(db):
+    useful_id = await db.record_feedback(
+        post_id="reddit:feedback1",
+        feedback_value="useful",
+        source="telegram",
+        metadata={"message_id": "42"},
+    )
+    bad_evidence_id = await db.record_feedback(
+        post_id="reddit:feedback1",
+        feedback_value="bad_evidence",
+        source="telegram",
+    )
+
+    assert useful_id > 0
+    assert bad_evidence_id > useful_id
+    with pytest.raises(ValueError, match="Unsupported feedback"):
+        await db.record_feedback(post_id="reddit:feedback1", feedback_value="interesting", source="telegram")
+
+    rows = await db.list_feedback(post_id="reddit:feedback1")
+    assert [row["feedback_value"] for row in rows] == ["useful", "bad_evidence"]
+    assert json.loads(rows[0]["metadata_json"]) == {"message_id": "42"}
+
+    summary = await db.get_feedback_summary()
+    assert summary["useful"] == 1
+    assert summary["bad_evidence"] == 1
+    assert summary["not_a_pain"] == 0
+
+    monitoring_summary = await db.get_monitoring_summary()
+    assert monitoring_summary["feedback_total"] == 2
+    assert monitoring_summary["feedback"]["useful"] == 1
 
 
 async def test_get_pain_points_by_ids_missing_ids_not_in_result(db):
@@ -924,6 +1431,16 @@ async def test_store_and_retrieve_embedding(db):
     assert rows[0]["emb_vector"] == vector
 
 
+async def test_store_embedding_rejects_non_standard_json_vector(db):
+    await _insert_test_point(db, "bad_emb_store")
+
+    with pytest.raises(ValueError, match="emb_vector must be valid JSON"):
+        await db.store_embedding("bad_emb_store", [0.1, float("inf")])
+
+    row = await db.get_pain_point("bad_emb_store")
+    assert row["emb_vector"] is None
+
+
 async def test_get_pain_points_without_embeddings(db):
     await _insert_test_point(db, "no_emb1")
     await _insert_test_point(db, "no_emb2")
@@ -955,6 +1472,25 @@ async def test_merge_duplicate_increments_count(db):
     assert dup["triage_status"] == "merged"
     stored_vec = json.loads(dup["emb_vector"])
     assert stored_vec == dup_vec
+
+
+async def test_merge_duplicate_rejects_non_standard_embedding_without_partial_update(db):
+    await _insert_test_point(db, "canonical_bad_vec", source="reddit")
+    await _insert_test_point(db, "dup_bad_vec", source="hn")
+
+    with pytest.raises(ValueError, match="emb_vector must be valid JSON"):
+        await db.merge_duplicate(
+            canonical_post_id="canonical_bad_vec",
+            dup_post_id="dup_bad_vec",
+            dup_emb_vector=[0.9, float("nan")],
+        )
+
+    canonical = await db.get_pain_point("canonical_bad_vec")
+    dup = await db.get_pain_point("dup_bad_vec")
+    assert canonical["cross_source_count"] == 1
+    assert canonical["cross_source_ids"] == "[]"
+    assert dup["triage_status"] == "new"
+    assert dup["emb_vector"] is None
 
 
 async def test_merge_duplicate_same_id_is_idempotent_for_count(db):
@@ -1021,3 +1557,37 @@ async def test_merge_duplicate_multistep_sequence_preserves_invariants(db):
     assert dup_b is not None
     assert dup_a["triage_status"] == "merged"
     assert dup_b["triage_status"] == "merged"
+
+
+async def test_merge_duplicate_preserves_duplicate_favorite_and_completed_deep_dive(db):
+    await _insert_test_point(db, "canonical_preserve", source="reddit")
+    await db.insert_pain_point(
+        subreddit="test",
+        post_id="dup_preserve",
+        url="",
+        title="Duplicate with operator value",
+        body="Duplicate body",
+        category="complaint",
+        summary="s",
+        severity="high",
+        source="hn",
+        triage_status="favorite",
+        deep_dive_status="completed",
+        deep_dive_summary="Validated buying workflow",
+    )
+
+    await db.merge_duplicate(
+        canonical_post_id="canonical_preserve",
+        dup_post_id="dup_preserve",
+        dup_emb_vector=[0.42, 0.58],
+    )
+
+    canonical = await db.get_pain_point("canonical_preserve")
+    assert canonical is not None
+    assert canonical["triage_status"] == "favorite"
+    assert canonical["deep_dive_status"] == "completed"
+    assert canonical["deep_dive_summary"] == "Validated buying workflow"
+
+    dup = await db.get_pain_point("dup_preserve")
+    assert dup is not None
+    assert dup["triage_status"] == "merged"

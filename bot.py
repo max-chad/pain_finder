@@ -4,10 +4,12 @@ import re
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Literal, TypedDict
 
 from classifier import PainSignal
 from export_sheets import ExportResult
+from feedback import FEEDBACK_VALUES
 
 if TYPE_CHECKING:
     from budget import BudgetStatus
@@ -46,6 +48,9 @@ class SessionState(TypedDict):
 TriageStatus = Literal["favorite", "discarded"]
 
 logger = logging.getLogger(__name__)
+SESSION_TOKEN_RE = re.compile(r"^[0-9a-f]{8}$")
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_TRUNCATION_SUFFIX = "\n...[truncated]"
 
 SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 POST_ID_RE = re.compile(r"^[A-Za-z0-9_:-]+$")
@@ -176,6 +181,22 @@ def parse_scoped_callback_data(data: str, prefix: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def limit_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= len(TELEGRAM_TRUNCATION_SUFFIX):
+        return text[:limit]
+    return text[: limit - len(TELEGRAM_TRUNCATION_SUFFIX)].rstrip() + TELEGRAM_TRUNCATION_SUFFIX
+
+
+def _is_path_inside(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def _signal_icon(signal: PainSignal) -> str:
     if signal.is_monetizable and signal.willingness_to_pay >= 8:
         return "[money]"
@@ -298,7 +319,7 @@ class PainFinderBot:
                     callback_data=f"loadmore:{token}",
                 )
             ])
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        return limit_telegram_text("\n".join(lines)), InlineKeyboardMarkup(keyboard_rows)
 
     def _render_card_view(self, token: str, session: SessionState, idx: int) -> tuple[str, "InlineKeyboardMarkup"]:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -322,22 +343,45 @@ class PainFinderBot:
         ]
         keyboard_rows = [
             [
-                InlineKeyboardButton("\u2b50 Favorite", callback_data=f"triage:favorite:{signal.post.post_id}"),
-                InlineKeyboardButton("\u2717 Discard", callback_data=f"triage:discard:{signal.post.post_id}"),
+                InlineKeyboardButton("\u2b50 Favorite", callback_data=f"triage:favorite:{token}:{idx}"),
+                InlineKeyboardButton("\u2717 Discard", callback_data=f"triage:discard:{token}:{idx}"),
+            ],
+            [
+                InlineKeyboardButton("Useful", callback_data=f"feedback:useful:{token}:{idx}"),
+                InlineKeyboardButton("Not pain", callback_data=f"feedback:not_a_pain:{token}:{idx}"),
+                InlineKeyboardButton("Bad evidence", callback_data=f"feedback:bad_evidence:{token}:{idx}"),
+            ],
+            [
+                InlineKeyboardButton("Duplicate", callback_data=f"feedback:duplicate:{token}:{idx}"),
+                InlineKeyboardButton("Too generic", callback_data=f"feedback:too_generic:{token}:{idx}"),
+                InlineKeyboardButton("Wrong segment", callback_data=f"feedback:wrong_segment:{token}:{idx}"),
             ],
             [
                 InlineKeyboardButton(
                     "\U0001f48e Deep Dive",
-                    callback_data=f"deepdive:{signal.post.post_id}:{signal.post.subreddit}",
+                    callback_data=f"deepdive:{token}:{idx}",
                 ),
                 InlineKeyboardButton(
                     "\U0001f4e6 GTM",
-                    callback_data=f"gtm:{signal.post.post_id}:{signal.post.source}",
+                    callback_data=f"gtm:{token}:{idx}",
                 ),
             ],
             [InlineKeyboardButton("\u2190 Back to list", callback_data=f"back:{token}")],
         ]
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        return limit_telegram_text("\n".join(lines)), InlineKeyboardMarkup(keyboard_rows)
+
+    def _resolve_session_signal(self, token: str, idx_raw: str) -> tuple[str, "PainSignal | None"]:
+        session = self._sessions.get(token)
+        if session is None:
+            return "expired", None
+        try:
+            idx = int(idx_raw)
+        except ValueError:
+            return "malformed", None
+        signals: list[PainSignal] = session["signals"]
+        if not (0 <= idx < len(signals)):
+            return "out_of_range", None
+        return "ok", signals[idx]
 
     async def send_grouped_notification(
         self, *, chat_id: int, signals: list["PainSignal"], label: str
@@ -454,14 +498,19 @@ class PainFinderBot:
         lines = ["Monitored subreddits:"]
         for sub in subs:
             last = sub["last_checked"] or "never"
-            lines.append(f"- r/{sub['name']} every {sub['interval_hours']}h (last: {last})")
-        await update.message.reply_text("\n".join(lines))
+            line = f"- r/{sub['name']} every {sub['interval_hours']}h (last success: {last})"
+            if sub.get("last_error"):
+                attempted = sub.get("last_attempted_at") or "unknown"
+                line += f" last error at {attempted}: {sub['last_error']}"
+            lines.append(line)
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_status(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
             return
         summary = await self.db.get_monitoring_summary()
         latest_run = await self.db.get_latest_analysis_run()
+        scheduled_jobs = await self.db.get_scheduled_job_statuses()
         lines = [
             "pain_finder running",
             f"Monitored subreddits: {summary['monitored']}",
@@ -478,7 +527,19 @@ class PainFinderBot:
                 f"skipped_existing={latest_run.get('skipped_existing_count', 0)} "
                 f"dedup_merged={latest_run.get('dedup_merged_count', 0)}"
             )
-        await update.message.reply_text("\n".join(lines))
+        feedback_total = int(summary.get("feedback_total") or 0)
+        feedback_counts = summary.get("feedback") if isinstance(summary.get("feedback"), dict) else {}
+        if feedback_total:
+            useful_count = int(feedback_counts.get("useful", 0))
+            bad_evidence_count = int(feedback_counts.get("bad_evidence", 0))
+            lines.append(f"Feedback: total={feedback_total} useful={useful_count} bad_evidence={bad_evidence_count}")
+        failed_jobs = [job for job in scheduled_jobs if job.get("last_error")]
+        if failed_jobs:
+            lines.append("Scheduled job errors:")
+            for job in failed_jobs:
+                attempted = job.get("last_attempted_at") or "unknown"
+                lines.append(f"- {job['job_name']} last error at {attempted}: {job['last_error']}")
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_export(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -495,16 +556,32 @@ class PainFinderBot:
 
         if self.export_service:
             result: ExportResult = await self.export_service.export(subreddit=subreddit)
-            with open(result.csv_path, "rb") as export_file:
+            import config
+
+            export_path = Path(str(result.csv_path)).expanduser().resolve()
+            service_reports_dir = getattr(self.export_service, "reports_dir", None)
+            if not isinstance(service_reports_dir, (str, os.PathLike)):
+                service_reports_dir = config.REPORTS_DIR
+            reports_root = Path(service_reports_dir).expanduser().resolve()
+            if export_path.suffix.lower() != ".csv":
+                await update.message.reply_text("Export path is not a CSV file.")
+                return
+            if not _is_path_inside(export_path, reports_root):
+                await update.message.reply_text("Export path is outside the configured reports directory.")
+                return
+            if not export_path.exists():
+                await update.message.reply_text(f"Export file not found: {result.csv_path}")
+                return
+            with open(export_path, "rb") as export_file:
                 await update.message.reply_document(
                     document=export_file,
-                    filename=os.path.basename(result.csv_path),
+                    filename=export_path.name,
                     caption=f"Export rows: {result.row_count}",
                 )
             if result.sheet_url:
-                await update.message.reply_text(f"Google Sheet updated: {result.sheet_url}")
+                await update.message.reply_text(limit_telegram_text(f"Google Sheet updated: {result.sheet_url}"))
             if result.warning:
-                await update.message.reply_text(f"Warning: {result.warning}")
+                await update.message.reply_text(limit_telegram_text(f"Warning: {result.warning}"))
             return
 
         report = await self.db.get_latest_report(subreddit=subreddit)
@@ -515,10 +592,20 @@ class PainFinderBot:
         if not json_path or not os.path.exists(json_path):
             await update.message.reply_text(f"Report file not found: {json_path}")
             return
-        with open(json_path, "rb") as report_file:
+        import config
+
+        report_path = Path(str(json_path)).expanduser().resolve()
+        reports_root = Path(config.REPORTS_DIR).expanduser().resolve()
+        if report_path.suffix.lower() != ".json":
+            await update.message.reply_text("Report path is not a JSON report.")
+            return
+        if not _is_path_inside(report_path, reports_root):
+            await update.message.reply_text("Report path is outside the configured reports directory.")
+            return
+        with open(report_path, "rb") as report_file:
             await update.message.reply_document(
                 document=report_file,
-                filename=os.path.basename(json_path),
+                filename=report_path.name,
                 caption=f"Latest report for r/{report['subreddit']}",
             )
 
@@ -533,17 +620,17 @@ class PainFinderBot:
             return
         row = await self.db.get_pain_point(post_id)
         if not row:
-            await update.message.reply_text(f"Post {post_id} was not found in the database.")
+            await update.message.reply_text(limit_telegram_text(f"Post {post_id} was not found in the database."))
             return
         if not self.deep_dive_fn:
             await update.message.reply_text("Deep dive is not configured.")
             return
-        await update.message.reply_text(f"Running deep dive for {post_id}...")
+        await update.message.reply_text(limit_telegram_text(f"Running deep dive for {post_id}..."))
         result = await self.deep_dive_fn(post_id, row["subreddit"], "manual")
         if result.status == "completed":
-            await update.message.reply_text(f"Deep dive complete for {post_id}: {result.summary}")
+            await update.message.reply_text(limit_telegram_text(f"Deep dive complete for {post_id}: {result.summary}"))
         else:
-            await update.message.reply_text(f"Deep dive failed for {post_id}: {result.error}")
+            await update.message.reply_text(limit_telegram_text(f"Deep dive failed for {post_id}: {result.error}"))
 
     async def cmd_digest(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -586,7 +673,7 @@ class PainFinderBot:
             lines.append("Recurring blockers:")
             for blocker in digest["recurring_blockers"][:3]:
                 lines.append(f"- {blocker[:120]}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_macro(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -617,7 +704,7 @@ class PainFinderBot:
                 f"- {cluster.label} | items={cluster.item_count} | signal={cluster.estimated_monetization_signal} | wtp_total={cluster.aggregate_wtp:.1f}"
             )
             lines.append(f"  {cluster.summary[:160]}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_budget(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -635,7 +722,7 @@ class PainFinderBot:
             lines.append(f"Pause reason: {status.pause_reason}")
         if status.resume_override_until:
             lines.append(f"Resume override until: {status.resume_override_until}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(limit_telegram_text("\n".join(lines)))
 
     async def cmd_resume(self, update, ctx):
         if not self._is_authorized(update) or update.message is None:
@@ -662,7 +749,10 @@ class PainFinderBot:
         except ValueError as e:
             await update.message.reply_text(str(e))
             return
-        await update.message.reply_text(f"Generating GTM package for {post_id}...")
+        if await self.db.get_pain_point(post_id) is None:
+            await update.message.reply_text(limit_telegram_text(f"Post {post_id} was not found in the database."))
+            return
+        await update.message.reply_text(limit_telegram_text(f"Generating GTM package for {post_id}..."))
         result = await self.gtm_fn(post_id)
         await update.message.reply_text(self._format_gtm_result(result))
 
@@ -731,16 +821,65 @@ class PainFinderBot:
                 await query.answer()
                 return
 
+            if data.startswith("feedback:"):
+                feedback_parts = data.split(":", 3)
+                if len(feedback_parts) < 3:
+                    await query.answer("Malformed callback", show_alert=False)
+                    return
+                _, feedback_value = feedback_parts[:2]
+                if feedback_value not in FEEDBACK_VALUES:
+                    await query.answer("Unknown feedback", show_alert=False)
+                    return
+                if len(feedback_parts) == 4 and SESSION_TOKEN_RE.match(feedback_parts[2]):
+                    signal_status, signal = self._resolve_session_signal(feedback_parts[2], feedback_parts[3])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                else:
+                    legacy_parts = data.split(":", 2)
+                    if len(legacy_parts) != 3:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = legacy_parts[2]
+                await self.db.record_feedback(post_id=post_id, feedback_value=feedback_value, source="telegram")
+                await query.answer(f"Feedback recorded: {feedback_value}", show_alert=False)
+                return
+
             if data.startswith("triage:"):
-                triage_parts = data.split(":", 2)
-                if len(triage_parts) != 3:
+                triage_parts = data.split(":", 3)
+                if len(triage_parts) < 3:
                     raise ValueError("Malformed callback data")
-                _, action, post_id = triage_parts
+                _, action = triage_parts[:2]
                 status_map: dict[str, TriageStatus] = {"favorite": "favorite", "discard": "discarded"}
                 status = status_map.get(action)
                 if not status:
                     await query.answer("Unknown action", show_alert=False)
                     return
+                if len(triage_parts) == 4 and SESSION_TOKEN_RE.match(triage_parts[2]):
+                    signal_status, signal = self._resolve_session_signal(triage_parts[2], triage_parts[3])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                else:
+                    legacy_parts = data.split(":", 2)
+                    if len(legacy_parts) != 3:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = legacy_parts[2]
                 updated = await self.db.update_triage_status(post_id, status)
                 if not updated:
                     await query.answer("Post not found", show_alert=False)
@@ -749,22 +888,64 @@ class PainFinderBot:
                 return
 
             if data.startswith("deepdive:"):
-                post_id, subreddit = parse_scoped_callback_data(data, "deepdive:")
+                payload = data[len("deepdive:"):]
+                session_parts = payload.split(":", 1)
+                if len(session_parts) == 2 and SESSION_TOKEN_RE.match(session_parts[0]):
+                    signal_status, signal = self._resolve_session_signal(session_parts[0], session_parts[1])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                    subreddit = signal.post.subreddit
+                else:
+                    post_id, subreddit = parse_scoped_callback_data(data, "deepdive:")
+                    subreddit = normalize_subreddit(subreddit)
                 if not self.deep_dive_fn:
                     await query.answer("Deep dive not configured", show_alert=False)
+                    return
+                if await self.db.get_pain_point(post_id) is None:
+                    await query.answer("Post not found", show_alert=False)
                     return
                 await query.answer("Running deep dive...", show_alert=False)
                 result = await self.deep_dive_fn(post_id, subreddit, "callback")
                 if result.status == "completed":
-                    await query.message.reply_text(f"Deep dive complete for {post_id}: {result.summary}")
+                    await query.message.reply_text(
+                        limit_telegram_text(f"Deep dive complete for {post_id}: {result.summary}")
+                    )
                 else:
-                    await query.message.reply_text(f"Deep dive failed for {post_id}: {result.error}")
+                    await query.message.reply_text(
+                        limit_telegram_text(f"Deep dive failed for {post_id}: {result.error}")
+                    )
                 return
 
             if data.startswith("gtm:"):
-                post_id, _scope = parse_scoped_callback_data(data, "gtm:")
+                payload = data[len("gtm:"):]
+                session_parts = payload.split(":", 1)
+                if len(session_parts) == 2 and SESSION_TOKEN_RE.match(session_parts[0]):
+                    signal_status, signal = self._resolve_session_signal(session_parts[0], session_parts[1])
+                    if signal_status == "expired":
+                        await query.answer("Session expired \u2014 re-run the command.", show_alert=True)
+                        return
+                    if signal_status == "out_of_range":
+                        await query.answer("Item out of range", show_alert=False)
+                        return
+                    if signal_status != "ok" or signal is None:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = signal.post.post_id
+                else:
+                    post_id, _scope = parse_scoped_callback_data(data, "gtm:")
                 if not self.gtm_fn:
                     await query.answer("GTM not configured", show_alert=False)
+                    return
+                if await self.db.get_pain_point(post_id) is None:
+                    await query.answer("Post not found", show_alert=False)
                     return
                 await query.answer("Generating GTM...", show_alert=False)
                 result = await self.gtm_fn(post_id)
@@ -790,7 +971,7 @@ class PainFinderBot:
             lines.append(f"- {feature}")
         lines.append(f"Pricing: {payload.pricing_tier}")
         lines.append(f"Positioning: {payload.positioning_rationale}")
-        return "\n".join(lines)
+        return limit_telegram_text("\n".join(lines))
 
     def build_app(self):
         from telegram.ext import Application, CallbackQueryHandler, CommandHandler

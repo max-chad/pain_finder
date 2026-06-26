@@ -2,7 +2,10 @@ __pycache__/
 .pytest_cache/
 .coverage
 .env
+.env.*
+!.env.example
 *.db
 *.db-*
+data/
 reports/
 eval/artifacts/

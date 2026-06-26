@@ -8,12 +8,11 @@ gspread>=6.1
 google-auth>=2.34
 beautifulsoup4>=4.12
 pytest>=8.0
-pytest-asyncio>=0.23
+pytest-asyncio>=0.24
 pytest-cov>=5.0
 respx>=0.21
 ruff>=0.11
 mypy>=1.11
-dspy>=3.2
 openai>=1.0
 python-docx>=1.1
 

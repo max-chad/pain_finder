@@ -1,6 +1,8 @@
 import json
 import logging
+import math
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,10 +10,24 @@ import httpx
 from bs4 import BeautifulSoup
 
 from scraper import Post
+from url_safety import is_resolved_public_http_url
 
 logger = logging.getLogger(__name__)
 
 RATING_RE = re.compile(r"([1-5](?:\.\d+)?)")
+MAX_REVIEW_HTML_BYTES = 2_000_000
+
+
+def _coerce_rating(value: Any) -> float:
+    try:
+        rating = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(rating):
+        return 0.0
+    if rating < 0 or rating > 5:
+        return 0.0
+    return rating
 
 
 @dataclass
@@ -22,9 +38,14 @@ class ReviewTarget:
     enabled: bool = True
 
 
+class ReviewFetchError(RuntimeError):
+    pass
+
+
 class ReviewScraper:
-    def __init__(self, user_agent: str = "pain_finder/1.0"):
+    def __init__(self, user_agent: str = "pain_finder/1.0", max_html_bytes: int = MAX_REVIEW_HTML_BYTES):
         self.user_agent = user_agent
+        self.max_html_bytes = max_html_bytes
 
     async def fetch_negative_reviews(
         self,
@@ -51,14 +72,16 @@ class ReviewScraper:
 
         posts: list[Post] = []
         slug = re.sub(r"[^a-z0-9]+", "-", target.name.lower()).strip("-") or "unknown"
-        for index, row in enumerate(rows[:max_reviews], start=1):
-            rating = float(row.get("rating", 0))
-            text = (row.get("text") or "").strip()
+        for row in rows:
+            if len(posts) >= max_reviews:
+                break
+            rating = _coerce_rating(row.get("rating", 0))
+            text = str(row.get("text") or "").strip()
             if not text:
                 continue
             if rating <= 0 or rating > 2.0:
                 continue
-            post_id = f"review:{site}:{slug}:{index}"
+            post_id = self._review_post_id(site=site, slug=slug, url=target.url, rating=rating, text=text)
             posts.append(
                 Post(
                     post_id=post_id,
@@ -78,23 +101,71 @@ class ReviewScraper:
         *,
         targets: list[ReviewTarget],
         max_per_target: int,
+        max_total: int | None = None,
     ) -> list[Post]:
         all_posts: list[Post] = []
+        attempted_targets = 0
+        successful_targets = 0
+        failed_targets: list[str] = []
+        remaining_total = max_total
         for target in targets:
-            target_posts = await self.fetch_negative_reviews(target=target, max_reviews=max_per_target)
+            if not target.enabled or max_per_target <= 0:
+                continue
+            if remaining_total is not None and remaining_total <= 0:
+                break
+            attempted_targets += 1
+            target_limit = max_per_target if remaining_total is None else min(max_per_target, remaining_total)
+            try:
+                target_posts = await self.fetch_negative_reviews(target=target, max_reviews=target_limit)
+            except ReviewFetchError as exc:
+                failed_targets.append(target.name)
+                logger.warning("Review target failed for %s: %s", target.name, exc)
+                continue
+            successful_targets += 1
             all_posts.extend(target_posts)
+            if remaining_total is not None:
+                remaining_total = max(0, remaining_total - len(target_posts))
+        if attempted_targets and failed_targets and successful_targets == 0:
+            raise RuntimeError(f"Review fetch failed for all {attempted_targets} enabled targets")
         return all_posts
 
+    @staticmethod
+    def _review_post_id(*, site: str, slug: str, url: str, rating: float, text: str) -> str:
+        normalized_text = " ".join(text.lower().split())
+        identity = json.dumps(
+            {
+                "site": site,
+                "slug": slug,
+                "url": url.strip().lower(),
+                "rating": round(rating, 2),
+                "text": normalized_text,
+            },
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        return f"review:{site}:{slug}:{digest}"
+
     async def _fetch_html(self, url: str) -> str:
+        if not await is_resolved_public_http_url(url):
+            raise ReviewFetchError("Review target URL must resolve to a public http or https URL")
         headers = {"User-Agent": self.user_agent}
         try:
             async with httpx.AsyncClient(timeout=25) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
+                async with client.stream("GET", url, headers=headers) as response:
+                    response.raise_for_status()
+                    encoding = response.encoding or "utf-8"
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > self.max_html_bytes:
+                            raise ReviewFetchError(
+                                f"Review target response exceeded {self.max_html_bytes} bytes"
+                            )
+                    return bytes(body).decode(encoding, errors="replace")
         except httpx.HTTPError as e:
             logger.warning("Review scraper failed for %s: %s", url, e)
-            return ""
+            raise ReviewFetchError(f"Review scraper failed for {url}") from e
 
     def _parse_appstore_reviews(self, html: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
@@ -119,7 +190,11 @@ class ReviewScraper:
                 if node.get("@type") != "Review":
                     continue
                 review_rating = node.get("reviewRating", {})
-                rating_value = float(review_rating.get("ratingValue") or 0)
+                rating_value = (
+                    _coerce_rating(review_rating.get("ratingValue"))
+                    if isinstance(review_rating, dict)
+                    else _coerce_rating(review_rating)
+                )
                 review_text = str(node.get("reviewBody") or "").strip()
                 rows.append({"rating": rating_value, "text": review_text})
         return rows
@@ -170,7 +245,7 @@ class ReviewScraper:
             return 0.0
         try:
             value = float(match.group(1))
-        except ValueError:
+        except (TypeError, ValueError):
             return 0.0
         if value < 0 or value > 5:
             return 0.0

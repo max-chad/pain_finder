@@ -118,6 +118,190 @@ async def test_analyze_subreddit_persists_report_and_rows(db, tmp_path):
     assert rows[0]["opportunity_score"] > 0
 
 
+async def test_promotion_gate_caps_noisy_signals_and_skips_deep_dive(db, tmp_path):
+    posts = [
+        Post(
+            post_id="founder_noise",
+            subreddit="startups",
+            title="Launching my SaaS and looking for cofounder",
+            body="People say compliance workflows are broken but I do not have exact customer evidence.",
+            url="https://reddit.com/founder_noise",
+            score=5,
+            source_created_ts=1776688800,
+        ),
+        Post(
+            post_id="news_noise",
+            subreddit="hackernews",
+            title="Industry news analysis: CRM vendors face lawsuits",
+            body="This is a market recap, not a first-hand operator pain report.",
+            url="https://news.ycombinator.com/item?id=1",
+            score=7,
+            source="hn",
+            source_created_ts=1776688800,
+        ),
+        Post(
+            post_id="b2c_noise",
+            subreddit="gaming",
+            title="Fortnite game is broken",
+            body="My controller lags every match.",
+            url="https://reddit.com/b2c_noise",
+            score=9,
+            source_created_ts=1776688800,
+        ),
+    ]
+    signals = [
+        PainSignal(
+            post=posts[0],
+            category="complaint",
+            summary="Founder pitch with vague market claims",
+            severity="high",
+            is_monetizable=True,
+            pain_level=10,
+            willingness_to_pay=10,
+            niche_category="Compliance",
+            analysis_mode="b2b",
+            analysis_payload={},
+            post_type="founder_pitch",
+            first_handness="aggregated",
+            buyer_authority="founder_owner",
+            evidence_spans=["not in source text"],
+        ),
+        PainSignal(
+            post=posts[1],
+            category="complaint",
+            summary="News recap about vendors",
+            severity="high",
+            is_monetizable=True,
+            pain_level=10,
+            willingness_to_pay=10,
+            niche_category="CRM",
+            analysis_mode="b2b",
+            analysis_payload={},
+            post_type="news_analysis",
+            first_handness="speculative",
+            buyer_authority="unknown",
+            evidence_spans=["market recap"],
+        ),
+        PainSignal(
+            post=posts[2],
+            category="complaint",
+            summary="Consumer gaming complaint",
+            severity="high",
+            is_monetizable=False,
+            pain_level=8,
+            willingness_to_pay=0,
+            niche_category="B2C-noise",
+            analysis_mode="b2b",
+            analysis_payload={},
+            post_type="first_person_pain",
+            first_handness="first_hand",
+            buyer_authority="unknown",
+            evidence_spans=["Fortnite game is broken"],
+        ),
+    ]
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = ["should not be fetched"]
+    openrouter = AsyncMock()
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=signals),
+        openrouter=openrouter,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=8,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=posts, source="mixed", run_scope="promotion")
+
+    assert run.deep_dive_count == 0
+    scraper.fetch_full_thread.assert_not_awaited()
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = {row["post_id"]: row for row in json.load(handle)}
+
+    assert report_payload["founder_noise"]["promotion_eligible"] is False
+    assert report_payload["founder_noise"]["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert report_payload["founder_noise"]["verified_evidence"][0]["match_type"] == "none"
+    assert report_payload["founder_noise"]["opportunity_score"] <= 35.0
+    assert report_payload["news_noise"]["promotion_eligible"] is False
+    assert report_payload["news_noise"]["evidence_rejection_reason"] == "unsupported_post_type"
+    assert report_payload["b2c_noise"]["promotion_eligible"] is False
+    assert report_payload["b2c_noise"]["evidence_rejection_reason"] == "not_monetizable"
+
+    founder_row = await db.get_pain_point("founder_noise")
+    assert founder_row is not None
+    analysis_payload = json.loads(founder_row["analysis_payload_json"])
+    assert analysis_payload["promotion_eligible"] is False
+    assert analysis_payload["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+    assert analysis_payload["hard_negative_type"] == "founder_pitch"
+    assert analysis_payload["verified_evidence"][0]["match_type"] == "none"
+    assert analysis_payload["score_components"]["promotion_score_cap"] == 35.0
+
+
+async def test_promotion_gate_allows_grounded_first_hand_founder_signal(db, tmp_path):
+    post = Post(
+        post_id="founder_grounded",
+        subreddit="startups",
+        title="As founder, QuickBooks reconciliation breaks every week",
+        body="Our finance team loses two days every month reconciling invoices manually.",
+        url="https://reddit.com/founder_grounded",
+        score=12,
+        source_created_ts=1776688800,
+    )
+    signal = PainSignal(
+        post=post,
+        category="complaint",
+        summary="Founder reports recurring reconciliation pain",
+        severity="high",
+        is_monetizable=True,
+        pain_level=9,
+        willingness_to_pay=9,
+        niche_category="Finance Ops",
+        analysis_mode="b2b",
+        analysis_payload={},
+        post_type="founder_pitch",
+        first_handness="first_hand",
+        buyer_authority="founder_owner",
+        evidence_spans=["QuickBooks reconciliation breaks every week"],
+    )
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = []
+    openrouter = AsyncMock()
+    openrouter.analyze_deep_dive.return_value = DeepDiveResult(
+        workarounds=[],
+        competitors=["QuickBooks"],
+        feature_wishlist=["auto reconciliation"],
+        buying_signals=["loses two days every month"],
+        icp_hypothesis="Founder-led finance teams",
+        actionable_summary="Validate reconciliation automation",
+    )
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[signal]),
+        openrouter=openrouter,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=8,
+    )
+
+    run = await pipeline.analyze_external_posts(posts=[post], source="reddit", run_scope="promotion")
+
+    assert run.deep_dive_count == 1
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    assert report_payload[0]["promotion_eligible"] is True
+    assert report_payload[0]["evidence_rejection_reason"] is None
+    assert report_payload[0]["verified_evidence"][0]["match_type"] == "exact"
+    assert report_payload[0]["opportunity_score"] > 35.0
+
+
 async def test_analyze_subreddit_skips_already_persisted_posts_before_classification(db, tmp_path):
     existing_post = Post(
         post_id="existing1",
@@ -187,6 +371,52 @@ async def test_analyze_subreddit_skips_already_persisted_posts_before_classifica
     assert latest_run["screen_rule_dropped_count"] == 0
     assert latest_run["screen_kept_count"] == 1
     assert latest_run["screen_capped_count"] == 0
+
+
+async def test_analyze_subreddit_existing_only_batch_skips_llm_pause_check(db, tmp_path):
+    await db.insert_pain_point(
+        subreddit="python",
+        post_id="existing1",
+        url="https://reddit.com/existing1",
+        title="Already processed",
+        body="still broken",
+        category="complaint",
+        summary="existing",
+        severity="medium",
+    )
+    await db.pause_llm(reason="cap hit")
+
+    existing_post = Post(
+        post_id="existing1",
+        subreddit="python",
+        title="Already processed",
+        body="still broken",
+        url="https://reddit.com/existing1",
+        score=7,
+    )
+    scraper = AsyncMock()
+    scraper.fetch_posts.return_value = [existing_post]
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=[]),
+        openrouter=None,
+    )
+
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        budget_guard=None,
+    )
+
+    run = await pipeline.analyze_subreddit("python", limit=10)
+
+    assert run.post_count == 1
+    assert run.pain_count == 0
+    classifier.classify_batch.assert_not_awaited()
+    latest_run = await db.get_latest_analysis_run("python")
+    assert latest_run is not None
+    assert latest_run["skipped_existing_count"] == 1
 
 
 async def test_analyze_subreddit_applies_llm_classification_cap_per_run(db, tmp_path):
@@ -291,6 +521,39 @@ async def test_analyze_subreddit_cleans_tmp_file_on_atomic_write_error(db, tmp_p
 
     tmp_files = list((tmp_path / "reports").glob("*.tmp"))
     assert tmp_files == []
+
+
+async def test_write_report_rejects_non_standard_json_payload(db, tmp_path):
+    reports_dir = tmp_path / "reports"
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        reports_dir=str(reports_dir),
+    )
+
+    with pytest.raises(ValueError, match="Out of range float"):
+        await pipeline._write_report(run_label="bad-json", payload=[{"score": float("nan")}])
+
+    assert list(reports_dir.glob("*.tmp")) == []
+    assert list(reports_dir.glob("*.json")) == []
+
+
+async def test_write_report_sanitizes_run_label_path(db, tmp_path):
+    reports_dir = tmp_path / "reports"
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=AsyncMock(),
+        db=db,
+        reports_dir=str(reports_dir),
+    )
+
+    json_path = await pipeline._write_report(run_label="../bad/path", payload=[])
+
+    assert json_path.startswith(str(reports_dir))
+    assert ".." not in json_path.replace(str(reports_dir), "")
+    assert "bad_path" in json_path
+    assert (reports_dir).exists()
 
 
 async def test_run_deep_dive_manual_success(db, tmp_path):
@@ -416,6 +679,40 @@ async def test_generate_digest_returns_ranked_rows(db, tmp_path):
     assert "Need better alerts" in digest["recurring_blockers"]
 
 
+async def test_generate_digest_tolerates_malformed_row_values(tmp_path):
+    fake_db = AsyncMock()
+    fake_db.get_recent_pain_points.return_value = [
+        {
+            "post_id": "bad-values",
+            "niche_category": 123,
+            "source": 456,
+            "deep_dive_summary": None,
+            "opportunity_score": "NaN",
+            "source_created_ts": "not-a-timestamp",
+            "willingness_to_pay": "not-an-int",
+            "pain_level": "not-an-int",
+            "score_components_json": "{bad-json",
+            "evidence_spans": None,
+        }
+    ]
+    fake_db.get_latest_canonical_clusters.return_value = []
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=SimpleNamespace(classify_batch=AsyncMock(), openrouter=None),
+        db=fake_db,
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+    digest = await pipeline.generate_digest(subreddit=None, hours=24)
+
+    assert digest["total"] == 1
+    assert digest["top_items"][0]["post_id"] == "bad-values"
+    assert digest["top_items"][0]["opportunity_score"] == 0.0
+    assert digest["niche_counts"] == {"123": 1}
+    assert digest["source_counts"] == {"456": 1}
+    assert digest["recurring_blockers"] == []
+
+
 async def test_generate_digest_returns_no_clusters_when_no_rows(db, tmp_path):
     run_id = await db.create_macro_trend_run(window_days=30, candidate_count=1, cluster_count=1)
     await db.save_macro_cluster(
@@ -488,17 +785,47 @@ async def test_analyze_external_posts_records_source(db, tmp_path):
     assert stored["source"] == "hn"
 
 
-async def test_analyze_posts_respects_llm_pause_without_budget_guard(db, tmp_path):
+async def test_analyze_posts_allows_empty_batch_during_llm_pause(db, tmp_path):
     await db.pause_llm(reason="cap hit")
+    classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None)
     pipeline = AnalysisPipeline(
         scraper=AsyncMock(),
-        classifier=SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None),
+        classifier=classifier,
         db=db,
         reports_dir=str(tmp_path / "reports"),
         budget_guard=None,
     )
+
+    run = await pipeline.analyze_external_posts(posts=[], source="hn", run_scope="hn")
+
+    assert run.post_count == 0
+    assert run.pain_count == 0
+    classifier.classify_batch.assert_not_awaited()
+
+
+async def test_analyze_posts_respects_llm_pause_for_fresh_candidates_without_budget_guard(db, tmp_path):
+    await db.pause_llm(reason="cap hit")
+    post = Post(
+        post_id="hn:fresh",
+        subreddit="hackernews",
+        title="Manual billing reconciliation is painful",
+        body="We still spend hours fixing invoices by hand.",
+        url="https://news.ycombinator.com/item?id=1",
+        score=5,
+        source="hn",
+    )
+    classifier = SimpleNamespace(classify_batch=AsyncMock(return_value=[]), openrouter=None)
+    pipeline = AnalysisPipeline(
+        scraper=AsyncMock(),
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        budget_guard=None,
+    )
+
     with pytest.raises(RuntimeError):
-        await pipeline.analyze_external_posts(posts=[], source="hn", run_scope="hn")
+        await pipeline.analyze_external_posts(posts=[post], source="hn", run_scope="hn")
+    classifier.classify_batch.assert_not_awaited()
 
 
 async def test_cross_source_dedup_skips_second_insert(db, tmp_path):

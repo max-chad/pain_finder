@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib.util
+import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openrouter import AnalysisResult, VALID_CATEGORIES, VALID_SEVERITIES
 from scraper import Post
+
+if TYPE_CHECKING:
+    from budget import BudgetGuard
 
 logger = logging.getLogger(__name__)
 
 
 class DSPyRedditPainParser:
+    @staticmethod
+    def is_available() -> bool:
+        return importlib.util.find_spec("dspy") is not None
+
     def __init__(
         self,
         *,
@@ -21,6 +31,9 @@ class DSPyRedditPainParser:
         reasoning_effort: str = "high",
         temperature: float = 1.0,
         max_tokens: int = 16000,
+        timeout_seconds: float = 60.0,
+        budget_guard: "BudgetGuard | None" = None,
+        pricing_map: dict[str, dict[str, float]] | None = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.provider = provider.strip().lower() or "codex"
@@ -29,6 +42,9 @@ class DSPyRedditPainParser:
         self.reasoning_effort = reasoning_effort.strip().lower() or "high"
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.timeout_seconds = max(0.1, float(timeout_seconds))
+        self.budget_guard = budget_guard
+        self.pricing_map = pricing_map or {}
         self._dspy: Any | None = None
         self._lm: Any | None = None
         self._program: Any | None = None
@@ -44,6 +60,7 @@ class DSPyRedditPainParser:
             "api_key": self.api_key,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "timeout": self.timeout_seconds,
         }
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
@@ -95,10 +112,20 @@ class DSPyRedditPainParser:
             logger.warning("DSPy Reddit parser is enabled but no API key was provided")
             return None
 
+        if self.budget_guard is not None:
+            if not self._pricing_entry():
+                logger.warning(
+                    "DSPy Reddit parser disabled because no pricing is configured for model=%s",
+                    self.model,
+                )
+                return None
+            await self.budget_guard.ensure_can_spend("dspy_analyze_post")
+
         try:
             program = self._ensure_program()
             assert self._dspy is not None
             assert self._lm is not None
+            prompt_text = self._usage_prompt_text(post)
 
             def _run_program() -> Any:
                 assert self._dspy is not None
@@ -112,11 +139,125 @@ class DSPyRedditPainParser:
                         discovery_query=post.discovery_query,
                     )
 
-            prediction = await asyncio.to_thread(_run_program)
+            prediction = await asyncio.wait_for(asyncio.to_thread(_run_program), timeout=self.timeout_seconds)
+            await self._record_usage(post=post, prompt_text=prompt_text, prediction=prediction)
             return self._coerce_prediction(prediction)
         except Exception as exc:
             logger.warning("DSPy Reddit parser failed for %s: %s", post.post_id, exc)
             return None
+
+    def _pricing_entry(self) -> dict[str, float]:
+        entry = self.pricing_map.get(self.model) or self.pricing_map.get(self._model_name_for_provider()) or {}
+        return {
+            "prompt_per_1k": float(entry.get("prompt_per_1k", 0) or 0),
+            "completion_per_1k": float(entry.get("completion_per_1k", 0) or 0),
+        } if entry else {}
+
+    @staticmethod
+    def _usage_token_count(value: Any) -> int:
+        try:
+            parsed = int(value)
+        except (OverflowError, TypeError, ValueError):
+            return 0
+        return max(0, parsed)
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return max(1, (len(text) + 3) // 4)
+
+    def _usage_prompt_text(self, post: Post) -> str:
+        return "\n".join(
+            [
+                f"subreddit={post.subreddit}",
+                f"title={post.title}",
+                f"body={post.body}",
+                "top_comments=" + "\n".join(post.top_comments),
+                f"discovery_query={post.discovery_query}",
+            ]
+        )
+
+    def _usage_from_lm_history(self) -> dict[str, int] | None:
+        history = getattr(self._lm, "history", None)
+        if not history:
+            return None
+        try:
+            latest = history[-1]
+        except (KeyError, IndexError, TypeError):
+            return None
+        return self._usage_from_object(latest)
+
+    def _usage_from_object(self, value: Any) -> dict[str, int] | None:
+        if value is None:
+            return None
+        usage = value.get("usage") if isinstance(value, dict) else getattr(value, "usage", None)
+        if usage is None and not isinstance(value, dict):
+            usage = getattr(value, "token_usage", None)
+        if usage is not None:
+            nested = self._usage_from_object(usage)
+            if nested is not None:
+                return nested
+
+        prompt_tokens = self._usage_token_count(
+            value.get("prompt_tokens", value.get("input_tokens", 0))
+            if isinstance(value, dict)
+            else getattr(value, "prompt_tokens", getattr(value, "input_tokens", 0))
+        )
+        completion_tokens = self._usage_token_count(
+            value.get("completion_tokens", value.get("output_tokens", 0))
+            if isinstance(value, dict)
+            else getattr(value, "completion_tokens", getattr(value, "output_tokens", 0))
+        )
+        if prompt_tokens <= 0 and completion_tokens <= 0:
+            return None
+        return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
+
+    def _estimated_usage(self, *, prompt_text: str, prediction: Any) -> dict[str, int]:
+        prediction_payload = {
+            "category": self._string_field(prediction, "category"),
+            "severity": self._string_field(prediction, "severity"),
+            "summary": self._string_field(prediction, "summary"),
+            "is_monetizable": self._string_field(prediction, "is_monetizable"),
+            "pain_level": self._string_field(prediction, "pain_level"),
+            "willingness_to_pay": self._string_field(prediction, "willingness_to_pay"),
+            "niche_category": self._string_field(prediction, "niche_category"),
+            "competitor_tags_csv": self._string_field(prediction, "competitor_tags_csv"),
+        }
+        return {
+            "prompt_tokens": self._estimate_tokens(prompt_text),
+            "completion_tokens": self._estimate_tokens(json.dumps(prediction_payload, ensure_ascii=False)),
+        }
+
+    def _estimate_cost_usd(self, *, prompt_tokens: int, completion_tokens: int) -> float:
+        pricing = self._pricing_entry()
+        prompt_cost = (prompt_tokens / 1000.0) * float(pricing.get("prompt_per_1k", 0) or 0)
+        completion_cost = (completion_tokens / 1000.0) * float(pricing.get("completion_per_1k", 0) or 0)
+        return round(prompt_cost + completion_cost, 8)
+
+    async def _record_usage(self, *, post: Post, prompt_text: str, prediction: Any) -> None:
+        if self.budget_guard is None:
+            return
+        usage = self._usage_from_lm_history() or self._estimated_usage(prompt_text=prompt_text, prediction=prediction)
+        prompt_tokens = self._usage_token_count(usage.get("prompt_tokens", 0))
+        completion_tokens = self._usage_token_count(usage.get("completion_tokens", 0))
+        try:
+            await self.budget_guard.record_usage(
+                model=self.model,
+                operation="dspy_analyze_post",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=self._estimate_cost_usd(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+                post_id=post.post_id,
+                prompt_hash=hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+                schema_version="dspy_primary_v1",
+                provider=self.provider,
+                request_path=self.api_base or self._model_name_for_provider(),
+                candidate_stage="primary_dspy",
+            )
+        except Exception as exc:
+            logger.warning("dspy_usage_record_failed model=%s post_id=%s error=%s", self.model, post.post_id, exc)
 
     def _coerce_prediction(self, prediction: Any) -> AnalysisResult | None:
         category = self._string_field(prediction, "category")

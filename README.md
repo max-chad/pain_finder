@@ -13,11 +13,12 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
 - For `openai-codex` / ChatGPT Codex backend calls, the runtime now mirrors Codex CLI request headers (`originator`, Codex-style `User-Agent`, `ChatGPT-Account-ID`) so quota/account routing stays on the Codex path instead of generic ChatGPT handling.
 - Can route the primary Reddit pain parse through an optional DSPy/Codex (`gpt-5.3-spark`, `high`) backend, with the same provider defaults.
 - Tracks monetization signals (`pain_level`, `willingness_to_pay`, `is_monetizable`, `niche_category`, `competitor_tags`).
+- Verifies evidence spans against source text, marks hard-negative noise, and caps promotion scores when evidence is not grounded.
 - Auto-runs deep dives on high-value signals and supports manual deep dives.
 - Runs macro trend clustering over historical high-signal items.
 - Enforces daily LLM budget caps with pause/resume runtime flags.
 - Generates GTM assets (names, hero copy, MVP features, pricing, positioning) for selected pain points.
-- Exports filtered data to CSV and optionally upserts to Google Sheets.
+- Exports filtered data, promotion eligibility, hard-negative type, and verified-evidence counts to CSV and optionally upserts to Google Sheets.
 - Can run in `APP_MODE=hermes`, which disables Telegram polling conflicts and publishes a once-daily grouped `.docx` digest back through the configured bot token/chat.
 
 ## Architecture
@@ -30,6 +31,11 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
 - `openrouter.py`: provider-agnostic OpenAI-compatible LLM client (Codex/OpenAI/OpenRouter), strict schema parsing, usage/cost accounting.
 - `classifier.py`: scoring + classification mode orchestration + competitor tag normalization, with optional DSPy primary Reddit parser fallback.
 - `pipeline.py`: ingestion->classification->persistence->deep dive->digest flow.
+- `evidence.py`: deterministic evidence-span verification against post title/body/comments.
+- `rejected_noise.py`: hard-negative taxonomy and normalization for non-promotable rows.
+- `buyer_intelligence.py`: deterministic buyer/WTP summary helper for verified examples.
+- `competitor_radar.py`: deterministic competitor-failure summary helper for evidence-gated rows.
+- `feedback.py`: operator feedback values and metadata mapping for future labels.
 - `clusterer.py`: hybrid local embedding clustering + LLM trend labels.
 - `budget.py`: daily spend checks, pause state, override-to-next-UTC-day resume.
 - `generator_gtm.py`: one-click GTM payload generation and persistence.
@@ -38,6 +44,7 @@ Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hack
 - `scheduler.py`: monitored subreddit jobs + macro/HN/review jobs.
 - `bot.py`: Telegram command handlers and inline callback actions.
 - `eval_harness.py` + `eval/run_eval.py`: reproducible hand-labeled evaluation flow for the Reddit parser (live Codex/DSPy or offline saved predictions).
+- `eval/calibrate_score.py`: deterministic calibration artifact writer for saved predictions; it reports candidate score weights but does not auto-apply them.
 
 ## Telegram Commands
 
@@ -65,6 +72,14 @@ Inline actions on pain cards:
 - `Discard`
 - `Deep Dive`
 - `Generate GTM`
+- `Useful`
+- `Not pain`
+- `Bad evidence`
+- `Duplicate`
+- `Too generic`
+- `Wrong segment`
+
+Inline list/card callbacks use short in-memory session tokens so long source IDs still fit Telegram callback limits. These session callbacks are intentionally operator-session state: they expire after 24 hours or process restart. Older direct post-id callbacks remain supported and preserve source-prefixed IDs such as `reddit:abc123`.
 
 ## Environment Variables
 
@@ -101,6 +116,7 @@ Classifier/deep dive controls:
 - `CLASSIFIER_MODE` (`legacy|b2b|dual`, default `dual`)
 - `CLASSIFIER_MAX_CONCURRENCY` (default `8`)
 - `LLM_MAX_CLASSIFICATIONS_PER_RUN` (default `0`, disabled when `0`; set >0 to cap classifications per analysis run)
+- `PRIMARY_MAX_OUTPUT_TOKENS` (default `min(1200, LLM_MAX_TOKENS)`; must not exceed `LLM_MAX_TOKENS`)
 - `DEEP_DIVE_WTP_THRESHOLD` (default `8`)
 - `DEEP_DIVE_MAX_COMMENTS` (default `250`)
 
@@ -110,12 +126,13 @@ Scraper controls:
 - `SCRAPER_COMMENT_FETCH_CONCURRENCY` (default `8`)
 - `SCRAPER_RETRY_MAX_ATTEMPTS` (default `5`)
 - `SCRAPER_RETRY_BASE_DELAY` (default `1.0`)
+- `SCRAPER_MAX_RESPONSE_BYTES` (default `5000000`, minimum `1024`)
 - `SCRAPER_FEED_MIX_JSON` (default `["new", "rising", "top"]`)
 - `SCRAPER_SEARCH_QUERIES_JSON` (optional pain-intent subreddit search queries merged with feed results)
 
 Optional DSPy Reddit parser:
 
-- `DSPY_REDDIT_PARSER_ENABLED` (default `1`)
+- `DSPY_REDDIT_PARSER_ENABLED` (default `0`; keep disabled unless you have an audited DSPy install)
 - `DSPY_PROVIDER` (defaults to `LLM_PROVIDER`, so Codex by default)
 - `DSPY_MODEL` (defaults to `LLM_MODEL`)
 - `DSPY_REASONING_EFFORT` (defaults to `LLM_REASONING_EFFORT`)
@@ -123,6 +140,16 @@ Optional DSPy Reddit parser:
 - `DSPY_API_BASE` (defaults to `LLM_API_BASE`)
 - `DSPY_TEMPERATURE`
 - `DSPY_MAX_TOKENS`
+- `DSPY_TIMEOUT_SECONDS` (default `60`)
+
+The DSPy dependency is intentionally optional and is not installed by the base requirements. The project-managed `requirements-dspy.txt` is currently fail-closed and does not install DSPy because the upstream dependency set still pulls `diskcache 5.6.3` / `CVE-2025-69872` with no fixed version reported by `pip-audit`.
+
+```bash
+pip install -r requirements-dspy.txt
+python -m pip_audit -r requirements-dspy.txt
+```
+
+Keep `DSPY_REDDIT_PARSER_ENABLED=0` for production until DSPy can be re-added to `requirements-dspy.txt` and the optional dependency audit passes with DSPy included.
 
 Trend clustering:
 
@@ -140,13 +167,15 @@ HN ingestion:
 - `HN_LOOKBACK_HOURS`
 - `HN_MAX_POSTS`
 - `HN_INTERVAL_HOURS`
+- `HN_MAX_RESPONSE_BYTES` (default `2000000`, minimum `1024`)
 
 Review ingestion:
 
 - `REVIEWS_ENABLED`
-- `REVIEW_TARGETS_JSON`
+- `REVIEW_TARGETS_JSON` (enabled targets must have `site`, `name`, and a public `http`/`https` `url`; localhost/private IP targets are rejected)
 - `REVIEWS_MAX_PER_TARGET`
 - `REVIEWS_INTERVAL_HOURS`
+- `REVIEWS_MAX_HTML_BYTES` (default `2000000`, minimum `1024`)
 
 Budget and runtime guardrails:
 
@@ -169,6 +198,8 @@ Hermes-mode delivery:
 - `DIGEST_MINUTE_UTC`
 - `DIGEST_MIN_WTP`
 - `DIGEST_MAX_ITEMS_PER_GROUP`
+- `CURRENT_OPPORTUNITY_MAX_AGE_DAYS`
+- `EVERGREEN_MAX_AGE_DAYS`
 
 Codex reserve routing note:
 
@@ -191,11 +222,13 @@ Paths and source auth:
 
 - `pain_points`: canonical signals, source tag, competitor tags, triage/deep-dive/GTM context.
 - `pain_point_competitors`: normalized `(post_id, competitor_tag)` map.
+- `feedback_events`: append-only operator feedback from Telegram cards.
 - `deep_dives`: deep-dive payload lifecycle per post.
 - `analysis_runs`: per-run metrics.
 - `macro_trend_runs`, `macro_trend_clusters`, `macro_trend_members`: macro analytics snapshots.
 - `llm_usage_events`: token/cost ledger.
 - `runtime_flags`: `llm_paused`, pause reason/day, resume override.
+- `monitored_subreddits`: active subreddit schedules plus last success, last attempt, and last error for `/list` diagnostics.
 - `gtm_assets`: generated GTM payloads.
 
 ## Budget Guardrail Behavior
@@ -210,6 +243,15 @@ Paths and source auth:
 - `/export` always returns a CSV file.
 - If Sheets credentials and spreadsheet ID are set, export also upserts to Sheets.
 - Sheets failures do not block CSV; a warning message is returned.
+- Exported research fields include `promotion_eligible`, `evidence_rejection_reason`, `hard_negative_type`, and `verified_evidence_count`.
+
+## Promotion And Evidence Behavior
+
+- Evidence spans are checked against post title, body, and comment text before promotion metadata is surfaced.
+- `analysis_payload` and `score_components` store `verified_evidence`, `verified_evidence_count`, `exact_evidence_count`, `promotion_eligible`, `evidence_rejection_reason`, and `hard_negative_type`.
+- Non-grounded or out-of-scope candidates fail closed for promotion and receive a capped opportunity score.
+- Hard-negative taxonomy is deterministic; it is intended for eval/reporting and does not call external services.
+- Buyer/WTP and competitor-radar helpers operate on already collected rows. They are deterministic summaries, not autonomous research agents.
 
 ## Setup and Run
 
@@ -230,16 +272,42 @@ pip install -r requirements-ml.txt
 docker compose up -d --build
 ```
 
+The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, report-directory writability, and read-only access to an already initialized SQLite database without calling external APIs or running migrations. Its output includes `scheduled_job_errors` as a diagnostic counter; historical scheduled-job failures are reported but do not fail liveness.
+The runtime handles `SIGTERM`/`SIGINT` through the asyncio loop so Docker stops and manual interrupts drain through scheduler/database cleanup.
+
+For deployment readiness checks outside Docker liveness, use strict scheduled-job validation:
+
+```bash
+python healthcheck.py --fail-on-job-errors
+```
+
+This keeps container liveness tolerant of historical job errors while allowing release gates to fail when scheduled ingestion/digest jobs have active errors.
+
 Persisted mounts in `docker-compose.yml`:
 
-- `./pain_finder.db -> /app/pain_finder.db`
+- `./data -> /app/data` (`DB_PATH=/app/data/pain_finder.db`)
 - `./reports -> /app/reports`
+
+## Source Smoke Checks
+
+Use the read-only source smoke check before a first data-collection run or after changing source env. It fetches source posts and prints JSON, but does not call LLMs, Telegram, database writes, exports, or schedulers.
+
+```bash
+python smoke_collect.py --source reddit --subreddit python --limit 5
+python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
+```
+
+Use `python smoke_collect.py --source all --limit 5` only after configuring `REVIEW_TARGETS_JSON`, because `--source all` includes the reviews collector and fails closed when no enabled review targets exist.
+
+Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`, `REVIEWS_MAX_HTML_BYTES`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs that resolve to public addresses before fetch.
 
 ## Quality Gates
 
 ```bash
 ruff check .
-mypy .
+mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py digest_delivery.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
+docker compose config -q
+python -m pip_audit -r requirements.txt
 pytest --cov=. --cov-fail-under=80 -q
 ```
 
@@ -277,8 +345,25 @@ Metrics currently include:
 - post-type confusion
 - first-handness accuracy
 - buyer-authority accuracy
+- hard-negative false-positive rate
+- verified-evidence counts and exact-match rate
+
+Saved prediction calibration can be run without live API calls:
+
+```bash
+python eval/calibrate_score.py \
+  --labels eval/labels.jsonl \
+  --predictions eval/artifacts/seed-live/predictions.jsonl \
+  --output eval/artifacts/seed-live/calibration.json
+```
+
+The calibration artifact is advisory. It does not rewrite code or runtime weights.
 
 For labeling rules and the seed-set caveats, see `eval/README.md`.
+
+## Current Hardening Status
+
+The `codex/full-ultragoal-hardening` branch integrates runtime hardening from `codex/autonomous-audit-fixes` and a smaller, tested rewrite of the evidence/feedback/product-eval core from `bot/277606-external-review-plan`. It does not wholesale-merge the older product branch, and it does not claim production readiness without deployment environment checks, live source smoke, and operator review. See `docs/reports/2026-06-26-full-ultragoal-intake.md` and `docs/reports/2026-06-26-full-ultragoal-readiness.md`.
 
 ## Upgrade Notes
 

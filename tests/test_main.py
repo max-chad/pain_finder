@@ -1,7 +1,124 @@
 ﻿import importlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+
+
+def test_build_dspy_parser_returns_none_when_dependency_missing(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DSPY_REDDIT_PARSER_ENABLED", "1")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+
+    class MissingDSPyParser:
+        @staticmethod
+        def is_available():
+            return False
+
+    monkeypatch.setattr(main, "DSPyRedditPainParser", MissingDSPyParser)
+
+    assert main._build_dspy_parser() is None
+
+
+def test_build_review_targets_respects_string_disabled_flags(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    main.config.REVIEW_TARGETS = [
+        {"site": "g2", "name": "Disabled", "url": "https://example.com/disabled", "enabled": "false"},
+        {"site": "capterra", "name": "Off", "url": "https://example.com/off", "enabled": "off"},
+        {"site": "g2", "name": "Enabled", "url": "https://example.com/enabled", "enabled": "yes"},
+    ]
+
+    targets = main._build_review_targets()
+
+    assert [target.enabled for target in targets] == [False, False, True]
+
+
+def test_build_review_targets_rejects_invalid_enabled_flag(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    main.config.REVIEW_TARGETS = [
+        {"site": "g2", "name": "Typo", "url": "https://example.com/reviews", "enabled": "flase"},
+    ]
+
+    with pytest.raises(ValueError, match="REVIEW_TARGETS_JSON target enabled must be a boolean"):
+        main._build_review_targets()
+
+
+@pytest.mark.asyncio
+async def test_build_shutdown_event_registers_sigint_and_sigterm(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    registered = []
+
+    class FakeLoop:
+        def add_signal_handler(self, sig, callback, *args):
+            registered.append((sig, callback, args))
+
+    monkeypatch.setattr(main.asyncio, "get_running_loop", lambda: FakeLoop())
+
+    event = main._build_shutdown_event()
+
+    assert [item[0] for item in registered] == [main.signal.SIGINT, main.signal.SIGTERM]
+    assert event.is_set() is False
+    registered[1][1](*registered[1][2])
+    assert event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_safe_grouped_notification_swallows_delivery_failure(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    signals = [object()]
+    bot = SimpleNamespace(send_grouped_notification=AsyncMock(side_effect=RuntimeError("telegram down")))
+
+    await main._send_grouped_notification_safely(bot, chat_id=123, signals=signals, label="r/python")
+
+    bot.send_grouped_notification.assert_awaited_once_with(chat_id=123, signals=signals, label="r/python")
+
+
+@pytest.mark.asyncio
+async def test_safe_telegram_message_truncates_and_swallows_delivery_failure(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    telegram_bot = SimpleNamespace(send_message=AsyncMock(side_effect=RuntimeError("telegram down")))
+
+    await main._send_telegram_message_safely(
+        telegram_bot,
+        chat_id=123,
+        text="x" * 6000,
+        context="macro_trend",
+    )
+
+    sent_text = telegram_bot.send_message.await_args.kwargs["text"]
+    assert len(sent_text) <= 4096
+    assert "[truncated]" in sent_text
 
 
 @pytest.mark.asyncio
@@ -22,6 +139,8 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
 
+    import config
+    importlib.reload(config)
     main = importlib.import_module("main")
     main = importlib.reload(main)
     main.config.APP_MODE = "telegram"
@@ -318,10 +437,13 @@ async def test_run_wires_components_and_teardown(monkeypatch, tmp_path):
     assert pipeline.calls[-1] == ("python", 100)
     assert bot.scraper.kwargs["feed_mix"] == main.config.SCRAPER_FEED_MIX
     assert bot.scraper.kwargs["comment_fetch_concurrency"] == main.config.SCRAPER_COMMENT_FETCH_CONCURRENCY
+    assert bot.scraper.kwargs["max_response_bytes"] == main.config.SCRAPER_MAX_RESPONSE_BYTES
     assert bot.classifier.max_concurrency == main.config.CLASSIFIER_MAX_CONCURRENCY
     assert bot.classifier.screen_min_rule_score == main.config.SCREEN_MIN_RULE_SCORE
     assert isinstance(bot.classifier.dspy_parser, FakeDSPyParser)
     assert bot.classifier.dspy_parser.kwargs["provider"] == main.config.DSPY_PROVIDER
+    assert bot.classifier.dspy_parser.kwargs["timeout_seconds"] == main.config.DSPY_TIMEOUT_SECONDS
+    assert bot.classifier.dspy_parser.kwargs["budget_guard"] is not None
     assert FakeEmbedder.instances[0].kwargs["provider"] == main.config.EMBED_PROVIDER
     assert FakeOpenRouterClient.instances[0].kwargs["provider"] == main.config.LLM_PROVIDER
     assert FakeOpenRouterClient.instances[0].kwargs["reasoning_effort"] == main.config.LLM_REASONING_EFFORT
