@@ -81,7 +81,7 @@ Focused product/eval checks:
 - `pytest tests/test_evidence.py tests/test_rejected_noise.py tests/test_buyer_intelligence.py tests/test_competitor_radar.py tests/test_score_calibration.py tests/test_classifier.py tests/test_pipeline.py tests/test_eval_harness.py tests/test_db.py tests/test_digest_delivery.py tests/test_export_sheets.py tests/test_bot.py -q` -> `206 passed in 9.04s`
 - `ruff check .` -> passed before this report was written
 
-Final gate status will be updated after the last full verification, cleaner, and independent review pass.
+Final gate status is recorded below.
 
 ## Final Gate Results
 
@@ -94,7 +94,8 @@ Required local gates:
 - `python -m pip_audit -r requirements.txt` -> passed, `No known vulnerabilities found`
 - `python eval/run_eval.py --help` -> passed
 - `python eval/calibrate_score.py --help` -> passed
-- `git diff --check` -> passed, with only LF-to-CRLF working-copy warnings for README files
+- `git diff --check` -> passed, with only LF-to-CRLF working-copy warnings for README/doc/test files
+- Post-review fix gate: `pytest --cov=. --cov-fail-under=80 -q` -> passed, `442 passed`, total coverage `91.93%`
 
 Optional/local-environment checks:
 
@@ -111,7 +112,10 @@ Cleanup and independent review:
   - Findings: `fallback` and `workaround` occurrences were classified as domain evidence, tested compatibility/fail-safe behavior, usage accounting metadata, or test mocks
   - Masking fallback slop: none found
   - Post-cleaner verification: `ruff check .` passed; `mypy ...` passed; `git diff --check` passed with only LF-to-CRLF warnings; `pytest --cov=. --cov-fail-under=80 -q` passed with `441 passed`, coverage `91.93%`
-- independent `code-reviewer` and `architect` review -> pending
+- independent `code-reviewer` and `architect` review -> passed after fixes
+  - Initial code-reviewer result: `REQUEST CHANGES` for legacy `triage:favorite:reddit:abc123` callback parsing, plus docs label guidance drift
+  - Fix: commit `4d3bc0c` preserves source-prefixed legacy triage callback IDs, adds regression coverage, corrects `evidence_quality=exact_quote`, corrects `evidence_rejection_reason`, and discloses callback/session tradeoffs
+  - Re-check: code-reviewer `APPROVE`; architect `CLEAR`
 
 ## Residual Risks
 
