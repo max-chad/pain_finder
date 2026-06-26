@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import respx
 
-from embedder import Embedder
+from embedder import Embedder, _bow_embed, _embed_url_for_provider, _stable_token_bucket
 
 
 def _make_embedder(**kwargs):
@@ -21,6 +21,14 @@ def _make_embedder(**kwargs):
 def _unit_vector(dim: int) -> list[float]:
     """Return a simple L2-normalised vector for testing."""
     return [1.0 / math.sqrt(dim)] * dim
+
+
+def test_full_embeddings_api_base_is_not_double_suffixed():
+    assert (
+        _embed_url_for_provider("openai", "https://gateway.example/v1/embeddings")
+        == "https://gateway.example/v1/embeddings"
+    )
+    assert _embed_url_for_provider("openai", "https://gateway.example/v1") == "https://gateway.example/v1/embeddings"
 
 
 class TestOpenRouterEmbed:
@@ -55,6 +63,17 @@ class TestOpenRouterEmbed:
         assert result == embedding
 
     @respx.mock
+    async def test_provider_embedding_is_l2_normalized_for_cosine_dedup(self):
+        respx.post("https://openrouter.ai/api/v1/embeddings").mock(
+            return_value=httpx.Response(200, json={"data": [{"embedding": [3.0, 4.0]}]})
+        )
+        e = _make_embedder()
+
+        result = await e.embed("test text")
+
+        assert result == [0.6, 0.8]
+
+    @respx.mock
     async def test_fallback_to_st_on_http_error(self):
         """When OpenRouter returns 500, falls back to sentence-transformers."""
         respx.post("https://openrouter.ai/api/v1/embeddings").mock(
@@ -73,6 +92,32 @@ class TestOpenRouterEmbed:
             result = await e.embed("test text")
 
         assert result == fake_st_vec
+
+    @respx.mock
+    async def test_fallback_to_bow_on_oversized_provider_response(self):
+        respx.post("https://openrouter.ai/api/v1/embeddings").mock(
+            return_value=httpx.Response(200, content=b"x" * 17)
+        )
+        import sys
+
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            e = _make_embedder(max_response_bytes=16)
+            result = await e.embed("hello world hello")
+
+        assert result == _bow_embed("hello world hello")
+
+    @respx.mock
+    async def test_fallback_to_bow_on_malformed_provider_embedding(self):
+        respx.post("https://openrouter.ai/api/v1/embeddings").mock(
+            return_value=httpx.Response(200, json={"data": [{"embedding": ["not-a-number"]}]})
+        )
+        import sys
+
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            e = _make_embedder()
+            result = await e.embed("hello world hello")
+
+        assert result == _bow_embed("hello world hello")
 
     async def test_fallback_to_bow_when_st_not_installed(self):
         """Falls back to bag-of-words when sentence-transformers is unavailable."""
@@ -100,6 +145,15 @@ class TestOpenRouterEmbed:
         remote_mock.assert_not_called()
         assert isinstance(result, list)
         assert len(result) == 96
+
+    async def test_bow_embedding_uses_stable_token_buckets(self):
+        e = _make_embedder(provider="bow")
+        result = await e.embed("hello world hello")
+        direct = _bow_embed("hello world hello")
+
+        assert result == direct
+        assert _stable_token_bucket("hello", 96) == _stable_token_bucket("hello", 96)
+        assert result[_stable_token_bucket("hello", 96)] > result[_stable_token_bucket("world", 96)]
 
     @respx.mock
     async def test_embed_never_raises(self):

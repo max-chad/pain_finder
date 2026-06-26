@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -66,6 +67,8 @@ CREATE TABLE IF NOT EXISTS monitored_subreddits (
     name TEXT UNIQUE NOT NULL,
     interval_hours INTEGER NOT NULL,
     last_checked TEXT,
+    last_attempted_at TEXT,
+    last_error TEXT,
     active INTEGER DEFAULT 1
 )"""
 
@@ -204,6 +207,15 @@ CREATE TABLE IF NOT EXISTS gtm_assets (
     created_at TEXT DEFAULT (datetime('now'))
 )"""
 
+CREATE_SCHEDULED_JOB_STATUS = """
+CREATE TABLE IF NOT EXISTS scheduled_job_status (
+    job_name TEXT PRIMARY KEY,
+    last_attempted_at TEXT,
+    last_success_at TEXT,
+    last_error TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+)"""
+
 CREATE_SCHEMA_MIGRATIONS = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
@@ -281,6 +293,11 @@ ANALYSIS_RUN_COLUMNS = {
     "screen_capped_count": "INTEGER DEFAULT 0",
 }
 
+MONITORED_SUBREDDIT_COLUMNS = {
+    "last_attempted_at": "TEXT",
+    "last_error": "TEXT",
+}
+
 LLM_USAGE_EVENT_COLUMNS = {
     "prompt_hash": "TEXT",
     "fallback_reason": "TEXT",
@@ -324,6 +341,7 @@ class Database:
         await self._conn.execute(CREATE_RUNTIME_FLAGS)
         await self._conn.execute(CREATE_LLM_RESPONSE_CACHE)
         await self._conn.execute(CREATE_GTM_ASSETS)
+        await self._conn.execute(CREATE_SCHEDULED_JOB_STATUS)
         await self._conn.execute(CREATE_SCHEMA_MIGRATIONS)
 
         await self._run_migrations()
@@ -345,35 +363,40 @@ class Database:
             "2026_02_27_cross_source_dedup",
             "2026_04_22_source_context_and_opportunity_bucket",
         ]
+        for column_name, ddl in PAIN_POINT_COLUMNS.items():
+            await self._ensure_column("pain_points", column_name, ddl)
         for migration_name in pain_point_migrations:
-            if await self._is_migration_applied(migration_name):
-                continue
-            for column_name, ddl in PAIN_POINT_COLUMNS.items():
-                await self._ensure_column("pain_points", column_name, ddl)
-            await self._mark_migration_applied(migration_name)
+            if not await self._is_migration_applied(migration_name):
+                await self._mark_migration_applied(migration_name)
 
         analysis_run_migration = "2026_04_15_analysis_run_efficiency_metrics"
+        for column_name in ["skipped_existing_count", "dedup_merged_count"]:
+            await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
         if not await self._is_migration_applied(analysis_run_migration):
-            for column_name in ["skipped_existing_count", "dedup_merged_count"]:
-                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_migration)
 
         analysis_run_screening_migration = "2026_04_22_analysis_run_screening_metrics"
+        for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
+            await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
         if not await self._is_migration_applied(analysis_run_screening_migration):
-            for column_name in ["screen_rule_dropped_count", "screen_kept_count", "screen_capped_count"]:
-                await self._ensure_column("analysis_runs", column_name, ANALYSIS_RUN_COLUMNS[column_name])
             await self._mark_migration_applied(analysis_run_screening_migration)
 
+        monitored_observability_migration = "2026_05_25_monitored_subreddit_attempt_state"
+        for column_name, ddl in MONITORED_SUBREDDIT_COLUMNS.items():
+            await self._ensure_column("monitored_subreddits", column_name, ddl)
+        if not await self._is_migration_applied(monitored_observability_migration):
+            await self._mark_migration_applied(monitored_observability_migration)
+
         llm_usage_migration = "2026_04_22_llm_usage_lineage"
+        for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
+            await self._ensure_column("llm_usage_events", column_name, ddl)
         if not await self._is_migration_applied(llm_usage_migration):
-            for column_name, ddl in LLM_USAGE_EVENT_COLUMNS.items():
-                await self._ensure_column("llm_usage_events", column_name, ddl)
             await self._mark_migration_applied(llm_usage_migration)
 
         canonical_cluster_migration = "2026_04_22_canonical_pain_clusters"
+        for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
+            await self._ensure_column("macro_trend_clusters", column_name, ddl)
         if not await self._is_migration_applied(canonical_cluster_migration):
-            for column_name, ddl in MACRO_TREND_CLUSTER_COLUMNS.items():
-                await self._ensure_column("macro_trend_clusters", column_name, ddl)
             await self._mark_migration_applied(canonical_cluster_migration)
 
     async def _is_migration_applied(self, name: str) -> bool:
@@ -418,6 +441,33 @@ class Database:
             seen.add(clean)
             out.append(clean)
         return out
+
+    @staticmethod
+    def _finite_float(value: Any, field_name: str) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be a number") from exc
+        if not math.isfinite(parsed):
+            raise ValueError(f"{field_name} must be finite")
+        return parsed
+
+    @staticmethod
+    def _non_negative_int(value: Any, field_name: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field_name} must be a non-negative integer") from exc
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be non-negative")
+        return parsed
+
+    @staticmethod
+    def _json_dumps_strict(value: Any, field_name: str) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be valid JSON") from exc
 
     async def _replace_competitor_tags(self, post_id: str, tags: list[str]) -> None:
         await self._conn.execute("DELETE FROM pain_point_competitors WHERE post_id = ?", (post_id,))
@@ -494,7 +544,21 @@ class Database:
             if isinstance(item, str) and str(item).strip()
         ][:5]
         normalized_comment_tool_mentions = self._normalize_competitor_tags(comment_tool_mentions)
-        score_components_json = json.dumps(score_components or {}, ensure_ascii=False)
+        score_components_json = self._json_dumps_strict(score_components or {}, "score_components")
+        analysis_payload_json = (
+            self._json_dumps_strict(analysis_payload, "analysis_payload") if analysis_payload else None
+        )
+        emb_vector_json = self._json_dumps_strict(emb_vector, "emb_vector") if emb_vector is not None else None
+        buyer_authority_score_value = self._finite_float(buyer_authority_score, "buyer_authority_score")
+        workflow_frequency_score_value = self._finite_float(workflow_frequency_score, "workflow_frequency_score")
+        impact_score_value = self._finite_float(impact_score, "impact_score")
+        consensus_score_value = self._finite_float(consensus_score, "consensus_score")
+        incumbent_failure_score_value = self._finite_float(incumbent_failure_score, "incumbent_failure_score")
+        recency_score_value = self._finite_float(recency_score, "recency_score")
+        stale_penalty_value = self._finite_float(stale_penalty, "stale_penalty")
+        solved_penalty_value = self._finite_float(solved_penalty, "solved_penalty")
+        opportunity_score_value = self._finite_float(opportunity_score, "opportunity_score")
+        comment_shill_risk_value = self._finite_float(comment_shill_risk, "comment_shill_risk")
 
         try:
             await self._conn.execute(
@@ -581,32 +645,33 @@ class Database:
                     buyer_authority,
                     json.dumps(normalized_evidence_spans, ensure_ascii=False),
                     json.dumps(normalized_comment_sample, ensure_ascii=False),
-                    float(buyer_authority_score),
-                    float(workflow_frequency_score),
-                    float(impact_score),
-                    float(consensus_score),
-                    float(incumbent_failure_score),
-                    float(recency_score),
-                    float(stale_penalty),
-                    float(solved_penalty),
-                    float(opportunity_score),
+                    buyer_authority_score_value,
+                    workflow_frequency_score_value,
+                    impact_score_value,
+                    consensus_score_value,
+                    incumbent_failure_score_value,
+                    recency_score_value,
+                    stale_penalty_value,
+                    solved_penalty_value,
+                    opportunity_score_value,
                     score_components_json,
                     int(comment_consensus_count),
                     int(comment_same_here_count),
                     int(comment_workaround_count),
                     json.dumps(normalized_comment_tool_mentions, ensure_ascii=False),
-                    float(comment_shill_risk),
+                    comment_shill_risk_value,
                     triage_status,
                     analysis_mode,
                     deep_dive_status,
                     deep_dive_summary,
-                    json.dumps(analysis_payload, ensure_ascii=False) if analysis_payload else None,
-                    json.dumps(emb_vector) if emb_vector is not None else None,
+                    analysis_payload_json,
+                    emb_vector_json,
                 ),
             )
             await self._replace_competitor_tags(post_id, normalized_tags)
             await self._conn.commit()
         except Exception as e:
+            await self._conn.rollback()
             logger.error("Failed to insert pain point %s: %s", post_id, e)
             raise
 
@@ -624,9 +689,10 @@ class Database:
             return dict(row) if row else None
 
     async def store_embedding(self, post_id: str, emb_vector: list[float]) -> None:
+        emb_vector_json = self._json_dumps_strict(emb_vector, "emb_vector")
         await self._conn.execute(
             "UPDATE pain_points SET emb_vector = ? WHERE post_id = ?",
-            (json.dumps(emb_vector), post_id),
+            (emb_vector_json, post_id),
         )
         await self._conn.commit()
 
@@ -674,26 +740,48 @@ class Database:
             logger.warning("merge_duplicate: canonical %s not found", canonical_post_id)
             return
 
+        async with self._conn.execute(
+            "SELECT triage_status, deep_dive_status, deep_dive_summary FROM pain_points WHERE post_id = ?",
+            (dup_post_id,),
+        ) as cursor:
+            dup_row = await cursor.fetchone()
+
         current_ids: list[str] = json.loads(row["cross_source_ids"] or "[]")
         should_increment_count = dup_post_id not in current_ids
         if should_increment_count:
             current_ids.append(dup_post_id)
+        promote_favorite = bool(dup_row and dup_row["triage_status"] == "favorite")
+        promote_completed_deep_dive = bool(dup_row and dup_row["deep_dive_status"] == "completed")
+        duplicate_deep_dive_summary = dup_row["deep_dive_summary"] if dup_row else None
+        cross_source_ids_json = self._json_dumps_strict(current_ids, "cross_source_ids")
+        dup_emb_vector_json = self._json_dumps_strict(dup_emb_vector, "emb_vector")
 
         try:
-            if should_increment_count:
-                await self._conn.execute(
-                    "UPDATE pain_points SET cross_source_count = cross_source_count + 1, "
-                    "cross_source_ids = ? WHERE post_id = ?",
-                    (json.dumps(current_ids), canonical_post_id),
-                )
-            else:
-                await self._conn.execute(
-                    "UPDATE pain_points SET cross_source_ids = ? WHERE post_id = ?",
-                    (json.dumps(current_ids), canonical_post_id),
-                )
+            await self._conn.execute(
+                "UPDATE pain_points SET cross_source_count = cross_source_count + ?, "
+                "cross_source_ids = ?, "
+                "triage_status = CASE WHEN ? THEN 'favorite' ELSE triage_status END, "
+                "deep_dive_status = CASE "
+                "WHEN ? AND deep_dive_status != 'completed' THEN 'completed' "
+                "ELSE deep_dive_status END, "
+                "deep_dive_summary = CASE "
+                "WHEN ? AND (deep_dive_status != 'completed' OR deep_dive_summary IS NULL) "
+                "THEN COALESCE(?, deep_dive_summary) "
+                "ELSE deep_dive_summary END "
+                "WHERE post_id = ?",
+                (
+                    int(should_increment_count),
+                    cross_source_ids_json,
+                    int(promote_favorite),
+                    int(promote_completed_deep_dive),
+                    int(promote_completed_deep_dive),
+                    duplicate_deep_dive_summary,
+                    canonical_post_id,
+                ),
+            )
             await self._conn.execute(
                 "UPDATE pain_points SET emb_vector = ?, triage_status = 'merged' WHERE post_id = ?",
-                (json.dumps(dup_emb_vector), dup_post_id),
+                (dup_emb_vector_json, dup_post_id),
             )
             await self._conn.commit()
         except Exception:
@@ -721,6 +809,7 @@ class Database:
             JOIN pain_point_competitors c ON c.post_id = p.post_id
             WHERE c.competitor_tag = ?
               AND datetime(p.created_at) >= datetime('now', ?)
+              AND p.triage_status NOT IN ('discarded', 'merged')
             ORDER BY p.willingness_to_pay DESC, p.pain_level DESC
             LIMIT ?
             """,
@@ -736,6 +825,7 @@ class Database:
             FROM pain_point_competitors c
             JOIN pain_points p ON p.post_id = c.post_id
             WHERE datetime(p.created_at) >= datetime('now', ?)
+              AND p.triage_status NOT IN ('discarded', 'merged')
             GROUP BY c.competitor_tag
             ORDER BY mention_count DESC
             LIMIT ?
@@ -781,7 +871,7 @@ class Database:
     ) -> None:
         if status not in DEEP_DIVE_STATUSES:
             raise ValueError(f"Unsupported deep dive status: {status}")
-        payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else None
+        payload_json = self._json_dumps_strict(payload, "deep-dive payload") if payload is not None else None
         await self._conn.execute(
             """
             INSERT INTO deep_dives (post_id, subreddit, source, status, payload_json, error)
@@ -834,7 +924,10 @@ class Database:
             params.append(min_wtp)
 
         query = "SELECT * FROM pain_points WHERE " + " AND ".join(conditions)  # nosec B608
-        query += " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, willingness_to_pay DESC, pain_level DESC, created_at DESC"  # nosec B608
+        query += (
+            " ORDER BY CASE WHEN triage_status = 'favorite' THEN 0 ELSE 1 END, "
+            "opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, created_at DESC"
+        )  # nosec B608
         async with self._conn.execute(query, tuple(params)) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -882,9 +975,14 @@ class Database:
             return int(cursor.lastrowid)
 
     async def create_macro_trend_run(self, *, window_days: int, candidate_count: int, cluster_count: int) -> int:
+        window_days_value = self._non_negative_int(window_days, "window_days")
+        if window_days_value <= 0:
+            raise ValueError("window_days must be positive")
+        candidate_count_value = self._non_negative_int(candidate_count, "candidate_count")
+        cluster_count_value = self._non_negative_int(cluster_count, "cluster_count")
         async with self._conn.execute(
             "INSERT INTO macro_trend_runs (window_days, candidate_count, cluster_count) VALUES (?, ?, ?)",
-            (window_days, candidate_count, cluster_count),
+            (window_days_value, candidate_count_value, cluster_count_value),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
@@ -908,39 +1006,58 @@ class Database:
         latest_source_created_ts: int | None = None,
         members: list[tuple[str, float]],
     ) -> int:
-        async with self._conn.execute(
-            """
-            INSERT INTO macro_trend_clusters (
-                run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
-                item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
-                median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                canonical_key,
-                cluster_key,
-                label,
-                summary,
-                estimated_monetization_signal,
-                item_count,
-                aggregate_wtp,
-                fresh_post_count,
-                evergreen_post_count,
-                median_buyer_authority,
-                json.dumps(incumbents or [], ensure_ascii=False),
-                avg_opportunity_score,
-                latest_source_created_ts,
-            ),
-        ) as cursor:
-            cluster_id = int(cursor.lastrowid)
-        for post_id, similarity in members:
-            await self._conn.execute(
-                "INSERT INTO macro_trend_members (run_id, cluster_id, post_id, similarity) VALUES (?, ?, ?, ?)",
-                (run_id, cluster_id, post_id, similarity),
-            )
-        await self._conn.commit()
-        return cluster_id
+        item_count_value = self._non_negative_int(item_count, "item_count")
+        aggregate_wtp_value = self._finite_float(aggregate_wtp, "aggregate_wtp")
+        fresh_post_count_value = self._non_negative_int(fresh_post_count, "fresh_post_count")
+        evergreen_post_count_value = self._non_negative_int(evergreen_post_count, "evergreen_post_count")
+        median_buyer_authority_value = self._finite_float(median_buyer_authority, "median_buyer_authority")
+        avg_opportunity_score_value = self._finite_float(avg_opportunity_score, "avg_opportunity_score")
+        latest_source_created_ts_value = (
+            None
+            if latest_source_created_ts is None
+            else self._non_negative_int(latest_source_created_ts, "latest_source_created_ts")
+        )
+        member_rows = [
+            (post_id, self._finite_float(similarity, "member similarity"))
+            for post_id, similarity in members
+        ]
+        try:
+            async with self._conn.execute(
+                """
+                INSERT INTO macro_trend_clusters (
+                    run_id, canonical_key, cluster_key, label, summary, estimated_monetization_signal,
+                    item_count, aggregate_wtp, fresh_post_count, evergreen_post_count,
+                    median_buyer_authority, incumbents_json, avg_opportunity_score, latest_source_created_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    canonical_key,
+                    cluster_key,
+                    label,
+                    summary,
+                    estimated_monetization_signal,
+                    item_count_value,
+                    aggregate_wtp_value,
+                    fresh_post_count_value,
+                    evergreen_post_count_value,
+                    median_buyer_authority_value,
+                    json.dumps(incumbents or [], ensure_ascii=False),
+                    avg_opportunity_score_value,
+                    latest_source_created_ts_value,
+                ),
+            ) as cursor:
+                cluster_id = int(cursor.lastrowid)
+            for post_id, similarity in member_rows:
+                await self._conn.execute(
+                    "INSERT INTO macro_trend_members (run_id, cluster_id, post_id, similarity) VALUES (?, ?, ?, ?)",
+                    (run_id, cluster_id, post_id, similarity),
+                )
+            await self._conn.commit()
+            return cluster_id
+        except Exception:
+            await self._conn.rollback()
+            raise
 
     async def get_latest_macro_trend_run(self) -> dict[str, Any] | None:
         async with self._conn.execute("SELECT * FROM macro_trend_runs ORDER BY created_at DESC, id DESC LIMIT 1") as cursor:
@@ -1058,7 +1175,7 @@ class Database:
             WHERE datetime(created_at) >= datetime('now', ?)
               AND triage_status NOT IN ('discarded', 'merged')
               AND (triage_status = 'favorite' OR willingness_to_pay >= ?)
-            ORDER BY willingness_to_pay DESC, pain_level DESC, created_at DESC
+            ORDER BY opportunity_score DESC, willingness_to_pay DESC, pain_level DESC, created_at DESC
             """,
             (f"-{window_days} days", min_wtp),
         ) as cursor:
@@ -1122,6 +1239,10 @@ class Database:
         request_path: str | None = None,
         candidate_stage: str | None = None,
     ) -> int:
+        if prompt_tokens < 0 or completion_tokens < 0:
+            raise ValueError("token counts must be non-negative")
+        if not math.isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError("cost_usd must be finite and non-negative")
         async with self._conn.execute(
             """
             INSERT INTO llm_usage_events (
@@ -1171,7 +1292,7 @@ class Database:
         operation: str,
         payload: dict[str, Any],
     ) -> None:
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        payload_json = self._json_dumps_strict(payload, "cached LLM payload")
         await self._conn.execute(
             """
             INSERT INTO llm_response_cache (cache_key, model, operation, payload_json)
@@ -1241,9 +1362,10 @@ class Database:
         return True
 
     async def save_gtm_asset(self, *, post_id: str, model: str, payload: dict[str, Any]) -> int:
+        payload_json = self._json_dumps_strict(payload, "GTM payload")
         async with self._conn.execute(
             "INSERT INTO gtm_assets (post_id, model, payload_json) VALUES (?, ?, ?)",
-            (post_id, model, json.dumps(payload, ensure_ascii=False)),
+            (post_id, model, payload_json),
         ) as cursor:
             await self._conn.commit()
             return int(cursor.lastrowid)
@@ -1269,9 +1391,12 @@ class Database:
         }
 
     async def add_monitored_subreddit(self, name: str, interval_hours: int) -> None:
+        interval_hours_value = self._non_negative_int(interval_hours, "interval_hours")
+        if interval_hours_value <= 0:
+            raise ValueError("interval_hours must be positive")
         await self._conn.execute(
             "INSERT INTO monitored_subreddits (name, interval_hours) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET interval_hours = excluded.interval_hours, active = 1",
-            (name, interval_hours),
+            (name, interval_hours_value),
         )
         await self._conn.commit()
 
@@ -1286,8 +1411,59 @@ class Database:
 
     async def update_last_checked(self, name: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        await self._conn.execute("UPDATE monitored_subreddits SET last_checked = ? WHERE name = ?", (now, name))
+        await self._conn.execute(
+            "UPDATE monitored_subreddits SET last_checked = ?, last_attempted_at = ?, last_error = NULL WHERE name = ?",
+            (now, now, name),
+        )
         await self._conn.commit()
+
+    async def mark_monitor_failed(self, name: str, error: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "UPDATE monitored_subreddits SET last_attempted_at = ?, last_error = ? WHERE name = ?",
+            (now, error[:1000], name),
+        )
+        await self._conn.commit()
+
+    async def mark_scheduled_job_success(self, job_name: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            """
+            INSERT INTO scheduled_job_status (
+                job_name, last_attempted_at, last_success_at, last_error, updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?)
+            ON CONFLICT(job_name) DO UPDATE SET
+                last_attempted_at = excluded.last_attempted_at,
+                last_success_at = excluded.last_success_at,
+                last_error = NULL,
+                updated_at = excluded.updated_at
+            """,
+            (job_name, now, now, now),
+        )
+        await self._conn.commit()
+
+    async def mark_scheduled_job_failure(self, job_name: str, error: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            """
+            INSERT INTO scheduled_job_status (
+                job_name, last_attempted_at, last_success_at, last_error, updated_at
+            )
+            VALUES (?, ?, NULL, ?, ?)
+            ON CONFLICT(job_name) DO UPDATE SET
+                last_attempted_at = excluded.last_attempted_at,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            (job_name, now, error[:1000], now),
+        )
+        await self._conn.commit()
+
+    async def get_scheduled_job_statuses(self) -> list[dict[str, Any]]:
+        async with self._conn.execute("SELECT * FROM scheduled_job_status ORDER BY job_name") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def save_report(self, *, subreddit: str, post_count: int, pain_count: int, json_path: str) -> int:
         async with self._conn.execute(

@@ -1,4 +1,5 @@
 ﻿import importlib
+from pathlib import Path
 
 
 def test_config_loads_required_environment(monkeypatch):
@@ -26,8 +27,11 @@ def test_config_loads_required_environment(monkeypatch):
     monkeypatch.setenv("SCRAPER_COMMENT_FETCH_CONCURRENCY", "3")
     monkeypatch.setenv("SCRAPER_RETRY_MAX_ATTEMPTS", "6")
     monkeypatch.setenv("SCRAPER_RETRY_BASE_DELAY", "1.5")
+    monkeypatch.setenv("SCRAPER_MAX_RESPONSE_BYTES", "4096")
     monkeypatch.setenv("SCRAPER_FEED_MIX_JSON", '["new", "top"]')
     monkeypatch.setenv("SCRAPER_SEARCH_QUERIES_JSON", '["manual process", "spreadsheet workaround"]')
+    monkeypatch.setenv("HN_MAX_RESPONSE_BYTES", "8192")
+    monkeypatch.setenv("REVIEWS_MAX_HTML_BYTES", "16384")
     monkeypatch.setenv("EXPORT_MIN_WTP", "7")
     monkeypatch.setenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "{}")
     monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
@@ -75,8 +79,11 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.SCRAPER_COMMENT_FETCH_CONCURRENCY == 3
     assert config_module.SCRAPER_RETRY_MAX_ATTEMPTS == 6
     assert config_module.SCRAPER_RETRY_BASE_DELAY == 1.5
+    assert config_module.SCRAPER_MAX_RESPONSE_BYTES == 4096
     assert config_module.SCRAPER_FEED_MIX == ["new", "top"]
     assert config_module.SCRAPER_SEARCH_QUERIES == ["manual process", "spreadsheet workaround"]
+    assert config_module.HN_MAX_RESPONSE_BYTES == 8192
+    assert config_module.REVIEWS_MAX_HTML_BYTES == 16384
     assert config_module.EXPORT_MIN_WTP == 7
     assert config_module.GOOGLE_SHEETS_CREDENTIALS_JSON == "{}"
     assert config_module.GOOGLE_SHEETS_SPREADSHEET_ID == "sheet-id"
@@ -96,4 +103,378 @@ def test_config_loads_required_environment(monkeypatch):
     assert config_module.DSPY_MODEL == "gpt-5.3-spark"
     assert config_module.DSPY_REASONING_EFFORT == "high"
     assert config_module.DSPY_API_KEY == "test-key"
+    assert config_module.DSPY_TIMEOUT_SECONDS == 60.0
 
+
+def test_env_example_documents_recency_knobs():
+    example_text = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "CURRENT_OPPORTUNITY_MAX_AGE_DAYS=180" in example_text
+    assert "EVERGREEN_MAX_AGE_DAYS=365" in example_text
+
+
+def test_ignore_files_exclude_env_variants_but_keep_example():
+    for path in [Path(".gitignore"), Path(".dockerignore")]:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert ".env" in lines
+        assert ".env.*" in lines
+        assert "!.env.example" in lines
+        assert lines.index(".env.*") < lines.index("!.env.example")
+
+
+def test_dspy_parser_is_disabled_by_default(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.delenv("DSPY_REDDIT_PARSER_ENABLED", raising=False)
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.DSPY_REDDIT_PARSER_ENABLED is False
+
+
+def test_config_uses_legacy_llm_key_when_primary_key_is_blank(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", " ")
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.LLM_API_KEY == "legacy-key"
+    assert config_module.EMBED_API_KEY == "legacy-key"
+
+
+def test_config_rejects_blank_required_credentials(monkeypatch):
+    import pytest
+
+    cases = [
+        (
+            {"TELEGRAM_BOT_TOKEN": " ", "TELEGRAM_CHAT_ID": "123", "LLM_API_KEY": "test-key"},
+            "TELEGRAM_BOT_TOKEN",
+        ),
+        (
+            {
+                "TELEGRAM_BOT_TOKEN": "test-token",
+                "TELEGRAM_CHAT_ID": "123",
+                "LLM_API_KEY": " ",
+                "OPENAI_API_KEY": " ",
+                "OPENROUTER_API_KEY": " ",
+            },
+            "LLM_API_KEY",
+        ),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_values, expected_key in cases:
+        for env_name, env_value in env_values.items():
+            monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(KeyError, match=expected_key):
+            importlib.reload(config_module)
+        for env_name in env_values:
+            monkeypatch.delenv(env_name, raising=False)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        config_module = importlib.reload(config_module)
+
+
+def test_config_rejects_invalid_telegram_chat_id(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "your_chat_id_here")
+    with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID must be an integer"):
+        importlib.reload(config_module)
+
+
+def test_config_rejects_invalid_boolean_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("DSPY_REDDIT_PARSER_ENABLED", "treu"),
+        ("DIGEST_DELIVERY_ENABLED", "enabled"),
+        ("MACRO_TREND_ENABLED", ""),
+        ("HN_ENABLED", "flase"),
+        ("REVIEWS_ENABLED", "maybe"),
+        ("GTM_ENABLED", "2"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(
+            ValueError,
+            match=f"{env_name} must be a boolean: 1/0, true/false, on/off, or yes/no",
+        ):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+
+
+def test_config_rejects_invalid_enum_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("APP_MODE", "telegrm", "APP_MODE must be one of: hermes, telegram"),
+        ("CLASSIFIER_MODE", "strict", "CLASSIFIER_MODE must be one of: b2b, dual, legacy"),
+        ("DIGEST_GROUP_BY", "team", "DIGEST_GROUP_BY must be one of: category, niche, source"),
+        ("LLM_PROVIDER", "opena1", "LLM_PROVIDER must be one of: codex, openai, openai-codex, openrouter"),
+        ("EMBED_PROVIDER", "opena1", "EMBED_PROVIDER must be one of: bow, codex, disabled, hash, none, openai, openrouter"),
+        ("DSPY_PROVIDER", "opena1", "DSPY_PROVIDER must be one of: codex, openai, openrouter"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+
+
+def test_openai_codex_llm_defaults_embedding_and_dspy_to_codex(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "openai-codex")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("EMBED_PROVIDER", raising=False)
+    monkeypatch.delenv("DSPY_PROVIDER", raising=False)
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.LLM_PROVIDER == "openai-codex"
+    assert config_module.LLM_MODEL == "gpt-5.3-spark"
+    assert config_module.LLM_TEMPERATURE == 1.0
+    assert config_module.LLM_MAX_TOKENS == 16000
+    assert config_module.EMBED_PROVIDER == "codex"
+    assert config_module.DSPY_PROVIDER == "codex"
+
+
+def test_config_rejects_invalid_enabled_source_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        (
+            {"SCRAPER_FEED_MIX_JSON": '["neww"]'},
+            "SCRAPER_FEED_MIX_JSON must contain only supported feeds: new, rising, top",
+        ),
+        (
+            {"HN_ENABLED": "1", "HN_KEYWORDS_JSON": "[]"},
+            "HN_KEYWORDS_JSON must contain at least one non-empty keyword when HN_ENABLED=1",
+        ),
+        (
+            {"REVIEWS_ENABLED": "1", "REVIEW_TARGETS_JSON": "[]"},
+            "REVIEW_TARGETS_JSON must contain at least one enabled target with site, name, and url when REVIEWS_ENABLED=1",
+        ),
+        (
+            {"REVIEWS_ENABLED": "1", "REVIEW_TARGETS_JSON": '[{"site":"g2","name":"A"}]'},
+            "REVIEW_TARGETS_JSON must contain at least one enabled target with site, name, and url when REVIEWS_ENABLED=1",
+        ),
+        (
+            {"REVIEWS_ENABLED": "1", "REVIEW_TARGETS_JSON": '[{"site":"g2","name":"A","url":"u1"}]'},
+            "REVIEW_TARGETS_JSON enabled target URLs must be public http or https URLs",
+        ),
+        (
+            {"REVIEWS_ENABLED": "1", "REVIEW_TARGETS_JSON": '[{"site":"g2","name":"A","url":"http://127.0.0.1/reviews"}]'},
+            "REVIEW_TARGETS_JSON enabled target URLs must be public http or https URLs",
+        ),
+        (
+            {"REVIEW_TARGETS_JSON": '[{"site":"g2","name":"A","url":"https://example.com/reviews","enabled":"flase"}]'},
+            "REVIEW_TARGETS_JSON target enabled must be a boolean: 1/0, true/false, on/off, or yes/no",
+        ),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_values, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        for env_name, env_value in env_values.items():
+            monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        for env_name in env_values:
+            monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+
+
+def test_config_loads_valid_enabled_source_environment(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("HN_ENABLED", "1")
+    monkeypatch.setenv("HN_KEYWORDS_JSON", '["manual process"]')
+    monkeypatch.setenv("REVIEWS_ENABLED", "1")
+    monkeypatch.setenv(
+        "REVIEW_TARGETS_JSON",
+        '[{"site":"g2","name":"Example CRM","url":"https://example.com/reviews","enabled":true}]',
+    )
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.HN_ENABLED is True
+    assert config_module.HN_KEYWORDS == ["manual process"]
+    assert config_module.REVIEWS_ENABLED is True
+    assert config_module.REVIEW_TARGETS[0]["name"] == "Example CRM"
+
+
+def test_config_rejects_invalid_scheduler_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("DIGEST_HOUR_UTC", "24", "DIGEST_HOUR_UTC must be between 0 and 23"),
+        ("DIGEST_MINUTE_UTC", "60", "DIGEST_MINUTE_UTC must be between 0 and 59"),
+        ("MACRO_TREND_WEEKDAY_UTC", "funday", "MACRO_TREND_WEEKDAY_UTC must be one of: fri, mon, sat, sun, thu, tue, wed"),
+        ("MACRO_TREND_HOUR_UTC", "-1", "MACRO_TREND_HOUR_UTC must be between 0 and 23"),
+        ("HN_INTERVAL_HOURS", "0", "HN_INTERVAL_HOURS must be at least 1"),
+        ("REVIEWS_INTERVAL_HOURS", "0", "REVIEWS_INTERVAL_HOURS must be at least 1"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv(env_name, env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv(env_name)
+        config_module = importlib.reload(config_module)
+
+
+def test_config_rejects_invalid_numeric_runtime_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("LLM_MAX_TOKENS", "0", "LLM_MAX_TOKENS must be at least 1"),
+        ("PRIMARY_MAX_OUTPUT_TOKENS", "0", "PRIMARY_MAX_OUTPUT_TOKENS must be at least 1"),
+        (
+            {"LLM_MAX_TOKENS": "100", "PRIMARY_MAX_OUTPUT_TOKENS": "101"},
+            None,
+            "PRIMARY_MAX_OUTPUT_TOKENS must be less than or equal to LLM_MAX_TOKENS",
+        ),
+        ("CLASSIFIER_MAX_CONCURRENCY", "0", "CLASSIFIER_MAX_CONCURRENCY must be at least 1"),
+        ("DEDUP_SIMILARITY_THRESHOLD", "1.5", "DEDUP_SIMILARITY_THRESHOLD must be between 0 and 1"),
+        ("TREND_CLUSTER_SIMILARITY", "-0.1", "TREND_CLUSTER_SIMILARITY must be between 0 and 1"),
+        ("DIGEST_HOURS", "169", "DIGEST_HOURS must be between 1 and 168"),
+        ("REVIEWS_MAX_PER_TARGET", "0", "REVIEWS_MAX_PER_TARGET must be at least 1"),
+        ("SCRAPER_MAX_RESPONSE_BYTES", "1023", "SCRAPER_MAX_RESPONSE_BYTES must be at least 1024"),
+        ("HN_MAX_RESPONSE_BYTES", "1023", "HN_MAX_RESPONSE_BYTES must be at least 1024"),
+        ("REVIEWS_MAX_HTML_BYTES", "1023", "REVIEWS_MAX_HTML_BYTES must be at least 1024"),
+        ("DSPY_TIMEOUT_SECONDS", "0", "DSPY_TIMEOUT_SECONDS must be at least 0.1"),
+        ("DAILY_BUDGET_USD", "-0.01", "DAILY_BUDGET_USD must be at least 0"),
+        ("DAILY_BUDGET_USD", "nan", "DAILY_BUDGET_USD must be finite"),
+        ("LLM_TEMPERATURE", "inf", "LLM_TEMPERATURE must be finite"),
+        ("TREND_CLUSTER_SIMILARITY", "nan", "TREND_CLUSTER_SIMILARITY must be finite"),
+        ("DEDUP_SIMILARITY_THRESHOLD", "inf", "DEDUP_SIMILARITY_THRESHOLD must be finite"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_name, env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        env_names = [env_name] if isinstance(env_name, str) else list(env_name)
+        if isinstance(env_name, str):
+            monkeypatch.setenv(env_name, env_value)
+        else:
+            for key, value in env_name.items():
+                monkeypatch.setenv(key, value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        for key in env_names:
+            monkeypatch.delenv(key)
+        config_module = importlib.reload(config_module)
+
+
+def test_config_rejects_invalid_model_pricing_environment(monkeypatch):
+    import pytest
+
+    cases = [
+        ("{", "LLM_MODEL_PRICING_JSON must be a valid JSON object"),
+        ("[]", "LLM_MODEL_PRICING_JSON must be a JSON object"),
+        ('{"m1": 1}', "LLM_MODEL_PRICING_JSON must map model names to pricing objects"),
+        ('{"m1": {"prompt_per_1k": "free"}}', "LLM_MODEL_PRICING_JSON price values must be numbers"),
+        ('{"m1": {"completion_per_1k": -0.01}}', "LLM_MODEL_PRICING_JSON price values must be non-negative"),
+        ('{"m1": {"prompt_per_1k": "nan"}}', "LLM_MODEL_PRICING_JSON price values must be finite"),
+        ('{"m1": {"completion_per_1k": "inf"}}', "LLM_MODEL_PRICING_JSON price values must be finite"),
+    ]
+    config_module = importlib.import_module("config")
+
+    for env_value, expected_message in cases:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("LLM_MODEL_PRICING_JSON", env_value)
+        with pytest.raises(ValueError, match=expected_message):
+            importlib.reload(config_module)
+        monkeypatch.delenv("LLM_MODEL_PRICING_JSON")
+        config_module = importlib.reload(config_module)
+
+
+def test_config_normalizes_model_pricing_environment(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "LLM_MODEL_PRICING_JSON",
+        '{"m1": {"prompt_per_1k": "0.002", "completion_per_1k": 0.004}}',
+    )
+
+    config_module = importlib.import_module("config")
+    config_module = importlib.reload(config_module)
+
+    assert config_module.LLM_MODEL_PRICING == {"m1": {"prompt_per_1k": 0.002, "completion_per_1k": 0.004}}
+
+
+def test_env_example_lists_operational_limit_knobs():
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+
+    for key in [
+        "SCRAPER_MAX_RESPONSE_BYTES=",
+        "HN_MAX_RESPONSE_BYTES=",
+        "REVIEWS_MAX_HTML_BYTES=",
+        "DSPY_TIMEOUT_SECONDS=",
+    ]:
+        assert key in env_example
+
+
+def test_readme_requires_optional_dspy_dependency_audit():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    requirements_dspy = Path("requirements-dspy.txt").read_text(encoding="utf-8")
+
+    assert "python -m pip_audit -r requirements-dspy.txt" in readme
+    assert "DSPY_REDDIT_PARSER_ENABLED=0" in readme
+    assert "fail-closed" in readme
+    assert "CVE-2025-69872" in readme
+    assert "\ndspy" not in requirements_dspy.lower()
+
+
+def test_readme_smoke_collect_all_documents_review_target_requirement():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "python smoke_collect.py --source all --limit 5\n```" not in readme
+    assert "only after configuring `REVIEW_TARGETS_JSON`" in readme
+    assert "python smoke_collect.py --source reddit --subreddit python --limit 5" in readme
+    assert "python smoke_collect.py --source hn --hn-keyword \"manual process\" --limit 5" in readme

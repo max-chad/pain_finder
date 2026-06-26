@@ -1,5 +1,6 @@
 ﻿import asyncio
 import html
+import json
 import logging
 import math
 import random
@@ -17,9 +18,12 @@ logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 ALLOWED_FEEDS = {"top", "new", "rising"}
 DEFAULT_FEEDS = ("top",)
+MAX_REDDIT_RESPONSE_BYTES = 5_000_000
+MAX_REDDIT_RETRY_DELAY_SECONDS = 60.0
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 REDDIT_COMMENT_PATH_RE = re.compile(r"/comments/([A-Za-z0-9_]+)/")
+SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 
 
 @dataclass
@@ -51,6 +55,7 @@ class RedditScraper:
         retry_base_delay: float = 1.0,
         feed_mix: list[str] | tuple[str, ...] | None = None,
         search_queries: list[str] | tuple[str, ...] | None = None,
+        max_response_bytes: int = MAX_REDDIT_RESPONSE_BYTES,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -59,6 +64,7 @@ class RedditScraper:
         self.comment_fetch_concurrency = max(1, comment_fetch_concurrency)
         self.retry_max_attempts = max(1, retry_max_attempts)
         self.retry_base_delay = max(0.1, retry_base_delay)
+        self.max_response_bytes = max(1, max_response_bytes)
         self._use_praw = bool(client_id and client_secret)
         self.feed_mix = self._normalize_feeds(feed_mix)
         self.search_queries = self._normalize_search_queries(search_queries)
@@ -66,6 +72,7 @@ class RedditScraper:
         self._oauth_token_expires_at = 0.0
 
     async def fetch_posts(self, subreddit: str, limit: int = 100, timeframe: str = "day") -> list[Post]:
+        subreddit = self._validate_subreddit(subreddit)
         if self._use_praw:
             try:
                 return await self._fetch_praw(subreddit, limit, timeframe)
@@ -87,6 +94,7 @@ class RedditScraper:
         post_id: str,
         max_comments: int = 250,
     ) -> list[str]:
+        subreddit = self._validate_subreddit(subreddit)
         max_comments = max(1, max_comments)
         if self._use_praw:
             try:
@@ -110,6 +118,13 @@ class RedditScraper:
         if ":" in post_id:
             return post_id.split(":", 1)[1]
         return post_id
+
+    @staticmethod
+    def _validate_subreddit(raw: str) -> str:
+        subreddit = str(raw or "").strip()
+        if not SUBREDDIT_RE.fullmatch(subreddit):
+            raise ValueError("Invalid subreddit. Use letters, numbers, and underscores only.")
+        return subreddit.lower()
 
     @staticmethod
     def _normalize_feeds(feed_mix: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -164,6 +179,8 @@ class RedditScraper:
 
     @staticmethod
     def _build_post(subreddit: str, post_data: dict[str, Any], *, discovery_query: str = "") -> Post | None:
+        if not isinstance(post_data, dict):
+            return None
         post_id = post_data.get("id")
         if not post_id:
             return None
@@ -180,7 +197,7 @@ class RedditScraper:
             title=post_data.get("title", ""),
             body=post_data.get("selftext", ""),
             url=full_url,
-            score=int(post_data.get("score", 0) or 0),
+            score=RedditScraper._safe_int(post_data.get("score", 0)),
             permalink=permalink,
             discovery_query=discovery_query,
             source_created_at=source_created_at,
@@ -193,13 +210,89 @@ class RedditScraper:
         if raw_ts in {None, ""}:
             return None, None
         try:
-            ts = int(float(raw_ts))
-        except (TypeError, ValueError):
+            numeric_ts = float(raw_ts)
+            if not math.isfinite(numeric_ts):
+                return None, None
+            ts = int(numeric_ts)
+        except (TypeError, ValueError, OverflowError):
             return None, None
         if ts <= 0:
             return None, None
-        dt = datetime.fromtimestamp(ts, UTC)
+        try:
+            dt = datetime.fromtimestamp(ts, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None, None
         return dt.isoformat(), ts
+
+    @staticmethod
+    def _safe_int(raw_value: Any, default: int = 0) -> int:
+        try:
+            return int(raw_value or default)
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    @staticmethod
+    def _decode_response_content(response: httpx.Response) -> str:
+        return response.content.decode(response.encoding or "utf-8", errors="replace")
+
+    async def _request_with_response_limit(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        auth: tuple[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 20,
+    ) -> httpx.Response:
+        async with client.stream(
+            method,
+            url,
+            params=params,
+            data=data,
+            auth=auth,
+            headers=headers,
+            timeout=timeout,
+        ) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > self.max_response_bytes:
+                    raise RuntimeError(f"Reddit response exceeded {self.max_response_bytes} bytes")
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+                extensions=response.extensions,
+            )
+
+    @staticmethod
+    def _listing_children(payload: Any, index: int = 1) -> list[Any]:
+        if not isinstance(payload, list) or len(payload) <= index:
+            return []
+        listing = payload[index]
+        if not isinstance(listing, dict):
+            return []
+        data = listing.get("data", {})
+        if not isinstance(data, dict):
+            return []
+        children = data.get("children", [])
+        return children if isinstance(children, list) else []
+
+    @staticmethod
+    def _post_listing_children(payload: Any) -> list[Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+        children = data.get("children")
+        if not isinstance(children, list):
+            return None
+        return children
 
     @staticmethod
     def _parse_datetime_text(raw_text: str) -> tuple[str | None, int | None]:
@@ -423,40 +516,72 @@ class RedditScraper:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
             feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+            feed_error: Exception | None = None
 
             async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
+                nonlocal feed_error
                 url = f"https://www.reddit.com/r/{subreddit}/{feed}.json"
-                return await self._request_json_with_retries(
-                    client=client,
-                    url=url,
-                    params=params,
-                    headers=headers,
-                )
+                try:
+                    return await self._request_json_with_retries(
+                        client=client,
+                        url=url,
+                        params=params,
+                        headers=headers,
+                    )
+                except Exception as e:
+                    feed_error = e
+                    logger.warning("Reddit public feed failed for r/%s feed=%s: %s", subreddit, feed, e)
+                    return None
 
             payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            if all(payload is None for payload in payloads) and feed_error is not None:
+                raise feed_error
 
+            valid_feed_payload_seen = False
             for payload in payloads:
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}))
+                if payload is None:
+                    continue
+                children = self._post_listing_children(payload)
+                if children is None:
+                    feed_error = ValueError("Reddit feed payload missing data.children")
+                    logger.warning("Reddit public feed returned malformed listing for r/%s", subreddit)
+                    continue
+                valid_feed_payload_seen = True
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
+            if not valid_feed_payload_seen and feed_error is not None:
+                raise feed_error
 
             async def fetch_search(query: str, params: dict[str, Any]) -> Any:
                 url = f"https://www.reddit.com/r/{subreddit}/search.json"
-                return await self._request_json_with_retries(
-                    client=client,
-                    url=url,
-                    params=params,
-                    headers=headers,
-                )
+                try:
+                    return await self._request_json_with_retries(
+                        client=client,
+                        url=url,
+                        params=params,
+                        headers=headers,
+                    )
+                except Exception as e:
+                    logger.warning("Reddit public search failed for r/%s query=%r: %s", subreddit, query, e)
+                    return None
 
             search_payloads = await asyncio.gather(
                 *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
             )
             for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                if payload is None:
+                    continue
+                children = self._post_listing_children(payload)
+                if children is None:
+                    logger.warning("Reddit public search returned malformed listing for r/%s query=%r", subreddit, query)
+                    continue
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data, discovery_query=query)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
@@ -488,32 +613,52 @@ class RedditScraper:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
             feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+            feed_error: Exception | None = None
 
             async def fetch_feed(feed: str, params: dict[str, Any]) -> str:
-                response = await client.get(
-                    self._rss_feed_url(subreddit, feed),
-                    params=self._rss_request_params(params),
-                    headers=headers,
-                    timeout=20,
-                )
-                response.raise_for_status()
-                return response.text
+                nonlocal feed_error
+                try:
+                    response = await self._request_response_with_retries(
+                        client=client,
+                        url=self._rss_feed_url(subreddit, feed),
+                        params=self._rss_request_params(params),
+                        headers=headers,
+                        timeout=20,
+                        max_attempts=min(3, self.retry_max_attempts),
+                    )
+                    response.raise_for_status()
+                    return self._decode_response_content(response)
+                except Exception as e:
+                    feed_error = e
+                    logger.warning("RSS feed failed for r/%s feed=%s: %s", subreddit, feed, e)
+                    return ""
 
             feed_payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            if all(not payload for payload in feed_payloads) and feed_error is not None:
+                raise feed_error
             for payload in feed_payloads:
-                for post in self._parse_rss_entries(subreddit, payload):
+                if not payload:
+                    continue
+                try:
+                    parsed_posts = self._parse_rss_entries(subreddit, payload)
+                except ET.ParseError as e:
+                    logger.warning("RSS parse failed for r/%s feed payload: %s", subreddit, e)
+                    continue
+                for post in parsed_posts:
                     self._merge_post(posts_by_id, post)
 
             async def fetch_search(query: str, params: dict[str, Any]) -> str | None:
                 try:
-                    response = await client.get(
-                        f"https://old.reddit.com/r/{subreddit}/search.rss",
+                    response = await self._request_response_with_retries(
+                        client=client,
+                        url=f"https://old.reddit.com/r/{subreddit}/search.rss",
                         params=self._rss_request_params(params),
                         headers=headers,
                         timeout=20,
+                        max_attempts=min(3, self.retry_max_attempts),
                     )
                     response.raise_for_status()
-                    return response.text
+                    return self._decode_response_content(response)
                 except Exception as e:
                     logger.warning("RSS search failed for r/%s query %r: %s", subreddit, query, e)
                     return None
@@ -523,7 +668,12 @@ class RedditScraper:
             for (query, _), payload in zip(search_requests, search_payloads, strict=False):
                 if not payload:
                     continue
-                for post in self._parse_rss_entries(subreddit, payload, discovery_query=query):
+                try:
+                    parsed_posts = self._parse_rss_entries(subreddit, payload, discovery_query=query)
+                except ET.ParseError as e:
+                    logger.warning("RSS search parse failed for r/%s query %r: %s", subreddit, query, e)
+                    continue
+                for post in parsed_posts:
                     self._merge_post(posts_by_id, post)
 
             base_posts = sorted(posts_by_id.values(), key=lambda item: item.score, reverse=True)[:limit]
@@ -550,36 +700,68 @@ class RedditScraper:
         async with httpx.AsyncClient() as client:
             posts_by_id: dict[str, Post] = {}
             feed_requests = self._iter_feed_requests(limit=limit, timeframe=timeframe)
+            feed_error: Exception | None = None
 
             async def fetch_feed(feed: str, params: dict[str, Any]) -> Any:
-                return await self._request_oauth_json(
-                    client=client,
-                    path=f"/r/{subreddit}/{feed}.json",
-                    params=params,
-                )
+                nonlocal feed_error
+                try:
+                    return await self._request_oauth_json(
+                        client=client,
+                        path=f"/r/{subreddit}/{feed}.json",
+                        params=params,
+                    )
+                except Exception as e:
+                    feed_error = e
+                    logger.warning("Reddit OAuth feed failed for r/%s feed=%s: %s", subreddit, feed, e)
+                    return None
 
             payloads = await asyncio.gather(*(fetch_feed(feed, params) for feed, params in feed_requests))
+            if all(payload is None for payload in payloads) and feed_error is not None:
+                raise feed_error
 
+            valid_feed_payload_seen = False
             for payload in payloads:
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}))
+                if payload is None:
+                    continue
+                children = self._post_listing_children(payload)
+                if children is None:
+                    feed_error = ValueError("Reddit OAuth feed payload missing data.children")
+                    logger.warning("Reddit OAuth feed returned malformed listing for r/%s", subreddit)
+                    continue
+                valid_feed_payload_seen = True
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
+            if not valid_feed_payload_seen and feed_error is not None:
+                raise feed_error
 
             async def fetch_search(query: str, params: dict[str, Any]) -> Any:
-                return await self._request_oauth_json(
-                    client=client,
-                    path=f"/r/{subreddit}/search.json",
-                    params=params,
-                )
+                try:
+                    return await self._request_oauth_json(
+                        client=client,
+                        path=f"/r/{subreddit}/search.json",
+                        params=params,
+                    )
+                except Exception as e:
+                    logger.warning("Reddit OAuth search failed for r/%s query=%r: %s", subreddit, query, e)
+                    return None
 
             search_payloads = await asyncio.gather(
                 *(fetch_search(query, params) for query, params in self._iter_search_requests(limit=limit))
             )
             for (query, _), payload in zip(self._iter_search_requests(limit=limit), search_payloads, strict=False):
-                for child in payload.get("data", {}).get("children", []):
-                    post = self._build_post(subreddit, child.get("data", {}), discovery_query=query)
+                if payload is None:
+                    continue
+                children = self._post_listing_children(payload)
+                if children is None:
+                    logger.warning("Reddit OAuth search returned malformed listing for r/%s query=%r", subreddit, query)
+                    continue
+                for child in children:
+                    post_data = child.get("data", {}) if isinstance(child, dict) else {}
+                    post = self._build_post(subreddit, post_data, discovery_query=query)
                     if post is None:
                         continue
                     self._merge_post(posts_by_id, post)
@@ -642,15 +824,17 @@ class RedditScraper:
         if self._oauth_access_token and self._oauth_token_expires_at > time.time() + 30:
             return self._oauth_access_token
 
-        response = await client.post(
-            "https://www.reddit.com/api/v1/access_token",
+        response = await self._request_with_response_limit(
+            client=client,
+            method="POST",
+            url="https://www.reddit.com/api/v1/access_token",
             data={"grant_type": "client_credentials"},
             auth=(self.client_id, self.client_secret),
             headers={"User-Agent": self.user_agent},
             timeout=20,
         )
         response.raise_for_status()
-        payload = response.json()
+        payload = json.loads(self._decode_response_content(response))
         token = payload.get("access_token", "")
         if not token:
             raise RuntimeError("Reddit OAuth token response missing access_token")
@@ -676,22 +860,26 @@ class RedditScraper:
             )
         except Exception as e:
             logger.debug("Unable to fetch top comments via OAuth for %s: %s", post_id, e)
-            return []
+            return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comments_listing = payload[1].get("data", {}).get("children", [])
+        comments_listing = self._listing_children(payload)
         comments: list[str] = []
         for child in comments_listing:
+            if not isinstance(child, dict):
+                continue
             if child.get("kind") != "t1":
                 continue
-            body = child.get("data", {}).get("body", "")
+            data = child.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            body = data.get("body", "")
             if isinstance(body, str) and body.strip():
                 comments.append(body.strip())
             if len(comments) >= limit:
                 break
-        return comments
+        if comments:
+            return comments
+        return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
 
     async def _fetch_top_comments_json(
         self,
@@ -713,19 +901,69 @@ class RedditScraper:
             )
         except Exception as e:
             logger.debug("Unable to fetch top comments via JSON for %s: %s", post_id, e)
-            return []
+            return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comments_listing = payload[1].get("data", {}).get("children", [])
+        comments_listing = self._listing_children(payload)
         comments: list[str] = []
         for child in comments_listing:
+            if not isinstance(child, dict):
+                continue
             if child.get("kind") != "t1":
                 continue
-            body = child.get("data", {}).get("body", "")
+            data = child.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            body = data.get("body", "")
             if isinstance(body, str) and body.strip():
                 comments.append(body.strip())
+            if len(comments) >= limit:
+                break
+        if comments:
+            return comments
+        return await self._fetch_comments_rss(client=client, post_id=post_id, limit=limit)
+
+    async def _fetch_comments_rss(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        post_id: str,
+        limit: int,
+    ) -> list[str]:
+        raw_post_id = self._raw_post_id(post_id)
+        try:
+            response = await self._request_response_with_retries(
+                client=client,
+                url=f"https://old.reddit.com/comments/{raw_post_id}/.rss",
+                params={"limit": limit, "sort": "top"},
+                headers={"User-Agent": self.user_agent},
+                timeout=20,
+                max_attempts=min(2, self.retry_max_attempts),
+            )
+            response.raise_for_status()
+            payload = self._decode_response_content(response)
+        except Exception as e:
+            logger.debug("Unable to fetch comments via RSS for %s: %s", post_id, e)
+            return []
+
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError as e:
+            logger.debug("Unable to parse comments RSS for %s: %s", post_id, e)
+            return []
+
+        comments: list[str] = []
+        for entry in root.findall("atom:entry", ATOM_NS):
+            entry_id = (entry.findtext("atom:id", default="", namespaces=ATOM_NS) or "").strip()
+            if not entry_id.startswith("t1_"):
+                continue
+            content = entry.findtext("atom:content", default="", namespaces=ATOM_NS) or entry.findtext(
+                "atom:summary",
+                default="",
+                namespaces=ATOM_NS,
+            )
+            text = " ".join(html.unescape(HTML_TAG_RE.sub(" ", content or "")).split())
+            if text:
+                comments.append(text)
             if len(comments) >= limit:
                 break
         return comments
@@ -741,19 +979,20 @@ class RedditScraper:
                 params=params,
             )
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comment_nodes = payload[1].get("data", {}).get("children", [])
+        comment_nodes = self._listing_children(payload)
         comments: list[str] = []
 
-        def walk(nodes: list[dict[str, Any]]) -> None:
+        def walk(nodes: list[Any]) -> None:
             for node in nodes:
                 if len(comments) >= max_comments:
                     return
+                if not isinstance(node, dict):
+                    continue
                 if node.get("kind") != "t1":
                     continue
                 data = node.get("data", {})
+                if not isinstance(data, dict):
+                    continue
                 body = data.get("body", "")
                 if isinstance(body, str) and body.strip():
                     comments.append(body.strip())
@@ -773,26 +1012,31 @@ class RedditScraper:
         headers = {"User-Agent": self.user_agent}
 
         async with httpx.AsyncClient() as client:
-            payload = await self._request_json_with_retries(
-                client=client,
-                url=url,
-                params=params,
-                headers=headers,
-            )
+            try:
+                payload = await self._request_json_with_retries(
+                    client=client,
+                    url=url,
+                    params=params,
+                    headers=headers,
+                )
+            except Exception as e:
+                logger.debug("Unable to fetch full thread via JSON for %s: %s", post_id, e)
+                return await self._fetch_comments_rss(client=client, post_id=post_id, limit=max_comments)
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            return []
-
-        comment_nodes = payload[1].get("data", {}).get("children", [])
+        comment_nodes = self._listing_children(payload)
         comments: list[str] = []
 
-        def walk(nodes: list[dict[str, Any]]) -> None:
+        def walk(nodes: list[Any]) -> None:
             for node in nodes:
                 if len(comments) >= max_comments:
                     return
+                if not isinstance(node, dict):
+                    continue
                 if node.get("kind") != "t1":
                     continue
                 data = node.get("data", {})
+                if not isinstance(data, dict):
+                    continue
                 body = data.get("body", "")
                 if isinstance(body, str) and body.strip():
                     comments.append(body.strip())
@@ -837,17 +1081,44 @@ class RedditScraper:
         params: dict[str, Any],
         headers: dict[str, str],
     ) -> Any:
-        last_error: Exception | None = None
+        response = await self._request_response_with_retries(
+            client=client,
+            url=url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        return json.loads(self._decode_response_content(response))
 
-        for attempt in range(1, self.retry_max_attempts + 1):
+    async def _request_response_with_retries(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        url: str,
+        params: dict[str, Any],
+        headers: dict[str, str],
+        timeout: float = 20,
+        max_attempts: int | None = None,
+    ) -> httpx.Response:
+        last_error: Exception | None = None
+        attempts = max(1, max_attempts if max_attempts is not None else self.retry_max_attempts)
+
+        for attempt in range(1, attempts + 1):
             try:
-                response = await client.get(url, params=params, headers=headers, timeout=20)
+                response = await self._request_with_response_limit(
+                    client=client,
+                    method="GET",
+                    url=url,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
+                )
                 response.raise_for_status()
-                return response.json()
+                return response
             except httpx.HTTPStatusError as e:
                 last_error = e
                 status_code = e.response.status_code if e.response else None
-                if status_code not in RETRYABLE_STATUS_CODES or attempt >= self.retry_max_attempts:
+                if status_code not in RETRYABLE_STATUS_CODES or attempt >= attempts:
                     raise
 
                 retry_after = e.response.headers.get("Retry-After") if e.response else None
@@ -856,20 +1127,20 @@ class RedditScraper:
                     "Reddit HTTP %s attempt %d/%d for %s, retrying in %.2fs",
                     status_code,
                     attempt,
-                    self.retry_max_attempts,
+                    attempts,
                     url,
                     delay,
                 )
                 await asyncio.sleep(delay)
             except httpx.RequestError as e:
                 last_error = e
-                if attempt >= self.retry_max_attempts:
+                if attempt >= attempts:
                     raise
                 delay = self._compute_backoff_delay(attempt)
                 logger.warning(
                     "Reddit request error attempt %d/%d for %s: %s; retrying in %.2fs",
                     attempt,
-                    self.retry_max_attempts,
+                    attempts,
                     url,
                     e,
                     delay,
@@ -885,13 +1156,15 @@ class RedditScraper:
             try:
                 parsed = float(retry_after)
                 if parsed > 0:
-                    return parsed
+                    if not math.isfinite(parsed):
+                        return MAX_REDDIT_RETRY_DELAY_SECONDS
+                    return min(parsed, MAX_REDDIT_RETRY_DELAY_SECONDS)
             except ValueError:
                 pass
 
         exponential = self.retry_base_delay * (2 ** (attempt - 1))
         jitter = random.uniform(0, self.retry_base_delay)
-        return exponential + jitter
+        return min(exponential + jitter, MAX_REDDIT_RETRY_DELAY_SECONDS)
 
     @staticmethod
     def _append_comments(body: str, top_comments: list[str]) -> str:

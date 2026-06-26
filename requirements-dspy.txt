@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# DSPy is intentionally not installed from this project-managed optional
+# requirements file while its dependency set pulls diskcache 5.6.3
+# (CVE-2025-69872, no fixed version reported by pip-audit).
+#
+# Keep DSPY_REDDIT_PARSER_ENABLED=0 in production. Re-add an audited DSPy
+# requirement here only after `python -m pip_audit -r requirements-dspy.txt`
+# passes with the DSPy dependency included.

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -27,6 +29,26 @@ if TYPE_CHECKING:
     from deduplicator import Deduplicator
 
 logger = logging.getLogger(__name__)
+ARTIFACT_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+PROMOTION_SCORE_CAP = 35.0
+
+
+def _safe_text(value: Any, *, default: str = "") -> str:
+    text = str(default if value is None else value).strip()
+    return text or default
+
+
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def safe_artifact_stem(raw: str, *, default: str = "scope") -> str:
+    stem = ARTIFACT_STEM_RE.sub("_", str(raw or "").strip())
+    stem = stem.strip("._-")
+    return stem or default
 
 
 @dataclass
@@ -112,11 +134,6 @@ class AnalysisPipeline:
         source: str,
         run_label: str,
     ) -> AnalysisRun:
-        if self.budget_guard is not None:
-            await self.budget_guard.ensure_can_spend("pipeline_analyze")
-        elif await self.db.is_llm_paused():
-            raise RuntimeError("LLM operations are paused. Use /resume to override.")
-
         start = perf_counter()
         existing_ids = await self.db.get_pain_points_by_ids([post.post_id for post in posts])
         fresh_posts = [post for post in posts if post.post_id not in existing_ids]
@@ -138,7 +155,14 @@ class AnalysisPipeline:
             screen_capped_count = int(screen_stats.get("screen_capped_count", 0))
         llm_capped_count = screen_capped_count
 
-        classified_signals = await self.classifier.classify_batch(fresh_posts)
+        if fresh_posts:
+            if self.budget_guard is not None:
+                await self.budget_guard.ensure_can_spend("pipeline_analyze")
+            elif await self.db.is_llm_paused():
+                raise RuntimeError("LLM operations are paused. Use /resume to override.")
+            classified_signals = await self.classifier.classify_batch(fresh_posts)
+        else:
+            classified_signals = []
         persisted_signals: list[PainSignal] = []
         classified_count = len(classified_signals)
         inserted_count = 0
@@ -431,12 +455,12 @@ class AnalysisPipeline:
                     row_copy["score_components"] = {}
             scored_rows.append(row_copy)
 
-            niche = (row.get("niche_category") or "Uncategorized").strip() or "Uncategorized"
+            niche = _safe_text(row.get("niche_category"), default="Uncategorized")
             niche_counts[niche] = niche_counts.get(niche, 0) + 1
-            source_name = (row.get("source") or "unknown").strip() or "unknown"
+            source_name = _safe_text(row.get("source"), default="unknown")
             source_counts[source_name] = source_counts.get(source_name, 0) + 1
 
-            summary = (row.get("deep_dive_summary") or "").strip()
+            summary = _safe_text(row.get("deep_dive_summary"))
             if summary:
                 blockers[summary] = blockers.get(summary, 0) + 1
 
@@ -444,9 +468,9 @@ class AnalysisPipeline:
             key=lambda row: (
                 self._row_opportunity_score(row),
                 len(row.get("evidence_spans") or []),
-                int(row.get("source_created_ts") or 0),
-                int(row.get("willingness_to_pay") or 0),
-                int(row.get("pain_level") or 0),
+                _safe_int(row.get("source_created_ts")),
+                _safe_int(row.get("willingness_to_pay")),
+                _safe_int(row.get("pain_level")),
             ),
             reverse=True,
         )
@@ -469,11 +493,12 @@ class AnalysisPipeline:
     async def _write_report(self, *, run_label: str, payload: list[dict[str, Any]]) -> str:
         os.makedirs(self.reports_dir, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-        json_path = os.path.join(self.reports_dir, f"{run_label}_{timestamp}.json")
+        safe_run_label = safe_artifact_stem(run_label, default="report")
+        json_path = os.path.join(self.reports_dir, f"{safe_run_label}_{timestamp}.json")
         tmp_path = f"{json_path}.tmp"
         try:
             with open(tmp_path, "w", encoding="utf-8") as report_file:
-                json.dump(payload, report_file, indent=2, ensure_ascii=False)
+                json.dump(payload, report_file, indent=2, ensure_ascii=False, allow_nan=False)
             os.replace(tmp_path, json_path)
             return json_path
         except Exception:
@@ -507,6 +532,16 @@ class AnalysisPipeline:
                 "first_handness": signal.first_handness,
                 "buyer_authority": signal.buyer_authority,
                 "evidence_spans": signal.evidence_spans,
+                "promotion_eligible": bool(
+                    signal.analysis_payload.get("promotion_eligible")
+                    if isinstance(signal.analysis_payload, dict)
+                    else False
+                ),
+                "evidence_rejection_reason": (
+                    signal.analysis_payload.get("evidence_rejection_reason")
+                    if isinstance(signal.analysis_payload, dict)
+                    else None
+                ),
                 "comment_sample": signal.comment_sample,
                 "buyer_authority_score": signal.buyer_authority_score,
                 "workflow_frequency_score": signal.workflow_frequency_score,
@@ -606,6 +641,45 @@ class AnalysisPipeline:
         if isinstance(signal.analysis_payload, dict):
             signal.analysis_payload.setdefault("comment_sample", signal.comment_sample)
             signal.analysis_payload.setdefault("score_components", signal.score_components)
+        promotion_rejection_reason = self._promotion_rejection_reason(signal)
+        promotion_eligible = promotion_rejection_reason is None
+        if not promotion_eligible:
+            signal.opportunity_score = min(signal.opportunity_score, PROMOTION_SCORE_CAP)
+            if signal.score_components is not None:
+                signal.score_components["promotion_score_cap"] = PROMOTION_SCORE_CAP
+        if signal.score_components is not None:
+            signal.score_components["promotion_eligible"] = promotion_eligible
+            signal.score_components["evidence_rejection_reason"] = promotion_rejection_reason
+        if isinstance(signal.analysis_payload, dict):
+            signal.analysis_payload["promotion_eligible"] = promotion_eligible
+            signal.analysis_payload["evidence_rejection_reason"] = promotion_rejection_reason
+            signal.analysis_payload["score_components"] = signal.score_components
+
+    @staticmethod
+    def _grounded_evidence_spans(signal: PainSignal) -> list[str]:
+        source_text = "\n".join(
+            part for part in [signal.post.title, signal.post.body, *signal.post.top_comments] if isinstance(part, str)
+        ).lower()
+        grounded: list[str] = []
+        for span in signal.evidence_spans:
+            clean = str(span or "").strip()
+            if clean and clean.lower() in source_text:
+                grounded.append(clean)
+        return grounded
+
+    def _promotion_rejection_reason(self, signal: PainSignal) -> str | None:
+        if not signal.is_monetizable:
+            return "not_monetizable"
+        if signal.post_type == "news_analysis":
+            return "unsupported_post_type"
+        if signal.post_type in {"founder_pitch", "advice_thread"} and signal.first_handness not in {
+            "first_hand",
+            "second_hand",
+        }:
+            return "insufficient_first_hand_evidence"
+        if not self._grounded_evidence_spans(signal):
+            return "ungrounded_evidence"
+        return None
 
     def _recency_profile(self, post: Post, bucket: str) -> tuple[float, float]:
         if not post.source_created_ts:
@@ -621,6 +695,11 @@ class AnalysisPipeline:
         return round(recency_score, 3), round(stale_penalty, 3)
 
     def _deep_dive_skip_reason(self, signal: PainSignal, *, existing: dict[str, Any] | None) -> str | None:
+        promotion_rejection_reason = None
+        if isinstance(signal.analysis_payload, dict):
+            promotion_rejection_reason = signal.analysis_payload.get("evidence_rejection_reason")
+        if promotion_rejection_reason:
+            return f"not_promotion_eligible:{promotion_rejection_reason}"
         if not signal.is_monetizable:
             return "not_monetizable"
         if signal.willingness_to_pay < self.deep_dive_wtp_threshold:
@@ -634,13 +713,16 @@ class AnalysisPipeline:
     @staticmethod
     def _row_opportunity_score(row: dict[str, Any]) -> float:
         raw = row.get("opportunity_score")
-        try:
-            if raw is not None:
-                return round(float(raw), 2)
-        except (TypeError, ValueError):
-            pass
-        pain_level = int(row.get("pain_level") or 0)
-        wtp = int(row.get("willingness_to_pay") or 0)
+        if raw is not None:
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                if math.isfinite(parsed):
+                    return round(parsed, 2)
+        pain_level = _safe_int(row.get("pain_level"))
+        wtp = _safe_int(row.get("willingness_to_pay"))
         return round((pain_level + wtp) / 2, 2)
 
     def _classify_opportunity_bucket(self, post: Post) -> str:

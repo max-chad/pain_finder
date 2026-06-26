@@ -87,6 +87,8 @@ python eval/run_eval.py \
   --reference-now-ts 1776729600
 ```
 
+Live runs use the configured SQLite database and `DAILY_BUDGET_USD` guard, so they respect runtime pause state and record LLM usage like collection jobs.
+
 If you want to compare without DSPy:
 
 ```bash

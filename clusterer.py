@@ -36,16 +36,8 @@ TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 # an OpenRouter embeddings endpoint) and raise EMBED_DIM to match its output
 # dimensionality.
 #
-# PYTHONHASHSEED note
-# -------------------
-# Python randomises hash() output for strings once per process start (controlled
-# by the PYTHONHASHSEED environment variable).  This means the same token maps
-# to a different EMBED_DIM bucket across process restarts, so cosine-similarity
-# scores — and therefore the cluster assignments produced by _cluster_indices —
-# are non-reproducible between runs.  Set PYTHONHASHSEED=0 to disable this
-# randomisation and obtain deterministic results.  For the current use case
-# (ephemeral, per-run macro-trend snapshots) non-reproducibility is acceptable,
-# but it is worth knowing when debugging unexpected cluster differences.
+# The token-to-bucket mapping uses a stable hash so persisted cluster snapshots
+# and local fallback embeddings are reproducible across Python process restarts.
 EMBED_DIM = 96
 STOPWORDS = {
     "about",
@@ -142,15 +134,20 @@ class MacroTrendClusterer:
             members = [candidates[index] for index in cluster_indices]
             sample_lines = [self._compose_cluster_line(row) for row in members[:12]]
             cluster_text = "\n".join(sample_lines)
-            aggregate_wtp = sum(float(row.get("willingness_to_pay") or 0) for row in members)
+            aggregate_wtp = sum(self._finite_number(row.get("willingness_to_pay"), default=0.0) for row in members)
             fresh_post_count = sum(1 for row in members if str(row.get("opportunity_bucket") or "").strip().lower() == "current_opportunity")
             evergreen_post_count = sum(1 for row in members if str(row.get("opportunity_bucket") or "").strip().lower() == "evergreen_pain")
-            authority_values = [float(row.get("buyer_authority_score") or 0.0) for row in members]
+            authority_values = [self._finite_number(row.get("buyer_authority_score"), default=0.0) for row in members]
             median_buyer_authority = round(float(median(authority_values)), 3) if authority_values else 0.0
             incumbents = self._aggregate_incumbents(members)
-            opportunity_scores = [float(row.get("opportunity_score") or 0.0) for row in members]
+            opportunity_scores = [self._finite_number(row.get("opportunity_score"), default=0.0) for row in members]
             avg_opportunity_score = round(float(mean(opportunity_scores)), 2) if opportunity_scores else 0.0
-            latest_source_created_ts = max(int(row.get("source_created_ts") or 0) for row in members) or None
+            source_timestamps = [
+                timestamp
+                for row in members
+                if (timestamp := self._source_timestamp(row.get("source_created_ts"))) is not None
+            ]
+            latest_source_created_ts = max(source_timestamps) if source_timestamps else None
             label = await self._label_cluster(
                 cluster_text=cluster_text,
                 cluster_size=len(members),
@@ -293,6 +290,24 @@ class MacroTrendClusterer:
         )
 
     @staticmethod
+    def _finite_number(value: Any, *, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(parsed):
+            return default
+        return parsed
+
+    @staticmethod
+    def _source_timestamp(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
     def _parse_tags(raw: Any) -> list[str]:
         if isinstance(raw, list):
             return [str(item).strip().lower() for item in raw if str(item).strip()]
@@ -380,7 +395,7 @@ class MacroTrendClusterer:
         # the full trade-off discussion.
         vector = [0.0 for _ in range(EMBED_DIM)]
         for token in TOKEN_RE.findall(text.lower()):
-            index = hash(token) % EMBED_DIM
+            index = MacroTrendClusterer._stable_token_bucket(token, EMBED_DIM)
             vector[index] += 1.0
         norm = math.sqrt(sum(value * value for value in vector))
         if norm == 0:
@@ -421,3 +436,8 @@ class MacroTrendClusterer:
         if len(a) != len(b):
             return 0.0
         return sum(x * y for x, y in zip(a, b))
+
+    @staticmethod
+    def _stable_token_bucket(token: str, dim: int) -> int:
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "big") % dim

@@ -101,6 +101,7 @@ Classifier/deep dive controls:
 - `CLASSIFIER_MODE` (`legacy|b2b|dual`, default `dual`)
 - `CLASSIFIER_MAX_CONCURRENCY` (default `8`)
 - `LLM_MAX_CLASSIFICATIONS_PER_RUN` (default `0`, disabled when `0`; set >0 to cap classifications per analysis run)
+- `PRIMARY_MAX_OUTPUT_TOKENS` (default `min(1200, LLM_MAX_TOKENS)`; must not exceed `LLM_MAX_TOKENS`)
 - `DEEP_DIVE_WTP_THRESHOLD` (default `8`)
 - `DEEP_DIVE_MAX_COMMENTS` (default `250`)
 
@@ -110,12 +111,13 @@ Scraper controls:
 - `SCRAPER_COMMENT_FETCH_CONCURRENCY` (default `8`)
 - `SCRAPER_RETRY_MAX_ATTEMPTS` (default `5`)
 - `SCRAPER_RETRY_BASE_DELAY` (default `1.0`)
+- `SCRAPER_MAX_RESPONSE_BYTES` (default `5000000`, minimum `1024`)
 - `SCRAPER_FEED_MIX_JSON` (default `["new", "rising", "top"]`)
 - `SCRAPER_SEARCH_QUERIES_JSON` (optional pain-intent subreddit search queries merged with feed results)
 
 Optional DSPy Reddit parser:
 
-- `DSPY_REDDIT_PARSER_ENABLED` (default `1`)
+- `DSPY_REDDIT_PARSER_ENABLED` (default `0`; keep disabled unless you have an audited DSPy install)
 - `DSPY_PROVIDER` (defaults to `LLM_PROVIDER`, so Codex by default)
 - `DSPY_MODEL` (defaults to `LLM_MODEL`)
 - `DSPY_REASONING_EFFORT` (defaults to `LLM_REASONING_EFFORT`)
@@ -123,6 +125,16 @@ Optional DSPy Reddit parser:
 - `DSPY_API_BASE` (defaults to `LLM_API_BASE`)
 - `DSPY_TEMPERATURE`
 - `DSPY_MAX_TOKENS`
+- `DSPY_TIMEOUT_SECONDS` (default `60`)
+
+The DSPy dependency is intentionally optional and is not installed by the base requirements. The project-managed `requirements-dspy.txt` is currently fail-closed and does not install DSPy because the upstream dependency set still pulls `diskcache 5.6.3` / `CVE-2025-69872` with no fixed version reported by `pip-audit`.
+
+```bash
+pip install -r requirements-dspy.txt
+python -m pip_audit -r requirements-dspy.txt
+```
+
+Keep `DSPY_REDDIT_PARSER_ENABLED=0` for production until DSPy can be re-added to `requirements-dspy.txt` and the optional dependency audit passes with DSPy included.
 
 Trend clustering:
 
@@ -140,13 +152,15 @@ HN ingestion:
 - `HN_LOOKBACK_HOURS`
 - `HN_MAX_POSTS`
 - `HN_INTERVAL_HOURS`
+- `HN_MAX_RESPONSE_BYTES` (default `2000000`, minimum `1024`)
 
 Review ingestion:
 
 - `REVIEWS_ENABLED`
-- `REVIEW_TARGETS_JSON`
+- `REVIEW_TARGETS_JSON` (enabled targets must have `site`, `name`, and a public `http`/`https` `url`; localhost/private IP targets are rejected)
 - `REVIEWS_MAX_PER_TARGET`
 - `REVIEWS_INTERVAL_HOURS`
+- `REVIEWS_MAX_HTML_BYTES` (default `2000000`, minimum `1024`)
 
 Budget and runtime guardrails:
 
@@ -169,6 +183,8 @@ Hermes-mode delivery:
 - `DIGEST_MINUTE_UTC`
 - `DIGEST_MIN_WTP`
 - `DIGEST_MAX_ITEMS_PER_GROUP`
+- `CURRENT_OPPORTUNITY_MAX_AGE_DAYS`
+- `EVERGREEN_MAX_AGE_DAYS`
 
 Codex reserve routing note:
 
@@ -196,6 +212,7 @@ Paths and source auth:
 - `macro_trend_runs`, `macro_trend_clusters`, `macro_trend_members`: macro analytics snapshots.
 - `llm_usage_events`: token/cost ledger.
 - `runtime_flags`: `llm_paused`, pause reason/day, resume override.
+- `monitored_subreddits`: active subreddit schedules plus last success, last attempt, and last error for `/list` diagnostics.
 - `gtm_assets`: generated GTM payloads.
 
 ## Budget Guardrail Behavior
@@ -230,16 +247,42 @@ pip install -r requirements-ml.txt
 docker compose up -d --build
 ```
 
+The image includes a local Docker healthcheck (`python healthcheck.py`) that validates required environment parsing, report-directory writability, and read-only access to an already initialized SQLite database without calling external APIs or running migrations. Its output includes `scheduled_job_errors` as a diagnostic counter; historical scheduled-job failures are reported but do not fail liveness.
+The runtime handles `SIGTERM`/`SIGINT` through the asyncio loop so Docker stops and manual interrupts drain through scheduler/database cleanup.
+
+For deployment readiness checks outside Docker liveness, use strict scheduled-job validation:
+
+```bash
+python healthcheck.py --fail-on-job-errors
+```
+
+This keeps container liveness tolerant of historical job errors while allowing release gates to fail when scheduled ingestion/digest jobs have active errors.
+
 Persisted mounts in `docker-compose.yml`:
 
-- `./pain_finder.db -> /app/pain_finder.db`
+- `./data -> /app/data` (`DB_PATH=/app/data/pain_finder.db`)
 - `./reports -> /app/reports`
+
+## Source Smoke Checks
+
+Use the read-only source smoke check before a first data-collection run or after changing source env. It fetches source posts and prints JSON, but does not call LLMs, Telegram, database writes, exports, or schedulers.
+
+```bash
+python smoke_collect.py --source reddit --subreddit python --limit 5
+python smoke_collect.py --source hn --hn-keyword "manual process" --limit 5
+```
+
+Use `python smoke_collect.py --source all --limit 5` only after configuring `REVIEW_TARGETS_JSON`, because `--source all` includes the reviews collector and fails closed when no enabled review targets exist.
+
+Add `--require-posts` when a deployment gate should fail if a requested source returns zero posts. The script intentionally reads only source-related env (`REDDIT_*`, `SCRAPER_*`, `HN_*`, `REVIEW_TARGETS_JSON`, `REVIEWS_MAX_PER_TARGET`, `REVIEWS_MAX_HTML_BYTES`) and does not require Telegram or LLM credentials. Reddit subreddit names are validated before network calls, and review targets must be public `http`/`https` URLs that resolve to public addresses before fetch.
 
 ## Quality Gates
 
 ```bash
 ruff check .
-mypy .
+mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py digest_delivery.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
+docker compose config -q
+python -m pip_audit -r requirements.txt
 pytest --cov=. --cov-fail-under=80 -q
 ```
 

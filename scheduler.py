@@ -7,6 +7,12 @@ from db import Database
 
 logger = logging.getLogger(__name__)
 
+JOB_DEFAULTS = {
+    "coalesce": True,
+    "max_instances": 1,
+    "misfire_grace_time": 300,
+}
+
 
 class MonitoringScheduler:
     def __init__(
@@ -45,7 +51,7 @@ class MonitoringScheduler:
         self.digest_enabled = digest_enabled
         self.digest_hour_utc = digest_hour_utc
         self.digest_minute_utc = digest_minute_utc
-        self.scheduler = AsyncIOScheduler()
+        self.scheduler = AsyncIOScheduler(job_defaults=JOB_DEFAULTS)
 
     def start(self):
         self.scheduler.start()
@@ -64,68 +70,72 @@ class MonitoringScheduler:
                 job.remove()
 
         paused_value = await self.db.is_llm_paused()
-        paused = paused_value if isinstance(paused_value, bool) else False
-        if paused:
-            logger.warning("scheduler_reload_skipped stage=scheduler reason=llm_paused")
-            return
+        llm_paused = paused_value if isinstance(paused_value, bool) else False
 
-        subs = await self.db.get_monitored_subreddits()
-        for sub in subs:
-            self.scheduler.add_job(
-                self._run_analysis,
-                trigger="interval",
-                hours=sub["interval_hours"],
-                id=f"monitor_{sub['name']}",
-                args=[sub["name"]],
-                replace_existing=True,
-            )
+        if llm_paused:
             logger.info(
-                "scheduler_job_loaded stage=scheduler job=monitor subreddit=%s interval_hours=%d",
-                sub["name"],
-                sub["interval_hours"],
+                "scheduler_llm_jobs_skipped stage=scheduler reason=llm_paused digest_enabled=%s",
+                self.digest_enabled,
             )
+        else:
+            subs = await self.db.get_monitored_subreddits()
+            for sub in subs:
+                interval_hours = max(1, int(sub["interval_hours"] or 1))
+                self.scheduler.add_job(
+                    self._run_analysis,
+                    trigger="interval",
+                    hours=interval_hours,
+                    id=f"monitor_{sub['name']}",
+                    args=[sub["name"]],
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=monitor subreddit=%s interval_hours=%d",
+                    sub["name"],
+                    interval_hours,
+                )
 
-        if self.macro_enabled and self.macro_fn is not None:
-            self.scheduler.add_job(
-                self._run_macro,
-                trigger="cron",
-                day_of_week=self.macro_weekday_utc,
-                hour=self.macro_hour_utc,
-                minute=0,
-                id="macro_weekly",
-                replace_existing=True,
-            )
-            logger.info(
-                "scheduler_job_loaded stage=scheduler job=macro weekday=%s hour=%d",
-                self.macro_weekday_utc,
-                self.macro_hour_utc,
-            )
+            if self.macro_enabled and self.macro_fn is not None:
+                self.scheduler.add_job(
+                    self._run_macro,
+                    trigger="cron",
+                    day_of_week=self.macro_weekday_utc,
+                    hour=self.macro_hour_utc,
+                    minute=0,
+                    id="macro_weekly",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=macro weekday=%s hour=%d",
+                    self.macro_weekday_utc,
+                    self.macro_hour_utc,
+                )
 
-        if self.hn_enabled and self.hn_fn is not None:
-            self.scheduler.add_job(
-                self._run_hn,
-                trigger="interval",
-                hours=max(1, self.hn_interval_hours),
-                id="hn_ingest",
-                replace_existing=True,
-            )
-            logger.info(
-                "scheduler_job_loaded stage=scheduler job=hn interval_hours=%d",
-                self.hn_interval_hours,
-            )
+            if self.hn_enabled and self.hn_fn is not None:
+                self.scheduler.add_job(
+                    self._run_hn,
+                    trigger="interval",
+                    hours=max(1, self.hn_interval_hours),
+                    id="hn_ingest",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=hn interval_hours=%d",
+                    self.hn_interval_hours,
+                )
 
-        if self.reviews_enabled and self.reviews_fn is not None:
-            self.scheduler.add_job(
-                self._run_reviews,
-                trigger="interval",
-                hours=max(1, self.reviews_interval_hours),
-                id="reviews_ingest",
-                replace_existing=True,
-            )
-            logger.info(
-                "scheduler_job_loaded stage=scheduler job=reviews interval_hours=%d",
-                self.reviews_interval_hours,
-            )
+            if self.reviews_enabled and self.reviews_fn is not None:
+                self.scheduler.add_job(
+                    self._run_reviews,
+                    trigger="interval",
+                    hours=max(1, self.reviews_interval_hours),
+                    id="reviews_ingest",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "scheduler_job_loaded stage=scheduler job=reviews interval_hours=%d",
+                    self.reviews_interval_hours,
+                )
 
         if self.digest_enabled and self.digest_fn is not None:
             self.scheduler.add_job(
@@ -148,7 +158,8 @@ class MonitoringScheduler:
             await self.analyze_fn(subreddit)
             await self.db.update_last_checked(subreddit)
             logger.info("scheduled_analysis_complete stage=scheduler subreddit=%s", subreddit)
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_monitor_failed(subreddit, str(exc))
             logger.exception("scheduled_analysis_failed stage=scheduler subreddit=%s", subreddit)
 
     async def _run_macro(self):
@@ -156,8 +167,10 @@ class MonitoringScheduler:
         try:
             if self.macro_fn:
                 await self.macro_fn()
+            await self.db.mark_scheduled_job_success("macro_weekly")
             logger.info("scheduled_macro_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("macro_weekly", str(exc))
             logger.exception("scheduled_macro_failed stage=scheduler")
 
     async def _run_hn(self):
@@ -165,8 +178,10 @@ class MonitoringScheduler:
         try:
             if self.hn_fn:
                 await self.hn_fn()
+            await self.db.mark_scheduled_job_success("hn_ingest")
             logger.info("scheduled_hn_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("hn_ingest", str(exc))
             logger.exception("scheduled_hn_failed stage=scheduler")
 
     async def _run_reviews(self):
@@ -174,8 +189,10 @@ class MonitoringScheduler:
         try:
             if self.reviews_fn:
                 await self.reviews_fn()
+            await self.db.mark_scheduled_job_success("reviews_ingest")
             logger.info("scheduled_reviews_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("reviews_ingest", str(exc))
             logger.exception("scheduled_reviews_failed stage=scheduler")
 
     async def _run_digest(self):
@@ -183,6 +200,8 @@ class MonitoringScheduler:
         try:
             if self.digest_fn:
                 await self.digest_fn()
+            await self.db.mark_scheduled_job_success("daily_digest")
             logger.info("scheduled_digest_complete stage=scheduler")
-        except Exception:
+        except Exception as exc:
+            await self.db.mark_scheduled_job_failure("daily_digest", str(exc))
             logger.exception("scheduled_digest_failed stage=scheduler")

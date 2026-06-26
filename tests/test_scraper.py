@@ -3,7 +3,7 @@ import asyncio
 import pytest
 import httpx
 
-from scraper import Post, RedditScraper
+from scraper import MAX_REDDIT_RETRY_DELAY_SECONDS, Post, RedditScraper
 
 
 async def test_post_dataclass_fields():
@@ -34,6 +34,28 @@ async def test_scraper_no_credentials_sets_use_praw_false():
 async def test_scraper_with_credentials_sets_use_praw_true():
     scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test")
     assert scraper._use_praw is True
+
+
+def test_validate_subreddit_rejects_malformed_values():
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test")
+
+    assert scraper._validate_subreddit("Python") == "python"
+    for value in ("", "p", "../api", "python.json", "py-thon", "a" * 22):
+        with pytest.raises(ValueError, match="Invalid subreddit"):
+            scraper._validate_subreddit(value)
+
+
+async def test_fetch_posts_rejects_invalid_subreddit_before_network(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test")
+    fetch_mock = AsyncMock()
+    monkeypatch.setattr(scraper, "_fetch_public_json", fetch_mock)
+
+    with pytest.raises(ValueError, match="Invalid subreddit"):
+        await scraper.fetch_posts("../api", limit=5)
+
+    fetch_mock.assert_not_awaited()
 
 
 async def test_scraper_comment_fetch_concurrency_is_clamped_to_at_least_one():
@@ -153,6 +175,27 @@ def test_merge_post_keeps_earliest_source_timestamp():
     assert posts_by_id["reddit:abc123"].score == 10
     assert posts_by_id["reddit:abc123"].source_created_at == "2026-04-19T08:15:00+00:00"
     assert posts_by_id["reddit:abc123"].source_created_ts == 1776586500
+
+
+def test_build_post_tolerates_malformed_score_and_timestamp():
+    post = RedditScraper._build_post(
+        "python",
+        {
+            "id": "abc1",
+            "title": "Manual workflow pain",
+            "selftext": "body",
+            "url": "https://reddit.com/abc1",
+            "score": float("inf"),
+            "created_utc": float("inf"),
+            "permalink": "/r/python/comments/abc1/manual/",
+        },
+    )
+
+    assert post is not None
+    assert post.post_id == "reddit:abc1"
+    assert post.score == 0
+    assert post.source_created_at is None
+    assert post.source_created_ts is None
 
 
 async def test_fetch_public_json_handles_http_error(respx_mock):
@@ -303,6 +346,22 @@ async def test_request_oauth_json_refreshes_token_on_401():
     assert request_mock.await_count == 2
 
 
+async def test_get_oauth_token_rejects_oversized_response(respx_mock):
+    respx_mock.post("https://www.reddit.com/api/v1/access_token").mock(
+        return_value=httpx.Response(200, content=b"123456789")
+    )
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        max_response_bytes=8,
+    )
+
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(RuntimeError, match="Reddit response exceeded 8 bytes"):
+            await scraper._get_oauth_token(client=client)
+
+
 async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_mock):
     respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
         return_value=httpx.Response(
@@ -373,6 +432,106 @@ async def test_fetch_public_json_mixes_multiple_feeds_and_deduplicates(respx_moc
     posts = await scraper._fetch_public_json("python", limit=5)
 
     assert {post.post_id for post in posts} == {"reddit:same", "reddit:fresh"}
+
+
+async def test_fetch_public_json_keeps_successful_feed_when_peer_feed_fails():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    async def payload_or_error(*, client, url, params, headers):
+        if url.endswith("/top.json"):
+            raise RuntimeError("top feed unavailable")
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "newonly",
+                            "title": "New feed pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/newonly",
+                            "score": 8,
+                            "permalink": "/r/python/comments/newonly/new-feed-pain/",
+                        }
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_json_with_retries", side_effect=payload_or_error):
+        posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:newonly"]
+
+
+async def test_fetch_public_json_skips_malformed_listing_children(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "children": [
+                        "not-a-child-object",
+                        {"data": "not-a-post-object"},
+                        {
+                            "data": {
+                                "id": "valid",
+                                "title": "Valid feed pain",
+                                "selftext": "manual sync still breaks",
+                                "url": "https://reddit.com/valid",
+                                "score": 8,
+                                "permalink": "/r/python/comments/valid/valid-feed-pain/",
+                            }
+                        },
+                    ]
+                }
+            },
+        )
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+    )
+
+    posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:valid"]
+
+
+async def test_fetch_posts_falls_back_to_rss_when_public_json_listing_is_malformed(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, json={"data": {"children": {}}})
+    )
+    feed_xml = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>tag:reddit.com,2005:comments/rssfallback</id>
+        <title>RSS fallback pain</title>
+        <summary>Manual fallback still matters.</summary>
+        <link href="https://old.reddit.com/r/python/comments/rssfallback/rss_fallback_pain/" />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+    )
+
+    posts = await scraper.fetch_posts("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:rssfallback"]
 
 
 async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_query(respx_mock):
@@ -446,6 +605,44 @@ async def test_fetch_public_json_merges_search_queries_and_preserves_discovery_q
     assert search_route.call_count == 1
 
 
+async def test_fetch_public_json_treats_search_query_failure_as_optional():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["spreadsheet workaround"],
+    )
+
+    async def payload_or_error(*, client, url, params, headers):
+        if url.endswith("/search.json"):
+            raise RuntimeError("search unavailable")
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "toponly",
+                            "title": "Top feed pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/toponly",
+                            "score": 8,
+                            "permalink": "/r/python/comments/toponly/top-feed-pain/",
+                        }
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_json_with_retries", side_effect=payload_or_error):
+        posts = await scraper._fetch_public_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:toponly"]
+
+
 async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_mock):
     from unittest.mock import AsyncMock, patch
 
@@ -470,6 +667,92 @@ async def test_fetch_public_json_retries_transient_error_with_retry_after(respx_
     assert route.call_count == 2
     sleep_mock.assert_awaited_once()
     assert sleep_mock.await_args.args[0] == 0.2
+
+
+def test_retry_after_delay_is_capped_for_huge_or_infinite_values():
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    assert scraper._compute_backoff_delay(1, retry_after="999999") == MAX_REDDIT_RETRY_DELAY_SECONDS
+    assert scraper._compute_backoff_delay(1, retry_after="inf") == MAX_REDDIT_RETRY_DELAY_SECONDS
+
+
+async def test_fetch_rss_retries_transient_error_with_retry_after(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    xml_text = """
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>tag:reddit.com,2005:comments/rssretry</id>
+        <title>RSS retry pain</title>
+        <published>2026-04-19T08:15:00+00:00</published>
+        <summary>Manual retry finally works.</summary>
+        <link href="https://old.reddit.com/r/python/comments/rssretry/rss_retry_pain/" />
+      </entry>
+    </feed>
+    """
+    route = respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "0.2"}),
+            httpx.Response(200, text=xml_text),
+        ]
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        retry_max_attempts=3,
+        retry_base_delay=1.0,
+    )
+
+    with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        posts = await scraper._fetch_rss("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:rssretry"]
+    assert route.call_count == 2
+    sleep_mock.assert_awaited_once()
+    assert sleep_mock.await_args.args[0] == 0.2
+
+
+async def test_fetch_rss_uses_bounded_retries_for_fallback_feeds(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0.2"})
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        retry_max_attempts=5,
+        retry_base_delay=1.0,
+    )
+
+    with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        with pytest.raises(httpx.HTTPStatusError):
+            await scraper._fetch_rss("python", limit=10)
+
+    assert route.call_count == 3
+    assert sleep_mock.await_count == 2
+
+
+async def test_fetch_public_json_rejects_oversized_response(respx_mock):
+    respx_mock.get("https://www.reddit.com/r/python/top.json").mock(
+        return_value=httpx.Response(200, content=b"123456789")
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        max_response_bytes=8,
+    )
+
+    with pytest.raises(RuntimeError, match="Reddit response exceeded 8 bytes"):
+        await scraper._fetch_public_json("python", limit=10)
 
 
 async def test_request_json_with_retries_retries_request_error_then_succeeds(respx_mock):
@@ -601,6 +884,109 @@ async def test_fetch_rss_merges_feed_and_search_results(respx_mock):
     assert search_route.call_count == 1
 
 
+async def test_fetch_rss_keeps_successful_feed_when_peer_feed_fails(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_rssnew</id>
+        <title>New RSS pain</title>
+        <summary>Manual checks still break</summary>
+        <link href='https://reddit.com/r/python/comments/rssnew/new-rss-pain/' />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(503))
+    respx_mock.get("https://old.reddit.com/r/python/new/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:rssnew"]
+
+
+async def test_fetch_rss_keeps_successful_feed_when_peer_feed_has_bad_xml(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_rssnew</id>
+        <title>New RSS pain</title>
+        <summary>Manual checks still break</summary>
+        <link href='https://reddit.com/r/python/comments/rssnew/new-rss-pain/' />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        return_value=httpx.Response(200, text="<html>blocked</html")
+    )
+    respx_mock.get("https://old.reddit.com/r/python/new/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:rssnew"]
+
+
+async def test_fetch_rss_rejects_oversized_response(respx_mock):
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(
+        return_value=httpx.Response(200, content=b"123456789")
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        max_response_bytes=8,
+    )
+
+    with pytest.raises(RuntimeError, match="Reddit response exceeded 8 bytes"):
+        await scraper._fetch_rss("python", limit=5)
+
+
+async def test_fetch_rss_keeps_feed_results_when_search_has_bad_xml(respx_mock):
+    feed_xml = """<?xml version='1.0' encoding='UTF-8'?>
+    <feed xmlns='http://www.w3.org/2005/Atom'>
+      <entry>
+        <id>t3_feed</id>
+        <title>Feed pain</title>
+        <summary>Manual checks still break</summary>
+        <link href='https://reddit.com/r/python/comments/feed/feed-pain/' />
+      </entry>
+    </feed>
+    """
+    respx_mock.get("https://old.reddit.com/r/python/top/.rss").mock(return_value=httpx.Response(200, text=feed_xml))
+    respx_mock.get("https://old.reddit.com/r/python/search.rss").mock(
+        return_value=httpx.Response(200, text="<html>blocked</html")
+    )
+
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top"],
+        search_queries=["manual checks"],
+    )
+
+    posts = await scraper._fetch_rss("python", limit=5)
+
+    assert [post.post_id for post in posts] == ["reddit:feed"]
+
+
 async def test_fetch_oauth_json_requests_feeds_concurrently():
     from unittest.mock import patch
 
@@ -628,6 +1014,111 @@ async def test_fetch_oauth_json_requests_feeds_concurrently():
 
     assert posts == []
     assert max_active_requests == 3
+
+
+async def test_fetch_oauth_json_keeps_successful_feed_when_peer_feed_fails():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+        feed_mix=["top", "new"],
+    )
+
+    async def payload_or_error(*, client, path, params):
+        if path.endswith("/top.json"):
+            raise RuntimeError("top feed unavailable")
+        return {
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "id": "oauthnew",
+                            "title": "OAuth new pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/oauthnew",
+                            "score": 8,
+                            "permalink": "/r/python/comments/oauthnew/oauth-new-pain/",
+                        }
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_oauth_json", side_effect=payload_or_error):
+        posts = await scraper._fetch_oauth_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:oauthnew"]
+
+
+async def test_fetch_oauth_json_skips_malformed_listing_children():
+    from unittest.mock import patch
+
+    scraper = RedditScraper(
+        client_id="abc",
+        client_secret="xyz",
+        user_agent="test/1.0",
+        top_comments_limit=0,
+    )
+
+    async def payload(*, client, path, params):
+        return {
+            "data": {
+                "children": [
+                    "not-a-child-object",
+                    {"data": "not-a-post-object"},
+                    {
+                        "data": {
+                            "id": "oauthvalid",
+                            "title": "OAuth valid pain",
+                            "selftext": "manual sync still breaks",
+                            "url": "https://reddit.com/oauthvalid",
+                            "score": 8,
+                            "permalink": "/r/python/comments/oauthvalid/oauth-valid-pain/",
+                        }
+                    },
+                ]
+            }
+        }
+
+    with patch.object(scraper, "_request_oauth_json", side_effect=payload):
+        posts = await scraper._fetch_oauth_json("python", limit=10)
+
+    assert [post.post_id for post in posts] == ["reddit:oauthvalid"]
+
+
+async def test_fetch_top_comments_oauth_falls_back_to_rss_when_oauth_fails():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test/1.0")
+    client = AsyncMock()
+
+    with (
+        patch.object(scraper, "_request_oauth_json", new=AsyncMock(side_effect=RuntimeError("oauth comments down"))),
+        patch.object(scraper, "_fetch_comments_rss", new=AsyncMock(return_value=["rss comment"])) as rss_mock,
+    ):
+        comments = await scraper._fetch_top_comments_oauth(client=client, post_id="reddit:abc1", limit=2)
+
+    assert comments == ["rss comment"]
+    rss_mock.assert_awaited_once_with(client=client, post_id="reddit:abc1", limit=2)
+
+
+async def test_fetch_top_comments_oauth_falls_back_to_rss_when_listing_has_no_comments():
+    from unittest.mock import AsyncMock, patch
+
+    scraper = RedditScraper(client_id="abc", client_secret="xyz", user_agent="test/1.0")
+    client = AsyncMock()
+
+    with (
+        patch.object(scraper, "_request_oauth_json", new=AsyncMock(return_value=[{}, {"data": {"children": []}}])),
+        patch.object(scraper, "_fetch_comments_rss", new=AsyncMock(return_value=["rss comment"])) as rss_mock,
+    ):
+        comments = await scraper._fetch_top_comments_oauth(client=client, post_id="reddit:abc1", limit=2)
+
+    assert comments == ["rss comment"]
+    rss_mock.assert_awaited_once_with(client=client, post_id="reddit:abc1", limit=2)
 
 
 async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
@@ -662,6 +1153,149 @@ async def test_fetch_full_thread_json_returns_flattened_comments(respx_mock):
     scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
     comments = await scraper.fetch_full_thread("python", "abc1", max_comments=10)
     assert comments == ["parent", "child"]
+
+
+async def test_fetch_top_comments_json_tolerates_malformed_listing(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
+        return_value=httpx.Response(200, json=[{}, "not-a-listing"])
+    )
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    async with httpx.AsyncClient() as client:
+        comments = await scraper._fetch_top_comments_json(
+            client=client,
+            post_id="abc1",
+            limit=5,
+        )
+
+    assert comments == []
+
+
+async def test_fetch_top_comments_json_falls_back_to_rss_when_json_is_blocked(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(return_value=httpx.Response(403))
+    respx_mock.get("https://old.reddit.com/comments/abc1/.rss").mock(
+        return_value=httpx.Response(
+            200,
+            text="""<?xml version='1.0' encoding='UTF-8'?>
+            <feed xmlns='http://www.w3.org/2005/Atom'>
+              <entry>
+                <id>t3_abc1</id>
+                <content>Original post body</content>
+              </entry>
+              <entry>
+                <id>t1_comment1</id>
+                <content>&lt;div&gt;&lt;p&gt;same issue every week&lt;/p&gt;&lt;/div&gt;</content>
+              </entry>
+              <entry>
+                <id>t1_comment2</id>
+                <content>&lt;div&gt;&lt;p&gt;we built our own workaround&lt;/p&gt;&lt;/div&gt;</content>
+              </entry>
+            </feed>
+            """,
+        )
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    async with httpx.AsyncClient() as client:
+        comments = await scraper._fetch_top_comments_json(
+            client=client,
+            post_id="abc1",
+            limit=2,
+        )
+
+    assert comments == ["same issue every week", "we built our own workaround"]
+
+
+async def test_fetch_comments_rss_uses_bounded_retries_for_optional_comments(respx_mock):
+    from unittest.mock import AsyncMock, patch
+
+    route = respx_mock.get("https://old.reddit.com/comments/abc1/.rss").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0.2"})
+    )
+    scraper = RedditScraper(
+        client_id="",
+        client_secret="",
+        user_agent="test/1.0",
+        retry_max_attempts=5,
+        retry_base_delay=1.0,
+    )
+
+    async with httpx.AsyncClient() as client:
+        with patch("scraper.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            comments = await scraper._fetch_comments_rss(client=client, post_id="abc1", limit=2)
+
+    assert comments == []
+    assert route.call_count == 2
+    sleep_mock.assert_awaited_once()
+    assert sleep_mock.await_args.args[0] == 0.2
+
+
+async def test_fetch_full_thread_json_skips_malformed_comment_nodes(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {},
+                {
+                    "data": {
+                        "children": [
+                            "bad-child",
+                            {"kind": "t1", "data": "bad-data"},
+                            {
+                                "kind": "t1",
+                                "data": {
+                                    "body": "parent",
+                                    "replies": {
+                                        "data": {
+                                            "children": [
+                                                "bad-reply",
+                                                {"kind": "t1", "data": {"body": "child"}},
+                                            ]
+                                        }
+                                    },
+                                },
+                            },
+                        ]
+                    }
+                },
+            ],
+        )
+    )
+
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+    comments = await scraper.fetch_full_thread("python", "abc1", max_comments=10)
+
+    assert comments == ["parent", "child"]
+
+
+async def test_fetch_full_thread_json_falls_back_to_rss_when_json_is_blocked(respx_mock):
+    respx_mock.get("https://www.reddit.com/comments/abc1.json").mock(return_value=httpx.Response(403))
+    respx_mock.get("https://old.reddit.com/comments/abc1/.rss").mock(
+        return_value=httpx.Response(
+            200,
+            text="""<?xml version='1.0' encoding='UTF-8'?>
+            <feed xmlns='http://www.w3.org/2005/Atom'>
+              <entry>
+                <id>t3_abc1</id>
+                <content>Original post body</content>
+              </entry>
+              <entry>
+                <id>t1_comment1</id>
+                <content>&lt;p&gt;parent pain&lt;/p&gt;</content>
+              </entry>
+              <entry>
+                <id>t1_comment2</id>
+                <content>&lt;p&gt;child workaround&lt;/p&gt;</content>
+              </entry>
+            </feed>
+            """,
+        )
+    )
+    scraper = RedditScraper(client_id="", client_secret="", user_agent="test/1.0")
+
+    comments = await scraper.fetch_full_thread("python", "abc1", max_comments=10)
+
+    assert comments == ["parent pain", "child workaround"]
 
 
 async def test_post_id_helpers_and_append_comments():

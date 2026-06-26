@@ -1,7 +1,10 @@
 ﻿import asyncio
 from unittest.mock import AsyncMock
 
-from classifier import Classifier, extract_comment_market_signals
+import pytest
+
+from budget import BudgetCapReachedError
+from classifier import Classifier, PainSignal, extract_comment_market_signals
 from openrouter import AnalysisResult
 from scraper import Post
 
@@ -199,6 +202,45 @@ async def test_classify_batch_respects_max_concurrency():
 
     assert signals == []
     assert peak_in_flight <= 2
+
+
+async def test_classify_batch_keeps_valid_posts_when_one_post_raises():
+    clf = Classifier(openrouter=None, mode="legacy")
+    posts = [
+        make_post(title="I can't do this", post_id="ok"),
+        make_post(title="I can't do this either", post_id="boom"),
+    ]
+
+    async def classify_stub(post):
+        if post.post_id == "boom":
+            raise RuntimeError("parser crashed")
+        return PainSignal(
+            post=post,
+            category="complaint",
+            summary="valid",
+            severity="medium",
+            is_monetizable=True,
+            pain_level=8,
+            willingness_to_pay=7,
+        )
+
+    clf.classify = classify_stub  # type: ignore[assignment]
+
+    signals = await clf.classify_batch(posts)
+
+    assert [signal.post.post_id for signal in signals] == ["ok"]
+
+
+async def test_classify_batch_propagates_budget_pause():
+    clf = Classifier(openrouter=None, mode="legacy")
+
+    async def classify_stub(post):
+        raise BudgetCapReachedError("paused")
+
+    clf.classify = classify_stub  # type: ignore[assignment]
+
+    with pytest.raises(BudgetCapReachedError, match="paused"):
+        await clf.classify_batch([make_post(title="I can't do this", post_id="paused")])
 
 
 def test_prescreen_posts_filters_low_signal_and_caps_candidates():

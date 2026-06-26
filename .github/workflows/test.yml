@@ -20,6 +20,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Dependency audit
+        run: python -m pip_audit -r requirements.txt
 
       - name: Run critical pipeline/db tests (fast feedback)
         run: pytest tests/test_db.py tests/test_pipeline.py -q
@@ -28,7 +32,10 @@ jobs:
         run: ruff check .
 
       - name: Mypy
-        run: mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py main.py
+        run: mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py digest_delivery.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
+
+      - name: Docker Compose config
+        run: docker compose config -q
 
       - name: Run tests with coverage gate
         run: pytest --cov=. --cov-report=term-missing --cov-fail-under=80 -q
