@@ -875,7 +875,11 @@ class PainFinderBot:
                         return
                     post_id = signal.post.post_id
                 else:
-                    post_id = triage_parts[2]
+                    legacy_parts = data.split(":", 2)
+                    if len(legacy_parts) != 3:
+                        await query.answer("Malformed callback", show_alert=False)
+                        return
+                    post_id = legacy_parts[2]
                 updated = await self.db.update_triage_status(post_id, status)
                 if not updated:
                     await query.answer("Post not found", show_alert=False)

@@ -147,7 +147,7 @@ Prefer these rules when expanding the set:
 - `is_monetizable=true` only when the pain plausibly maps to a software budget owner or operational buyer.
 - `founder_pitch`, `news_analysis`, and generic `advice_thread` rows should mostly be hard negatives.
 - use `hard_negative_type` when a row is intentionally non-promotable, such as founder pitches, news, generic questions, B2C noise, stale items, solved items, or out-of-scope segments.
-- use `evidence_quality=exact` only when the prediction can be anchored to source text rather than inferred from vibes.
+- use `evidence_quality=exact_quote` only when the prediction can be anchored to source text rather than inferred from vibes.
 - use `feedback_useful` to model the operator judgement that would make a card worth keeping for future labeling.
 - mark B2C complaints as `is_pain=false` for this product, even if they are emotionally intense.
 - if freshness is ambiguous, label `is_current_opportunity=false` until proven fresh.

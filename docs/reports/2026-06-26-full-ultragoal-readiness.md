@@ -116,9 +116,11 @@ Cleanup and independent review:
 ## Residual Risks
 
 - Local tests do not prove Telegram production delivery, Google Sheets credentials, Reddit/HN/review-source availability, or deployment environment health.
+- Telegram list/card inline callbacks are backed by in-memory session tokens for long callback payloads; they expire after 24 hours or process restart. Legacy direct post-id callbacks remain supported.
+- Promotion/evidence metadata is currently written by `pipeline.py` and decoded by downstream export/digest/radar surfaces. The implemented slice is tested, but broader future product surfaces should centralize row-level decoding before expanding this contract.
 - `python healthcheck.py --fail-on-job-errors` depends on the target environment and database state.
 - Source smoke checks are intentionally read-only but still depend on external network/source behavior.
-- Advisory calibration output is not an accepted runtime scoring change.
+- Advisory calibration output is not an accepted runtime scoring change and uses its own review vocabulary until a later explicit scoring change aligns it with runtime scoring.
 - Static report-builder and research-action workflows remain deferred.
 
 ## Verdict

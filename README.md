@@ -79,6 +79,8 @@ Inline actions on pain cards:
 - `Too generic`
 - `Wrong segment`
 
+Inline list/card callbacks use short in-memory session tokens so long source IDs still fit Telegram callback limits. These session callbacks are intentionally operator-session state: they expire after 24 hours or process restart. Older direct post-id callbacks remain supported and preserve source-prefixed IDs such as `reddit:abc123`.
+
 ## Environment Variables
 
 Required:
@@ -241,7 +243,7 @@ Paths and source auth:
 - `/export` always returns a CSV file.
 - If Sheets credentials and spreadsheet ID are set, export also upserts to Sheets.
 - Sheets failures do not block CSV; a warning message is returned.
-- Exported research fields include `promotion_eligible`, `promotion_rejection_reason`, `hard_negative_type`, and `verified_evidence_count`.
+- Exported research fields include `promotion_eligible`, `evidence_rejection_reason`, `hard_negative_type`, and `verified_evidence_count`.
 
 ## Promotion And Evidence Behavior
 

@@ -611,6 +611,26 @@ async def test_callback_query_updates_triage_status():
     query.answer.assert_awaited_once()
 
 
+async def test_legacy_triage_callback_preserves_source_prefixed_post_id():
+    db = AsyncMock()
+    db.update_triage_status.return_value = True
+
+    query = SimpleNamespace(
+        data="triage:favorite:reddit:abc123",
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+    )
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=query)
+
+    bot = PainFinderBot(scraper=AsyncMock(), classifier=AsyncMock(), db=db)
+    bot._is_authorized = lambda update: True
+
+    await bot.on_callback_query(update, None)
+
+    db.update_triage_status.assert_awaited_once_with("reddit:abc123", "favorite")
+    query.answer.assert_awaited_once()
+
+
 async def test_callback_query_records_feedback():
     db = AsyncMock()
     db.record_feedback.return_value = 7
