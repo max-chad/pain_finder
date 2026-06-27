@@ -471,6 +471,42 @@ def test_readme_requires_optional_dspy_dependency_audit():
     assert "\ndspy" not in requirements_dspy.lower()
 
 
+def test_readme_documents_operator_controlled_pipeline_and_bootstrap():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "operator-controlled, evidence-backed B2B opportunity intelligence pipeline" in readme
+    assert "starter scorecard under `eval/` for product-level opportunity quality" in readme
+    assert (
+        "Before the first run, set the required env vars. `config.py` imports during startup and fails fast if "
+        "`TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is missing or blank. For the LLM key, `LLM_API_KEY` is the "
+        "primary contract; `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are accepted legacy fallbacks."
+    ) in readme
+    assert "export TELEGRAM_BOT_TOKEN=..." in readme
+    assert "export TELEGRAM_CHAT_ID=..." in readme
+    assert "export LLM_API_KEY=..." in readme
+    assert "# Accepted legacy fallbacks: OPENAI_API_KEY or OPENROUTER_API_KEY" in readme
+    assert "python healthcheck.py --fail-on-job-errors" in readme
+
+    for term in [
+        "evidence",
+        "hard negative",
+        "cluster",
+        "opportunity candidate",
+        "promotion eligible",
+        "decision surface",
+    ]:
+        assert f"`{term}`" in readme
+
+
+def test_eval_readme_frames_product_level_benchmark():
+    eval_readme = Path("eval/README.md").read_text(encoding="utf-8")
+
+    assert "starter benchmark for product-level opportunity quality" in eval_readme
+    assert "not a parser-only benchmark" in eval_readme
+    assert "100-150 labeled examples" in eval_readme
+    assert "direction, not readiness proof" in eval_readme
+
+
 def test_readme_smoke_collect_all_documents_review_target_requirement():
     readme = Path("README.md").read_text(encoding="utf-8")
 

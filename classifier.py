@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from budget import BudgetCapReachedError
-from openrouter import AnalysisResult, OpenRouterClient
+from openrouter import AnalysisResult, OpenRouterClient, OpenRouterUsageAccountingError
 from scraper import Post
 
 logger = logging.getLogger(__name__)
@@ -631,6 +631,8 @@ class Classifier:
                 try:
                     return await self.classify(post)
                 except BudgetCapReachedError:
+                    raise
+                except OpenRouterUsageAccountingError:
                     raise
                 except Exception:
                     logger.exception("classify_post_failed stage=classify post_id=%s", post.post_id)

@@ -169,6 +169,8 @@ class AnalysisPipeline:
         classified_count = len(classified_signals)
         inserted_count = 0
         dedup_merged_count = 0
+        dedup_embed_failed_count = 0
+        dedup_merge_failed_count = 0
         discarded_non_pain_count = max(0, len(fresh_posts) - classified_count)
 
         monetizable_count = 0
@@ -189,15 +191,34 @@ class AnalysisPipeline:
 
             if self.deduplicator is not None:
                 text = f"{signal.post.title} {signal.post.body}"
-                embedding = await self.deduplicator.embedder.embed(text)
-                is_dup = await self.deduplicator.find_and_merge(
-                    post_id=signal.post.post_id,
-                    embedding=embedding,
-                    source=source,
-                )
-                if is_dup:
-                    dedup_merged_count += 1
-                    continue  # duplicate merged into canonical; skip insert
+                try:
+                    embedding = await self.deduplicator.embedder.embed(text)
+                except Exception as exc:
+                    dedup_embed_failed_count += 1
+                    logger.warning(
+                        "dedup: embed failed for %s (%s), skipping dedup",
+                        signal.post.post_id,
+                        exc,
+                    )
+                    embedding = None
+                else:
+                    try:
+                        is_dup = await self.deduplicator.find_and_merge(
+                            post_id=signal.post.post_id,
+                            embedding=embedding,
+                            source=source,
+                        )
+                    except Exception as exc:
+                        dedup_merge_failed_count += 1
+                        logger.warning(
+                            "dedup: merge check failed for %s (%s), skipping dedup",
+                            signal.post.post_id,
+                            exc,
+                        )
+                        is_dup = False
+                    if is_dup:
+                        dedup_merged_count += 1
+                        continue  # duplicate merged into canonical; skip insert
 
             await self.db.insert_pain_point(
                 subreddit=signal.post.subreddit,
@@ -294,7 +315,7 @@ class AnalysisPipeline:
             "analysis_complete stage=analyze source=%s scope=%s analysis_run_id=%s "
             "post_count=%d fresh_post_count=%d skipped_existing_count=%d screen_rule_dropped_count=%d "
             "screen_kept_count=%d llm_capped_count=%d pain_count=%d monetizable_count=%d deep_dive_count=%d "
-            "inserted_count=%d dedup_merged_count=%d discarded_non_pain_count=%d primary_success_count=%d "
+            "inserted_count=%d dedup_merged_count=%d dedup_embed_failed_count=%d dedup_merge_failed_count=%d discarded_non_pain_count=%d primary_success_count=%d "
             "legacy_fallback_count=%d deep_dive_skipped_reasons=%s duration_ms=%d",
             source,
             run_scope,
@@ -310,6 +331,8 @@ class AnalysisPipeline:
             deep_dive_count,
             inserted_count,
             dedup_merged_count,
+            dedup_embed_failed_count,
+            dedup_merge_failed_count,
             discarded_non_pain_count,
             primary_success_count,
             legacy_fallback_count,

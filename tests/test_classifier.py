@@ -5,7 +5,7 @@ import pytest
 
 from budget import BudgetCapReachedError
 from classifier import Classifier, PainSignal, extract_comment_market_signals
-from openrouter import AnalysisResult
+from openrouter import AnalysisResult, OpenRouterUsageAccountingError
 from scraper import Post
 
 
@@ -241,6 +241,15 @@ async def test_classify_batch_propagates_budget_pause():
 
     with pytest.raises(BudgetCapReachedError, match="paused"):
         await clf.classify_batch([make_post(title="I can't do this", post_id="paused")])
+
+
+async def test_classify_batch_propagates_openrouter_accounting_failure():
+    mock_llm = AsyncMock()
+    mock_llm.analyze_post.side_effect = OpenRouterUsageAccountingError("llm_usage_record_failed")
+    clf = Classifier(openrouter=mock_llm, mode="b2b")
+
+    with pytest.raises(OpenRouterUsageAccountingError, match="llm_usage_record_failed"):
+        await clf.classify_batch([make_post(title="I can't get this working", post_id="acct")])
 
 
 def test_prescreen_posts_filters_low_signal_and_caps_candidates():

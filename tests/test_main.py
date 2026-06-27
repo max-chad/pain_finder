@@ -60,6 +60,184 @@ def test_build_review_targets_rejects_invalid_enabled_flag(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_rejects_invalid_review_targets_before_db_bootstrap(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("LLM_API_KEY", "key")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
+
+    main = importlib.import_module("main")
+    main = importlib.reload(main)
+    main.config.APP_MODE = "telegram"
+    main.config.REVIEWS_ENABLED = True
+    main.config.REVIEW_TARGETS = [
+        {"site": "g2", "name": "Broken", "url": "https://example.com/reviews", "enabled": "flase"},
+    ]
+
+    class FakeDB:
+        instances = []
+
+        def __init__(self, path):
+            self.path = path
+            self.init_called = False
+            self.close_called = False
+            FakeDB.instances.append(self)
+
+        async def init(self):
+            self.init_called = True
+
+        async def close(self):
+            self.close_called = True
+
+        async def get_pain_point(self, post_id):
+            return None
+
+        async def is_llm_paused(self, *args, **kwargs):
+            return False
+
+        async def get_runtime_flags(self):
+            return {}
+
+        async def get_daily_spend_usd(self, *args, **kwargs):
+            return 0.0
+
+        async def get_monitored_subreddits(self):
+            return []
+
+    class FakeEmbedder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeDeduplicator:
+        instances = []
+
+        def __init__(self, db, embedder, threshold):
+            self.db = db
+            self.embedder = embedder
+            self.threshold = threshold
+            self.backfill_called = False
+            FakeDeduplicator.instances.append(self)
+
+        async def backfill(self):
+            self.backfill_called = True
+            return 0
+
+    class FakeOpenRouterClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeClassifier:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def analyze_subreddit(self, subreddit, limit=100):
+            return SimpleNamespace(signals=[], post_count=0, pain_count=0)
+
+        async def analyze_external_posts(self, posts, source, run_scope):
+            return SimpleNamespace(signals=[], post_count=0, pain_count=0)
+
+        async def run_deep_dive(self, **kwargs):
+            return SimpleNamespace(status="completed", summary="ok", error=None)
+
+        async def generate_digest(self, subreddit=None, hours=24):
+            return {"total": 0, "top_items": [], "niche_counts": {}, "source_counts": {}, "recurring_blockers": []}
+
+    class FakeClusterer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def run(self, window_days):
+            return SimpleNamespace(run_id=1, candidate_count=0, clusters=[])
+
+    class FakeGTMGenerator:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def generate(self, post_id):
+            return SimpleNamespace(post_id=post_id, payload=SimpleNamespace())
+
+    class FakeHNScraper:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def fetch_posts(self, **kwargs):
+            return []
+
+    class FakeReviewScraper:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def fetch_many_targets(self, **kwargs):
+            return []
+
+    class FakeExportService:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeDigestService:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def build_document(self, **kwargs):
+            return SimpleNamespace(total_items=0, docx_path=None, group_count=0)
+
+    class FakeBot:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.app = None
+
+        def build_app(self):
+            raise AssertionError("Telegram app should not be built when review-target validation fails early")
+
+        async def send_grouped_notification(self, *, chat_id: int, signals: list, label: str) -> None:
+            return None
+
+    class FakeScheduler:
+        def __init__(self, db, analyze_fn, **kwargs):
+            self.db = db
+            self.analyze_fn = analyze_fn
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            self.reload_called = False
+
+        def start(self):
+            self.started = True
+
+        async def reload_jobs(self):
+            self.reload_called = True
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(main, "Database", FakeDB)
+    monkeypatch.setattr(main, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(main, "Deduplicator", FakeDeduplicator)
+    monkeypatch.setattr(main, "OpenRouterClient", FakeOpenRouterClient)
+    monkeypatch.setattr(main, "Classifier", FakeClassifier)
+    monkeypatch.setattr(main, "AnalysisPipeline", FakePipeline)
+    monkeypatch.setattr(main, "MacroTrendClusterer", FakeClusterer)
+    monkeypatch.setattr(main, "GTMGenerator", FakeGTMGenerator)
+    monkeypatch.setattr(main, "HackerNewsScraper", FakeHNScraper)
+    monkeypatch.setattr(main, "ReviewScraper", FakeReviewScraper)
+    monkeypatch.setattr(main, "ExportService", FakeExportService)
+    monkeypatch.setattr(main, "DailyDigestDocumentService", FakeDigestService)
+    monkeypatch.setattr(main, "PainFinderBot", FakeBot)
+    monkeypatch.setattr(main, "MonitoringScheduler", FakeScheduler)
+
+    with pytest.raises(ValueError, match="REVIEW_TARGETS_JSON target enabled must be a boolean"):
+        await main.run()
+
+    assert FakeDB.instances == []
+    assert FakeDeduplicator.instances == []
+
+
+@pytest.mark.asyncio
 async def test_build_shutdown_event_registers_sigint_and_sigterm(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")

@@ -3,6 +3,17 @@ from __future__ import annotations
 from scraper import Post
 
 
+def test_build_parser_help_mentions_read_only_readiness_examples():
+    import smoke_collect
+
+    help_text = " ".join(smoke_collect.build_parser().format_help().split())
+
+    assert "Read-only source smoke check for operator readiness validation." in help_text
+    assert "Does not call LLMs, Telegram, or write the DB." in help_text
+    assert "Fail closed when a requested source returns zero posts; use for readiness gates and CI smoke coverage." in help_text
+    assert "python smoke_collect.py --source all --limit 1 --require-posts" in help_text
+
+
 def _post(post_id: str = "reddit:abc") -> Post:
     return Post(
         post_id=post_id,

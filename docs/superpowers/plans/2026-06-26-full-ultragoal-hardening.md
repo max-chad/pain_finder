@@ -129,8 +129,8 @@ Run safe optional checks if the integrated tooling exists and local environment 
 
 ```powershell
 docker compose config -q
-python healthcheck.py --strict
-python smoke_collect.py --source reddit --limit 1
+python healthcheck.py --fail-on-job-errors
+python smoke_collect.py --source reddit --limit 1 --require-posts
 ```
 
 Acceptance:

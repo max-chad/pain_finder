@@ -145,6 +145,8 @@ async def _publish_daily_digest(*, digest_service: DailyDigestDocumentService):
 
 
 async def run() -> None:
+    review_targets = _build_review_targets()
+
     db = Database(config.DB_PATH)
     await db.init()
 
@@ -222,7 +224,6 @@ async def run() -> None:
 
     hn_scraper = HackerNewsScraper(user_agent=config.REDDIT_USER_AGENT, max_response_bytes=config.HN_MAX_RESPONSE_BYTES)
     review_scraper = ReviewScraper(user_agent=config.REDDIT_USER_AGENT, max_html_bytes=config.REVIEWS_MAX_HTML_BYTES)
-    review_targets = _build_review_targets()
 
     export_service = ExportService(
         db=db,

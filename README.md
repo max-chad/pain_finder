@@ -1,10 +1,19 @@
 ﻿# pain_finder
 
-Telegram-controlled / Hermes-managed B2B pain discovery system with Reddit, Hacker News, and review-source ingestion, deep-dive enrichment, macro trend clustering, budget guardrails, GTM generation, and daily grouped digest delivery.
+`pain_finder` is an operator-controlled, evidence-backed B2B opportunity intelligence pipeline. It ingests pain signals from Reddit, Hacker News, and review sources, verifies source evidence, clusters related signals, and surfaces promotion-eligible opportunity candidates for operator review and GTM follow-up.
+
+## Glossary
+
+- `evidence`: source-backed text spans in the title, body, or comments that support a candidate.
+- `hard negative`: an intentionally non-promotable row such as a founder pitch, news item, generic advice, solved issue, stale post, or B2C noise.
+- `cluster`: a group of related rows that share a recurring pain theme or market signal.
+- `opportunity candidate`: a screened row that looks worth operator review because it has a plausible B2B pain and enough evidence to inspect.
+- `promotion eligible`: a candidate that passed evidence checks and can surface in operator-facing promotion, export, or GTM flows.
+- `decision surface`: the operator-facing review state formed by evidence, scores, hard-negative tags, cluster context, and feedback.
 
 ## What It Does
 
-- Collects candidate pain posts from:
+- Collects opportunity candidates from:
   - Reddit (`scraper.py`)
   - Hacker News Algolia API (`scraper_hn.py`)
   - Configured review pages (`scraper_reviews.py`)
@@ -257,6 +266,15 @@ Paths and source auth:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Before the first run, set the required env vars. `config.py` imports during startup and fails fast if `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is missing or blank. For the LLM key, `LLM_API_KEY` is the primary contract; `OPENAI_API_KEY` and `OPENROUTER_API_KEY` are accepted legacy fallbacks.
+
+```bash
+export TELEGRAM_BOT_TOKEN=...
+export TELEGRAM_CHAT_ID=...
+export LLM_API_KEY=...
+# Accepted legacy fallbacks: OPENAI_API_KEY or OPENROUTER_API_KEY
 python main.py
 ```
 
@@ -304,6 +322,7 @@ Add `--require-posts` when a deployment gate should fail if a requested source r
 ## Quality Gates
 
 ```bash
+python healthcheck.py --fail-on-job-errors
 ruff check .
 mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py digest_delivery.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
 docker compose config -q
@@ -313,7 +332,7 @@ pytest --cov=. --cov-fail-under=80 -q
 
 ## Evaluation Harness
 
-The Reddit parser now has a checked-in hand-labeled starter eval set under `eval/`.
+The repo includes a checked-in starter scorecard under `eval/` for product-level opportunity quality. Parser metrics are one slice of that scorecard, not the whole goal.
 
 Run live against the configured runtime (Codex/OpenAI + optional DSPy):
 
@@ -363,7 +382,7 @@ For labeling rules and the seed-set caveats, see `eval/README.md`.
 
 ## Current Hardening Status
 
-The `codex/full-ultragoal-hardening` branch integrates runtime hardening from `codex/autonomous-audit-fixes` and a smaller, tested rewrite of the evidence/feedback/product-eval core from `bot/277606-external-review-plan`. It does not wholesale-merge the older product branch, and it does not claim production readiness without deployment environment checks, live source smoke, and operator review. See `docs/reports/2026-06-26-full-ultragoal-intake.md` and `docs/reports/2026-06-26-full-ultragoal-readiness.md`.
+The `codex/full-ultragoal-hardening` branch integrates runtime hardening from `codex/autonomous-audit-fixes` and a smaller, tested rewrite of the evidence/feedback/product-eval core from `bot/277606-external-review-plan`. It does not wholesale-merge the older product branch, and it does not claim production readiness without `python healthcheck.py --fail-on-job-errors`, live source smoke, and operator review. See `docs/reports/2026-06-26-full-ultragoal-intake.md` and `docs/reports/2026-06-26-full-ultragoal-readiness.md`.
 
 ## Upgrade Notes
 

@@ -97,6 +97,9 @@
     "feedback_useful": {
       "type": "boolean"
     },
+    "cluster_useful": {
+      "type": "boolean"
+    },
     "notes": {
       "type": "string"
     }

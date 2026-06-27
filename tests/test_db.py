@@ -1143,6 +1143,22 @@ async def test_record_llm_usage_rejects_negative_token_counts(db):
     assert await db.get_daily_spend_usd() == 0.0
 
 
+async def test_record_llm_usage_rejects_blank_model_or_operation(db):
+    for kwargs, field_name in [
+        ({"model": " ", "operation": "classify_primary"}, "model"),
+        ({"model": "model-a", "operation": " "}, "operation"),
+    ]:
+        with pytest.raises(ValueError, match=rf"{field_name} must be a non-empty string"):
+            await db.record_llm_usage(
+                prompt_tokens=100,
+                completion_tokens=50,
+                cost_usd=0.12,
+                **kwargs,
+            )
+
+    assert await db.get_daily_spend_usd() == 0.0
+
+
 async def test_gtm_assets_persist(db):
     asset_id = await db.save_gtm_asset(
         post_id="reddit:g1",

@@ -151,7 +151,16 @@ def load_source_smoke_config() -> SourceSmokeConfig:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read-only smoke check for source collection paths. Does not call LLMs, Telegram, or write the DB."
+        description=(
+            "Read-only source smoke check for operator readiness validation.\n"
+            "Does not call LLMs, Telegram, or write the DB."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python smoke_collect.py --source reddit --subreddit python --limit 5\n"
+            "  python smoke_collect.py --source all --limit 1 --require-posts"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--source", choices=("reddit", "hn", "reviews", "all"), default="reddit")
     parser.add_argument("--subreddit", default="python", help="Subreddit for the Reddit smoke check.")
@@ -165,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-posts",
         action="store_true",
-        help="Return a non-zero exit code when a requested source completes but returns no posts.",
+        help="Fail closed when a requested source returns zero posts; use for readiness gates and CI smoke coverage.",
     )
     return parser
 

@@ -15,6 +15,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class OpenRouterUsageAccountingError(Exception):
+    """Raised when usage accounting persistence fails."""
+
+
+class _NullBudgetAdmission:
+    async def __aenter__(self) -> "_NullBudgetAdmission":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 VALID_CATEGORIES = {"complaint", "unsolved", "wish"}
 VALID_SEVERITIES = {"low", "medium", "high"}
 VALID_SIGNAL_LEVELS = {"low", "medium", "high"}
@@ -288,20 +301,21 @@ class OpenRouterClient:
             "User-Agent": "codex_cli_rs/0.0.0 (pain_finder)",
             "originator": "codex_cli_rs",
         }
-        if not isinstance(access_token, str) or not access_token.strip():
-            return headers
         try:
+            if not isinstance(access_token, str) or not access_token.strip():
+                raise ValueError("missing access token")
             parts = access_token.split(".")
             if len(parts) < 2:
-                return headers
+                raise ValueError("missing JWT payload")
             payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
             claims = json.loads(base64.urlsafe_b64decode(payload_b64))
             auth_claims = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
             account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
-            if isinstance(account_id, str) and account_id.strip():
-                headers["ChatGPT-Account-ID"] = account_id.strip()
-        except Exception:
-            pass
+            if not isinstance(account_id, str) or not account_id.strip():
+                raise ValueError("missing ChatGPT-Account-ID claim")
+            headers["ChatGPT-Account-ID"] = account_id.strip()
+        except Exception as e:
+            raise ValueError("openai-codex routing requires a valid ChatGPT-Account-ID claim") from e
         return headers
 
     def _build_headers(self) -> dict[str, str]:
@@ -492,6 +506,9 @@ class OpenRouterClient:
                     post_id,
                     e,
                 )
+                raise OpenRouterUsageAccountingError(
+                    f"llm_usage_record_failed model={model} operation={operation} post_id={post_id}"
+                ) from e
 
     def set_budget_guard(self, budget_guard: "BudgetGuard | None") -> None:
         self.budget_guard = budget_guard
@@ -640,114 +657,121 @@ class OpenRouterClient:
                 logger.info("openrouter_cache_hit model=%s operation=%s", model, operation)
                 return cached_payload
 
-        if self.budget_guard is not None:
-            await self.budget_guard.ensure_can_spend(operation)
-
-        if self._uses_openai_codex_backend():
-            try:
-                payload, usage = await self._request_codex_responses_payload(
-                    prompt=prompt,
+        async with await self._admit_budget(operation):
+            if self._uses_openai_codex_backend():
+                try:
+                    payload, usage = await self._request_codex_responses_payload(
+                        prompt=prompt,
+                        model=model,
+                        max_output_tokens=max_output_tokens,
+                    )
+                except Exception as e:
+                    logger.warning("OpenAI Codex request failed: %s", e)
+                    return None
+                await self._record_usage_from_usage_dict(
+                    usage=usage,
                     model=model,
-                    max_output_tokens=max_output_tokens,
+                    operation=operation,
+                    post_id=post_id,
+                    prompt_hash=prompt_hash,
+                    fallback_reason=fallback_reason,
+                    schema_version=schema_version,
+                    candidate_stage=candidate_stage,
                 )
-            except Exception as e:
-                logger.warning("OpenAI Codex request failed: %s", e)
-                return None
-            await self._record_usage_from_usage_dict(
-                usage=usage,
-                model=model,
-                operation=operation,
-                post_id=post_id,
-                prompt_hash=prompt_hash,
-                fallback_reason=fallback_reason,
-                schema_version=schema_version,
-                candidate_stage=candidate_stage,
-            )
-            if payload is None:
-                return None
-            is_valid_payload = validate_payload(payload) if validate_payload is not None else True
-            if is_valid_payload:
-                await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
-            else:
-                logger.warning(
-                    "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
-                    model,
-                    operation,
-                    cache_key,
-                )
-            return payload
+                if payload is None:
+                    return None
+                is_valid_payload = validate_payload(payload) if validate_payload is not None else True
+                if is_valid_payload:
+                    await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
+                else:
+                    logger.warning(
+                        "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
+                        model,
+                        operation,
+                        cache_key,
+                    )
+                return payload
 
-        headers = self._build_headers()
-        request_body = self._build_request_body(model=model, prompt=prompt, max_output_tokens=max_output_tokens)
+            headers = self._build_headers()
+            request_body = self._build_request_body(model=model, prompt=prompt, max_output_tokens=max_output_tokens)
 
-        _max_attempts = len(RETRY_BACKOFF_SECONDS)
-        try:
-            async with httpx.AsyncClient(timeout=45) as client:
-                for attempt in range(1, _max_attempts + 1):
-                    try:
-                        response_json = await self._post_json_with_response_limit(
-                            client=client,
-                            url=self.base_url,
-                            payload=request_body,
-                            headers=headers,
-                        )
-                        await self._record_usage_from_response(
-                            response_json=response_json,
-                            model=model,
-                            operation=operation,
-                            post_id=post_id,
-                            prompt_hash=prompt_hash,
-                            fallback_reason=fallback_reason,
-                            schema_version=schema_version,
-                            candidate_stage=candidate_stage,
-                        )
-                        content = response_json["choices"][0]["message"]["content"]
-                        payload = self._safe_json_load(content)
-                        is_valid_payload = validate_payload(payload) if validate_payload is not None else True
-                        if is_valid_payload:
-                            await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
-                        else:
-                            logger.warning(
-                                "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
-                                model,
-                                operation,
-                                cache_key,
+            _max_attempts = len(RETRY_BACKOFF_SECONDS)
+            try:
+                async with httpx.AsyncClient(timeout=45) as client:
+                    for attempt in range(1, _max_attempts + 1):
+                        try:
+                            response_json = await self._post_json_with_response_limit(
+                                client=client,
+                                url=self.base_url,
+                                payload=request_body,
+                                headers=headers,
                             )
-                        return payload
-                    except httpx.HTTPStatusError as e:
-                        status_code = e.response.status_code if e.response else None
-                        if status_code in RETRYABLE_STATUS_CODES and attempt < _max_attempts:
-                            delay = RETRY_BACKOFF_SECONDS[attempt - 1]
-                            logger.warning(
-                                "OpenRouter HTTP %s attempt %d/%d model=%s operation=%s retry=%.1fs",
-                                status_code,
-                                attempt,
-                                _max_attempts,
-                                model,
-                                operation,
-                                delay,
+                            await self._record_usage_from_response(
+                                response_json=response_json,
+                                model=model,
+                                operation=operation,
+                                post_id=post_id,
+                                prompt_hash=prompt_hash,
+                                fallback_reason=fallback_reason,
+                                schema_version=schema_version,
+                                candidate_stage=candidate_stage,
                             )
-                            await asyncio.sleep(delay)
-                            continue
-                        raise
-                    except httpx.RequestError as e:
-                        if attempt < _max_attempts:
-                            delay = RETRY_BACKOFF_SECONDS[attempt - 1]
-                            logger.warning(
-                                "OpenRouter request error %s attempt %d/%d model=%s operation=%s retry=%.1fs",
-                                e,
-                                attempt,
-                                _max_attempts,
-                                model,
-                                operation,
-                                delay,
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-                        raise
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, RuntimeError, json.JSONDecodeError) as e:
-            logger.warning("OpenRouter request failed: %s", e)
-            return None
+                            content = response_json["choices"][0]["message"]["content"]
+                            payload = self._safe_json_load(content)
+                            is_valid_payload = validate_payload(payload) if validate_payload is not None else True
+                            if is_valid_payload:
+                                await self._set_cached_payload(cache_key=cache_key, model=model, operation=operation, payload=payload)
+                            else:
+                                logger.warning(
+                                    "openrouter_cache_skip_invalid_payload model=%s operation=%s key=%s",
+                                    model,
+                                    operation,
+                                    cache_key,
+                                )
+                            return payload
+                        except httpx.HTTPStatusError as e:
+                            status_code = e.response.status_code if e.response else None
+                            if status_code in RETRYABLE_STATUS_CODES and attempt < _max_attempts:
+                                delay = RETRY_BACKOFF_SECONDS[attempt - 1]
+                                logger.warning(
+                                    "OpenRouter HTTP %s attempt %d/%d model=%s operation=%s retry=%.1fs",
+                                    status_code,
+                                    attempt,
+                                    _max_attempts,
+                                    model,
+                                    operation,
+                                    delay,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            raise
+                        except httpx.RequestError as e:
+                            if attempt < _max_attempts:
+                                delay = RETRY_BACKOFF_SECONDS[attempt - 1]
+                                logger.warning(
+                                    "OpenRouter request error %s attempt %d/%d model=%s operation=%s retry=%.1fs",
+                                    e,
+                                    attempt,
+                                    _max_attempts,
+                                    model,
+                                    operation,
+                                    delay,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            raise
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, RuntimeError, json.JSONDecodeError) as e:
+                logger.warning("OpenRouter request failed: %s", e)
+                return None
+
+    async def _admit_budget(self, operation: str) -> Any:
+        if self.budget_guard is None:
+            return _NullBudgetAdmission()
+        admit = getattr(self.budget_guard, "admit", None)
+        if callable(admit) and hasattr(type(self.budget_guard), "admit"):
+            return await admit(operation)
+        await self.budget_guard.ensure_can_spend(operation)
+        return _NullBudgetAdmission()
 
     @staticmethod
     def _prompt_hash(prompt: str) -> str:
@@ -860,6 +884,9 @@ class OpenRouterClient:
                     post_id,
                     e,
                 )
+                raise OpenRouterUsageAccountingError(
+                    f"llm_usage_record_failed model={model} operation={operation} post_id={post_id}"
+                ) from e
 
     def _estimate_cost_usd(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         pricing = self.pricing_map.get(model, {})
