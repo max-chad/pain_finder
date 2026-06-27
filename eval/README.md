@@ -1,17 +1,17 @@
-# Evaluation harness
+# Starter opportunity-quality benchmark
 
-This directory is the reproducible scorecard for the Reddit pain parser.
+This directory contains the starter benchmark for product-level opportunity quality. It checks whether the pipeline surfaces evidence-backed B2B opportunities an operator would want to review and promote. It is not a readiness proof and it is not a parser-only benchmark.
 
 ## What is in here
 - `seed_posts.jsonl` — small checked-in starter dataset of Reddit-like posts.
-- `labels.jsonl` — hand labels for the seed set.
+- `labels.jsonl` — hand labels for the seed set, including a small starter `cluster_useful` sample.
 - `labels.schema.json` — label shape and allowed taxonomy values.
 - `run_eval.py` — CLI for evaluating either:
   - live classifier output from the configured runtime, or
   - a saved predictions file.
 
 ## Why this exists
-The parser has already grown more opinionated:
+The pipeline has already grown more opinionated:
 - source-age buckets,
 - typed post taxonomy,
 - cheap screening,
@@ -22,16 +22,19 @@ The parser has already grown more opinionated:
 - hard-negative taxonomy,
 - operator feedback fields.
 
-Without a labeled eval set, every parser change turns into vibe-based debate. This harness makes the next iterations measurable.
+Without a labeled scorecard, every opportunity-quality change turns into vibe-based debate. This harness makes the product-level review surface measurable, including the starter `cluster_useful` tag.
 
 ## Seed-set caveat
-The checked-in seed set is intentionally small and cheap. It is a **starter set**, not a final benchmark.
+The checked-in seed set is intentionally small and cheap. It is a starter benchmark, not readiness proof or a release gate.
+
+A few rows are tagged with `cluster_useful` today so the contract can report the starter product-level dimension without pretending full coverage.
 
 Target direction:
-- grow toward 100-150 labeled posts,
+- grow toward 100-150 labeled examples,
 - keep subreddit/domain diversity,
 - expand hard negatives (founder pitches, news, generic advice, B2C noise),
-- refresh labels when taxonomy changes.
+- refresh labels when taxonomy changes,
+- treat the 100-150 target as direction, not readiness proof.
 
 ## Label fields
 Each `labels.jsonl` row records:
@@ -44,6 +47,7 @@ Each `labels.jsonl` row records:
 - optional `hard_negative_type`
 - optional `evidence_quality`
 - optional `feedback_useful`
+- optional `cluster_useful`
 - `reference_now_ts`
 - optional `notes`
 
@@ -63,6 +67,10 @@ Current checked-in seed labels use:
 - `buyer_authority_accuracy`
 - `hard_negative_false_positive`
 - `verified_evidence`
+- `evaluation_contract.cluster_useful`: labeled count / useful count / useful rate
+
+These are starter metrics for the opportunity surface. They still include parser behavior, but the unit under review is the opportunity candidate, not the labeler alone.
+The `evaluation_contract` block is where the new product-level `cluster_useful` dimension is summarized.
 
 ## Run against live Codex / DSPy stack
 This uses the same runtime defaults as the app. If your env already points at Codex + DSPy, the harness will use that.

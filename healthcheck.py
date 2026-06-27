@@ -10,6 +10,8 @@ from typing import Any
 
 import aiosqlite
 
+_SQLITE_WHITESPACE_CHARS = " \t\n\r\v\f"
+
 
 def _assert_writable_dir(path: str) -> None:
     directory = Path(path)
@@ -36,14 +38,16 @@ async def run_healthcheck(*, fail_on_job_errors: bool = False) -> dict[str, Any]
     db = await _open_readonly_db(config.DB_PATH)
     try:
         await _assert_initialized(db)
+        await _assert_runtime_flags_row(db)
+        await _assert_llm_usage_events_integrity(db)
         flags = await _get_runtime_flags(db)
         summary = await _get_monitoring_summary(db)
     finally:
         await db.close()
 
-    scheduled_job_errors = int(summary.get("scheduled_job_errors", 0))
-    if fail_on_job_errors and scheduled_job_errors:
-        raise RuntimeError(f"scheduled job errors present: {scheduled_job_errors}")
+    readiness_errors = int(summary.get("readiness_errors", 0))
+    if fail_on_job_errors and readiness_errors:
+        raise RuntimeError(f"readiness errors present: {readiness_errors}")
 
     return {
         "ok": True,
@@ -51,7 +55,9 @@ async def run_healthcheck(*, fail_on_job_errors: bool = False) -> dict[str, Any]
         "reports_dir": config.REPORTS_DIR,
         "llm_paused": bool(flags.get("llm_paused", 0)),
         "monitored": int(summary.get("monitored", 0)),
-        "scheduled_job_errors": scheduled_job_errors,
+        "readiness_errors": readiness_errors,
+        "scheduled_job_errors": int(summary.get("scheduled_job_errors", 0)),
+        "monitor_errors": int(summary.get("monitor_errors", 0)),
     }
 
 
@@ -68,7 +74,7 @@ async def _open_readonly_db(path: str) -> aiosqlite.Connection:
 
 
 async def _assert_initialized(db: aiosqlite.Connection) -> None:
-    required_tables = {"runtime_flags", "monitored_subreddits", "pain_points"}
+    required_tables = {"runtime_flags", "monitored_subreddits", "pain_points", "llm_usage_events"}
     placeholders = ",".join("?" for _ in required_tables)
     async with db.execute(
         f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders})",
@@ -79,6 +85,29 @@ async def _assert_initialized(db: aiosqlite.Connection) -> None:
     missing = sorted(required_tables - existing)
     if missing:
         raise RuntimeError(f"database is not initialized; missing tables: {', '.join(missing)}")
+
+
+async def _assert_runtime_flags_row(db: aiosqlite.Connection) -> None:
+    async with db.execute("SELECT 1 FROM runtime_flags WHERE id = 1 LIMIT 1") as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise RuntimeError("runtime flags row integrity failure: missing id=1 row")
+
+
+async def _assert_llm_usage_events_integrity(db: aiosqlite.Connection) -> None:
+    async with db.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM llm_usage_events
+        WHERE TRIM(COALESCE(model, ''), ?) = ''
+           OR TRIM(COALESCE(operation, ''), ?) = ''
+        """,
+        (_SQLITE_WHITESPACE_CHARS, _SQLITE_WHITESPACE_CHARS),
+    ) as cursor:
+        row = await cursor.fetchone()
+    invalid_rows = int(row["total"] if row else 0)
+    if invalid_rows:
+        raise RuntimeError(f"invalid llm_usage_events rows: {invalid_rows}")
 
 
 async def _get_runtime_flags(db: aiosqlite.Connection) -> dict[str, Any]:
@@ -99,18 +128,20 @@ async def _get_monitoring_summary(db: aiosqlite.Connection) -> dict[str, int]:
         ) as cursor:
             monitor_errors = await cursor.fetchone()
         monitor_error_count = int(monitor_errors["total"] if monitor_errors else 0)
-    scheduled_job_errors = 0
+    scheduled_job_error_count = 0
     if await _table_exists(db, "scheduled_job_status"):
         async with db.execute(
             "SELECT COUNT(*) AS total FROM scheduled_job_status WHERE last_error IS NOT NULL"
         ) as cursor:
             failed_jobs = await cursor.fetchone()
-        scheduled_job_errors = int(failed_jobs["total"] if failed_jobs else 0)
-    scheduled_job_errors += monitor_error_count
+        scheduled_job_error_count = int(failed_jobs["total"] if failed_jobs else 0)
+    readiness_errors = scheduled_job_error_count + monitor_error_count
     return {
         "monitored": int(monitored["total"] if monitored else 0),
         "favorites": int(favorites["total"] if favorites else 0),
-        "scheduled_job_errors": scheduled_job_errors,
+        "scheduled_job_errors": scheduled_job_error_count,
+        "monitor_errors": monitor_error_count,
+        "readiness_errors": readiness_errors,
     }
 
 
@@ -129,12 +160,27 @@ async def _column_exists(db: aiosqlite.Connection, table_name: str, column_name:
     return any(row["name"] == column_name for row in rows)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        description=(
+            "Local liveness check for Docker and readiness gate for operators.\n"
+            "Use --fail-on-job-errors when readiness errors should fail closed."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python healthcheck.py\n"
+            "  python healthcheck.py --fail-on-job-errors"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Local liveness/readiness checks for pain_finder.")
+    parser = build_parser()
     parser.add_argument(
         "--fail-on-job-errors",
         action="store_true",
-        help="Fail when scheduled_job_status contains active errors; use for readiness gates, not Docker liveness.",
+        help="Fail when readiness errors are present; use for readiness gates, not Docker liveness.",
     )
     args = parser.parse_args(argv)
     try:
@@ -148,7 +194,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"reports_dir={result['reports_dir']} "
         f"llm_paused={int(result['llm_paused'])} "
         f"monitored={result['monitored']} "
-        f"scheduled_job_errors={result['scheduled_job_errors']}"
+        f"readiness_errors={result['readiness_errors']} "
+        f"scheduled_job_errors={result['scheduled_job_errors']} "
+        f"monitor_errors={result['monitor_errors']}"
     )
     return 0
 

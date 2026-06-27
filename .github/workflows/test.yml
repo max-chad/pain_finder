@@ -34,6 +34,114 @@ jobs:
       - name: Mypy
         run: mypy db.py scraper.py openrouter.py classifier.py pipeline.py bot.py scheduler.py export_sheets.py digest_delivery.py main.py healthcheck.py smoke_collect.py url_safety.py dspy_parser.py eval/run_eval.py eval_harness.py
 
+      - name: Deterministic healthcheck gate
+        env:
+          TELEGRAM_BOT_TOKEN: token
+          TELEGRAM_CHAT_ID: "123"
+          LLM_API_KEY: key
+        run: |
+          python - <<'PY'
+          import os
+          import sqlite3
+          import tempfile
+          from pathlib import Path
+
+          import healthcheck
+
+          with tempfile.TemporaryDirectory() as tmpdir:
+              tmp = Path(tmpdir)
+              db_path = tmp / "data" / "health.db"
+              reports_dir = tmp / "reports"
+              db_path.parent.mkdir(parents=True)
+              reports_dir.mkdir()
+
+              conn = sqlite3.connect(db_path)
+              try:
+                  conn.execute("CREATE TABLE runtime_flags (id INTEGER PRIMARY KEY CHECK (id = 1), llm_paused INTEGER DEFAULT 0)")
+                  conn.execute("CREATE TABLE monitored_subreddits (id INTEGER PRIMARY KEY, name TEXT, active INTEGER DEFAULT 1, last_error TEXT)")
+                  conn.execute("CREATE TABLE pain_points (id INTEGER PRIMARY KEY, triage_status TEXT DEFAULT 'new')")
+                  conn.execute("CREATE TABLE scheduled_job_status (id INTEGER PRIMARY KEY, last_error TEXT)")
+                  conn.execute("INSERT INTO runtime_flags (id, llm_paused) VALUES (1, 0)")
+                  conn.execute("INSERT INTO monitored_subreddits (name, active, last_error) VALUES ('python', 1, NULL)")
+                  conn.execute("INSERT INTO pain_points (triage_status) VALUES ('favorite')")
+                  conn.execute("INSERT INTO scheduled_job_status (last_error) VALUES (NULL)")
+                  conn.commit()
+              finally:
+                  conn.close()
+
+              os.environ["DB_PATH"] = str(db_path)
+              os.environ["REPORTS_DIR"] = str(reports_dir)
+
+              if healthcheck.main(["--fail-on-job-errors"]) != 0:
+                  raise SystemExit(1)
+          PY
+
+      - name: Deterministic smoke gate (safe equivalent for live source smoke)
+        env:
+          TELEGRAM_BOT_TOKEN: token
+          TELEGRAM_CHAT_ID: "123"
+          LLM_API_KEY: key
+          REDDIT_CLIENT_ID: id
+          REDDIT_CLIENT_SECRET: secret
+          REDDIT_USER_AGENT: pain_finder/ci
+          REVIEW_TARGETS_JSON: '[{"site":"g2","name":"Example CRM","url":"https://example.com/reviews","enabled":true}]'
+          SCRAPER_FEED_MIX_JSON: '["new"]'
+          HN_KEYWORDS_JSON: '["manual process"]'
+        run: |
+          python - <<'PY'
+          from types import SimpleNamespace
+
+          import smoke_collect
+
+          def make_post(post_id: str, source: str) -> SimpleNamespace:
+              return SimpleNamespace(
+                  post_id=post_id,
+                  source=source,
+                  subreddit="python",
+                  title="Manual workflow pain",
+                  score=42,
+                  url="https://example.com/post",
+                  source_created_at="2026-06-26T00:00:00Z",
+              )
+
+          class FakeRedditScraper:
+              def __init__(self, **kwargs):
+                  assert kwargs["feed_mix"] == ["new"]
+
+              async def fetch_posts(self, subreddit: str, limit: int = 100, timeframe: str = "day"):
+                  assert subreddit == "python"
+                  assert limit == 1
+                  assert timeframe == "day"
+                  return [make_post("reddit:ci:1", "reddit")]
+
+          class FakeHackerNewsScraper:
+              def __init__(self, user_agent: str, max_response_bytes: int):
+                  assert user_agent == "pain_finder/ci"
+
+              async def fetch_posts(self, *, keywords: list[str], lookback_hours: int = 72, max_posts: int = 100):
+                  assert keywords == ["manual process"]
+                  assert lookback_hours == 72
+                  assert max_posts == 1
+                  return [make_post("hn:ci:1", "hn")]
+
+          class FakeReviewScraper:
+              def __init__(self, user_agent: str, max_html_bytes: int):
+                  assert user_agent == "pain_finder/ci"
+
+              async def fetch_many_targets(self, *, targets, max_per_target: int, max_total: int | None = None):
+                  assert len(targets) == 1
+                  assert max_per_target == 1
+                  assert max_total == 1
+                  return [make_post("review:ci:1", "reviews")]
+
+          smoke_collect.RedditScraper = FakeRedditScraper
+          smoke_collect.HackerNewsScraper = FakeHackerNewsScraper
+          smoke_collect.ReviewScraper = FakeReviewScraper
+
+          if smoke_collect.main(["--source", "all", "--limit", "1", "--require-posts"]) != 0:
+              raise SystemExit(1)
+          PY
+
       - name: Docker Compose config
         run: docker compose config -q
 
