@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -22,7 +23,7 @@ from eval_harness import (  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a hand-labeled evaluation for the Reddit pain parser")
+    parser = argparse.ArgumentParser(description="Run the starter product-level opportunity scorecard")
     parser.add_argument("--dataset", required=True, help="Path to seed posts JSONL")
     parser.add_argument("--labels", required=True, help="Path to hand labels JSONL")
     parser.add_argument("--predictions-path", help="Path to precomputed predictions JSONL")
@@ -36,6 +37,64 @@ def _parse_args() -> argparse.Namespace:
     if args.live == bool(args.predictions_path):
         parser.error("Choose exactly one of --live or --predictions-path")
     return args
+
+
+def _safe_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
+def _summarize_cluster_useful(raw_labels: list[dict[str, Any]]) -> dict[str, Any]:
+    labeled_count = 0
+    useful_count = 0
+    for label in raw_labels:
+        if "cluster_useful" not in label:
+            continue
+        raw_value = label.get("cluster_useful")
+        if raw_value is None or raw_value == "":
+            continue
+        labeled_count += 1
+        if _safe_bool(raw_value):
+            useful_count += 1
+    not_useful_count = labeled_count - useful_count
+    return {
+        "labeled_count": labeled_count,
+        "useful_count": useful_count,
+        "not_useful_count": not_useful_count,
+        "useful_rate": round(useful_count / labeled_count, 3) if labeled_count else 0.0,
+    }
+
+
+def _build_evaluation_contract(*, raw_labels: list[dict[str, Any]], reference_now_ts: int) -> dict[str, Any]:
+    return {
+        "benchmark_type": "starter_product_level_opportunity_quality",
+        "reference_now_ts": int(reference_now_ts),
+        "label_count": len(raw_labels),
+        "dimensions": {
+            "core": [
+                "is_pain",
+                "is_monetizable",
+                "post_type",
+                "first_handness",
+                "buyer_authority",
+            ],
+            "product_level": [
+                "is_current_opportunity",
+                "hard_negative_type",
+                "evidence_quality",
+                "feedback_useful",
+                "cluster_useful",
+            ],
+        },
+        "cluster_useful": _summarize_cluster_useful(raw_labels),
+    }
 
 
 def _build_runtime_classifier(*, classifier_mode: str | None = None, disable_dspy: bool = False, budget_guard=None):
@@ -111,6 +170,7 @@ async def _run_live_predictions(args: argparse.Namespace, reference_now_ts: int,
 
 def main() -> int:
     args = _parse_args()
+    raw_labels = load_jsonl(args.labels)
     posts = posts_from_jsonl(args.dataset)
     labels = labels_from_jsonl(args.labels)
     reference_now_ts = args.reference_now_ts or reference_now_ts_from_labels(labels)
@@ -129,6 +189,7 @@ def main() -> int:
         reference_now_ts=reference_now_ts,
         current_opportunity_max_age_days=args.current_opportunity_max_age_days,
     )
+    metrics["evaluation_contract"] = _build_evaluation_contract(raw_labels=raw_labels, reference_now_ts=reference_now_ts)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -137,11 +198,14 @@ def main() -> int:
 
     print(
         "dataset_size={dataset} pain_precision={pain_precision:.3f} monetizable_precision={monetizable_precision:.3f} "
-        "stale_leakage_rate={stale_leakage:.3f}".format(
+        "stale_leakage_rate={stale_leakage:.3f} cluster_useful_labeled={cluster_useful_labeled} "
+        "cluster_useful_true_rate={cluster_useful_true_rate:.3f}".format(
             dataset=metrics["dataset_size"],
             pain_precision=metrics["pain"]["precision"],
             monetizable_precision=metrics["monetizable"]["precision"],
             stale_leakage=metrics["stale_leakage"]["rate"],
+            cluster_useful_labeled=metrics["evaluation_contract"]["cluster_useful"]["labeled_count"],
+            cluster_useful_true_rate=metrics["evaluation_contract"]["cluster_useful"]["useful_rate"],
         )
     )
     return 0

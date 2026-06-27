@@ -81,6 +81,7 @@ def sample_labels():
             "first_handness": "first_hand",
             "buyer_authority": "founder_owner",
             "reference_now_ts": REFERENCE_NOW_TS,
+            "cluster_useful": True,
         },
         {
             "post_id": "reddit:p2",
@@ -93,6 +94,7 @@ def sample_labels():
             "reference_now_ts": REFERENCE_NOW_TS,
             "hard_negative_type": "generic_question",
             "evidence_quality": "none",
+            "cluster_useful": False,
         },
         {
             "post_id": "reddit:p3",
@@ -105,6 +107,7 @@ def sample_labels():
             "reference_now_ts": REFERENCE_NOW_TS,
             "hard_negative_type": "solved_issue",
             "evidence_quality": "exact_quote",
+            "cluster_useful": False,
         },
     ]
 
@@ -189,6 +192,29 @@ def test_evaluate_predictions_computes_core_metrics(eval_harness_module, sample_
     assert metrics["post_type_confusion"]["vendor_rant"]["unclassified"] == 1
     assert metrics["first_handness_accuracy"] == pytest.approx(0.667)
     assert metrics["buyer_authority_accuracy"] == pytest.approx(0.667)
+
+
+def test_checked_in_labels_exercise_cluster_useful(eval_harness_module):
+    run_eval = _load_run_eval_module()
+    labels_path = Path(__file__).resolve().parents[1] / "eval" / "labels.jsonl"
+    raw_labels = eval_harness_module.load_jsonl(labels_path)
+
+    contract = run_eval._build_evaluation_contract(raw_labels=raw_labels, reference_now_ts=REFERENCE_NOW_TS)
+
+    assert contract["benchmark_type"] == "starter_product_level_opportunity_quality"
+    assert contract["reference_now_ts"] == REFERENCE_NOW_TS
+    assert contract["label_count"] == 10
+    assert contract["dimensions"]["product_level"] == [
+        "is_current_opportunity",
+        "hard_negative_type",
+        "evidence_quality",
+        "feedback_useful",
+        "cluster_useful",
+    ]
+    assert contract["cluster_useful"]["labeled_count"] == 2
+    assert contract["cluster_useful"]["useful_count"] == 1
+    assert contract["cluster_useful"]["not_useful_count"] == 1
+    assert contract["cluster_useful"]["useful_rate"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -289,6 +315,7 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
                 "first_handness": "first_hand",
                 "buyer_authority": "founder_owner",
                 "reference_now_ts": REFERENCE_NOW_TS,
+                "cluster_useful": True,
             }
         ],
     )
@@ -339,10 +366,18 @@ def test_run_eval_offline_writes_artifacts(tmp_path, monkeypatch, capsys):
     assert metrics["dataset_size"] == 1
     assert metrics["pain"]["precision"] == pytest.approx(1.0)
     assert metrics["stale_leakage"]["count"] == 0
+    assert metrics["evaluation_contract"]["benchmark_type"] == "starter_product_level_opportunity_quality"
+    assert metrics["evaluation_contract"]["dimensions"]["product_level"][-1] == "cluster_useful"
+    assert metrics["evaluation_contract"]["cluster_useful"]["labeled_count"] == 1
+    assert metrics["evaluation_contract"]["cluster_useful"]["useful_count"] == 1
+    assert metrics["evaluation_contract"]["cluster_useful"]["not_useful_count"] == 0
+    assert metrics["evaluation_contract"]["cluster_useful"]["useful_rate"] == pytest.approx(1.0)
 
     stdout = capsys.readouterr().out
     assert "dataset_size=1" in stdout
     assert "pain_precision=1.000" in stdout
+    assert "cluster_useful_labeled=1" in stdout
+    assert "cluster_useful_true_rate=1.000" in stdout
 
 
 def test_build_runtime_classifier_wires_budget_guard(monkeypatch):
