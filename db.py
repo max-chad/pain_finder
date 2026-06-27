@@ -478,6 +478,11 @@ class Database:
         return parsed
 
     @staticmethod
+    def _non_blank_string(value: Any, field_name: str) -> None:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+
+    @staticmethod
     def _json_dumps_strict(value: Any, field_name: str) -> str:
         try:
             return json.dumps(value, ensure_ascii=False, allow_nan=False)
@@ -1254,6 +1259,8 @@ class Database:
         request_path: str | None = None,
         candidate_stage: str | None = None,
     ) -> int:
+        self._non_blank_string(model, "model")
+        self._non_blank_string(operation, "operation")
         if prompt_tokens < 0 or completion_tokens < 0:
             raise ValueError("token counts must be non-negative")
         if not math.isfinite(cost_usd) or cost_usd < 0:

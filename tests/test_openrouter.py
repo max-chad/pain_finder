@@ -2,12 +2,40 @@
 
 from types import SimpleNamespace
 
+import asyncio
 import json
 import httpx
 import pytest
 import respx
 
-from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient
+from budget import BudgetCapReachedError, BudgetGuard
+from openrouter import AnalysisResult, DeepDiveResult, OpenRouterClient, OpenRouterUsageAccountingError
+
+
+class _InMemoryBudgetDb:
+    def __init__(self, *, spent_today_usd: float = 0.0):
+        self.spent_today_usd = spent_today_usd
+        self.paused = False
+        self.runtime_flags = {"pause_reason": None, "resume_override_until": None}
+        self.recorded_usage: list[dict[str, object]] = []
+
+    async def get_runtime_flags(self):
+        return dict(self.runtime_flags)
+
+    async def get_daily_spend_usd(self, *_args):
+        return self.spent_today_usd
+
+    async def is_llm_paused(self, *_args):
+        return self.paused
+
+    async def pause_llm(self, *, reason: str, pause_day):
+        self.paused = True
+        self.runtime_flags["pause_reason"] = reason
+        self.runtime_flags["paused_on"] = pause_day.isoformat()
+
+    async def record_llm_usage(self, **kwargs):
+        self.recorded_usage.append(dict(kwargs))
+        self.spent_today_usd += float(kwargs["cost_usd"])
 
 
 async def test_analyze_returns_primary_b2b_result(respx_mock):
@@ -348,6 +376,78 @@ def test_codex_header_builder_extracts_account_id_from_jwt():
     assert headers["ChatGPT-Account-ID"] == "acct-reserve-123"
 
 
+@pytest.mark.parametrize(
+    "auth_claims",
+    [
+        pytest.param({}, id="missing-account-id"),
+        pytest.param("not-a-dict", id="malformed-auth-claim"),
+    ],
+)
+async def test_openai_codex_provider_fails_closed_without_account_id_claim(monkeypatch, auth_claims):
+    import base64
+    import json
+
+    def _segment(payload: dict[str, object]) -> str:
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+        return encoded.rstrip("=")
+
+    token = ".".join(
+        [
+            _segment({"alg": "none"}),
+            _segment({"https://api.openai.com/auth": auth_claims}),
+            "signature",
+        ]
+    )
+
+    created_clients = []
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            payload = (
+                '{"is_monetizable": true, "pain_level": 7, "willingness_to_pay": 8, '
+                '"niche_category": "Ops", "competitor_tags": [], '
+                '"summary": "From stream", "category": "complaint", "severity": "medium"}'
+            )
+            yield SimpleNamespace(type="response.output_text.delta", delta=payload)
+
+        def get_final_response(self):
+            return SimpleNamespace(
+                output=[],
+                output_text="",
+                usage=SimpleNamespace(input_tokens=120, output_tokens=45),
+                status="completed",
+            )
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            return FakeStream()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            created_clients.append(kwargs)
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("openrouter.OpenAI", FakeClient)
+
+    client = OpenRouterClient(
+        api_key=token,
+        model="gpt-5.3-codex-spark",
+        provider="openai-codex",
+        api_base="https://chatgpt.com/backend-api/codex",
+    )
+
+    result = await client.analyze_post(title="Need automation", body="Manual process is painful")
+
+    assert created_clients == []
+    assert result is None
+
+
 async def test_openai_codex_provider_parses_streamed_json_and_tracks_usage(monkeypatch):
     from types import SimpleNamespace
 
@@ -448,7 +548,7 @@ async def test_openai_codex_provider_tracks_usage_for_empty_output(monkeypatch):
 
     budget = AsyncMock()
     client = OpenRouterClient(
-        api_key="test-key",
+        api_key="eyJhbGciOiAibm9uZSJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LXJlc2VydmUtMTIzIn19.signature",
         model="gpt-5.3-codex-spark",
         provider="openai-codex",
         api_base="https://chatgpt.com/backend-api/codex",
@@ -492,7 +592,7 @@ async def test_openai_codex_provider_rejects_oversized_streamed_response(monkeyp
     monkeypatch.setattr("openrouter.OpenAI", FakeClient)
 
     client = OpenRouterClient(
-        api_key="test-key",
+        api_key="eyJhbGciOiAibm9uZSJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LXJlc2VydmUtMTIzIn19.signature",
         model="gpt-5.3-codex-spark",
         provider="openai-codex",
         api_base="https://chatgpt.com/backend-api/codex",
@@ -608,6 +708,91 @@ async def test_openrouter_uses_cache_hit_without_http_call():
     assert result.summary == "Cached payload"
     budget.ensure_can_spend.assert_not_called()
     cache_db.get_cached_llm_payload.assert_awaited_once()
+
+
+async def test_openrouter_serializes_overlapping_cache_misses_until_usage_settles(monkeypatch):
+    db = _InMemoryBudgetDb()
+    guard = BudgetGuard(db=db, daily_cap_usd=1.0)
+    cache_db = AsyncMock()
+    cache_db.get_cached_llm_payload.return_value = None
+    client = OpenRouterClient(
+        api_key="test-key",
+        model="m1",
+        pricing_map={"m1": {"prompt_per_1k": 1.0, "completion_per_1k": 0.0}},
+        budget_guard=guard,
+        cache_db=cache_db,
+    )
+    first_provider_entered = asyncio.Event()
+    release_first_response = asyncio.Event()
+    provider_calls: list[str] = []
+
+    async def fake_post_json_with_response_limit(**kwargs):
+        provider_calls.append(kwargs["payload"]["messages"][0]["content"])
+        if len(provider_calls) == 1:
+            first_provider_entered.set()
+            await release_first_response.wait()
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"is_monetizable": true, "pain_level": 8, "willingness_to_pay": 8, '
+                            '"niche_category": "DevTools", "competitor_tags": [], '
+                            '"summary": "Need retry flow", "category": "complaint", "severity": "high"}'
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 0},
+        }
+
+    monkeypatch.setattr(client, "_post_json_with_response_limit", fake_post_json_with_response_limit)
+
+    first_task = asyncio.create_task(
+        client.analyze_post(title="First miss", body="Body one", post_id="reddit:first")
+    )
+    wait_first_provider = asyncio.create_task(first_provider_entered.wait())
+    second_task = None
+
+    try:
+        done, _pending = await asyncio.wait(
+            {wait_first_provider, first_task},
+            timeout=1,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if first_task in done:
+            await first_task
+        assert wait_first_provider in done, "first cache miss did not reach provider before timeout"
+
+        second_task = asyncio.create_task(
+            client.analyze_post(title="Second miss", body="Body two", post_id="reddit:second")
+        )
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert len(provider_calls) == 1
+        assert not second_task.done()
+
+        release_first_response.set()
+        first_result, second_result = await asyncio.wait_for(
+            asyncio.gather(first_task, second_task, return_exceptions=True),
+            timeout=1,
+        )
+    finally:
+        release_first_response.set()
+        tasks = [wait_first_provider, first_task]
+        if second_task is not None:
+            tasks.append(second_task)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert first_result is not None
+    assert first_result.summary == "Need retry flow"
+    assert isinstance(second_result, BudgetCapReachedError)
+    assert len(provider_calls) == 1
+    assert db.spent_today_usd == 1.0
+    assert db.recorded_usage[0]["post_id"] == "reddit:first"
 
 
 def test_openrouter_cache_key_includes_generation_config():
@@ -866,7 +1051,7 @@ async def test_usage_tracking_records_usage_before_provider_payload_shape_failur
     assert call_kwargs["post_id"] == "reddit:bad-shape"
 
 
-async def test_usage_tracking_failure_does_not_drop_valid_result(respx_mock, caplog):
+async def test_usage_tracking_failure_raises_accounting_error(respx_mock):
     respx_mock.post("https://openrouter.ai/api/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
@@ -886,32 +1071,34 @@ async def test_usage_tracking_failure_does_not_drop_valid_result(respx_mock, cap
     budget.record_usage.side_effect = RuntimeError("db locked")
     client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
 
-    result = await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
+    with pytest.raises(OpenRouterUsageAccountingError, match="llm_usage_record_failed") as excinfo:
+        await client.analyze_post(title="Title", body="Body", post_id="reddit:abc")
 
-    assert result is not None
-    assert result.summary == "Need retry flow"
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "db locked"
     budget.record_usage.assert_awaited_once()
-    assert "llm_usage_record_failed" in caplog.text
 
 
-async def test_usage_dict_tracking_failure_is_logged_not_raised(caplog):
+async def test_usage_dict_tracking_failure_raises_accounting_error():
     budget = AsyncMock()
     budget.record_usage.side_effect = RuntimeError("db locked")
     client = OpenRouterClient(api_key="test-key", model="m1", budget_guard=budget)
 
-    await client._record_usage_from_usage_dict(
-        usage={"prompt_tokens": 10, "completion_tokens": 5},
-        model="m1",
-        operation="classify_primary",
-        post_id="reddit:abc",
-        prompt_hash="a" * 64,
-        fallback_reason=None,
-        schema_version="primary_v2",
-        candidate_stage="primary",
-    )
+    with pytest.raises(OpenRouterUsageAccountingError, match="llm_usage_record_failed") as excinfo:
+        await client._record_usage_from_usage_dict(
+            usage={"prompt_tokens": 10, "completion_tokens": 5},
+            model="m1",
+            operation="classify_primary",
+            post_id="reddit:abc",
+            prompt_hash="a" * 64,
+            fallback_reason=None,
+            schema_version="primary_v2",
+            candidate_stage="primary",
+        )
 
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "db locked"
     budget.record_usage.assert_awaited_once()
-    assert "llm_usage_record_failed" in caplog.text
 
 
 def test_responses_usage_to_dict_tolerates_malformed_token_counts():

@@ -914,6 +914,102 @@ async def test_cross_source_dedup_skips_second_insert(db, tmp_path):
     assert hn_row is None
 
 
+async def test_analyze_external_posts_continues_when_dedup_embed_fails(db, tmp_path, caplog):
+    from deduplicator import Deduplicator
+    from embedder import Embedder
+
+    posts = [
+        Post(
+            post_id="hn_bad_embed",
+            subreddit="hackernews",
+            title="Stripe webhooks unreliable",
+            body="They keep failing randomly",
+            url="https://news.ycombinator.com/item?id=bad",
+            score=5,
+            source="hn",
+        ),
+        Post(
+            post_id="hn_good_embed",
+            subreddit="hackernews",
+            title="Need better invoice reconciliation",
+            body="Manual CSV work is painful",
+            url="https://news.ycombinator.com/item?id=good",
+            score=6,
+            source="hn",
+        ),
+    ]
+    signals = [
+        PainSignal(
+            post=posts[0],
+            category="complaint",
+            summary="Webhook reliability pain",
+            severity="high",
+            is_monetizable=True,
+            pain_level=7,
+            willingness_to_pay=8,
+            niche_category="Payments",
+            analysis_mode="b2b",
+        ),
+        PainSignal(
+            post=posts[1],
+            category="complaint",
+            summary="Invoice reconciliation pain",
+            severity="high",
+            is_monetizable=True,
+            pain_level=8,
+            willingness_to_pay=8,
+            niche_category="FinOps",
+            analysis_mode="b2b",
+        ),
+    ]
+
+    scraper = AsyncMock()
+    scraper.fetch_full_thread.return_value = []
+
+    shared_vec = [1.0] + [0.0] * 95
+    embedder = MagicMock(spec=Embedder)
+
+    async def embed_for_text(text: str) -> list[float]:
+        if "stripe webhooks unreliable" in text.lower():
+            raise RuntimeError("embed failed")
+        return shared_vec
+
+    embedder.embed = AsyncMock(side_effect=embed_for_text)
+    deduplicator = Deduplicator(db=db, embedder=embedder, threshold=0.88)
+
+    classifier = SimpleNamespace(
+        classify_batch=AsyncMock(return_value=signals),
+        openrouter=None,
+    )
+    pipeline = AnalysisPipeline(
+        scraper=scraper,
+        classifier=classifier,
+        db=db,
+        reports_dir=str(tmp_path / "reports"),
+        deep_dive_wtp_threshold=99,
+        deduplicator=deduplicator,
+    )
+
+    with caplog.at_level("INFO"):
+        run = await pipeline.analyze_external_posts(posts=posts, source="hn", run_scope="hackernews")
+
+    assert run.pain_count == 2
+    assert [signal.post.post_id for signal in run.signals] == ["hn_bad_embed", "hn_good_embed"]
+
+    bad_row = await db.get_pain_point("hn_bad_embed")
+    good_row = await db.get_pain_point("hn_good_embed")
+    assert bad_row is not None
+    assert good_row is not None
+    assert bad_row["emb_vector"] is None
+
+    with open(run.json_path, "r", encoding="utf-8") as handle:
+        report_payload = json.load(handle)
+    assert len(report_payload) == 2
+
+    completion_logs = [rec.message for rec in caplog.records if "analysis_complete stage=analyze" in rec.message]
+    assert any("dedup_embed_failed_count=1" in message for message in completion_logs)
+
+
 async def test_analyze_external_posts_mixed_outcomes_contract(db, tmp_path):
     """Mixed batch contract: only persisted canonical inserts count as pain."""
     import math

@@ -7,13 +7,22 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from openrouter import AnalysisResult, VALID_CATEGORIES, VALID_SEVERITIES
+from budget import BudgetCapReachedError, BudgetGuard
+from openrouter import AnalysisResult, OpenRouterUsageAccountingError, VALID_CATEGORIES, VALID_SEVERITIES
 from scraper import Post
 
 if TYPE_CHECKING:
     from budget import BudgetGuard
 
 logger = logging.getLogger(__name__)
+
+
+class _NullBudgetAdmission:
+    async def __aenter__(self) -> "_NullBudgetAdmission":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
 
 
 class DSPyRedditPainParser:
@@ -107,6 +116,16 @@ class DSPyRedditPainParser:
         self._program = program
         return program
 
+    async def _admit_budget(self, operation: str) -> Any:
+        if self.budget_guard is None:
+            return _NullBudgetAdmission()
+
+        if isinstance(self.budget_guard, BudgetGuard):
+            return await self.budget_guard.admit(operation)
+
+        await self.budget_guard.ensure_can_spend(operation)
+        return _NullBudgetAdmission()
+
     async def analyze_post(self, post: Post) -> AnalysisResult | None:
         if not self.api_key:
             logger.warning("DSPy Reddit parser is enabled but no API key was provided")
@@ -119,7 +138,6 @@ class DSPyRedditPainParser:
                     self.model,
                 )
                 return None
-            await self.budget_guard.ensure_can_spend("dspy_analyze_post")
 
         try:
             program = self._ensure_program()
@@ -127,21 +145,24 @@ class DSPyRedditPainParser:
             assert self._lm is not None
             prompt_text = self._usage_prompt_text(post)
 
-            def _run_program() -> Any:
-                assert self._dspy is not None
-                assert self._lm is not None
-                with self._dspy.settings.context(lm=self._lm):
-                    return program(
-                        subreddit=post.subreddit,
-                        title=post.title,
-                        body=post.body,
-                        top_comments="\n".join(post.top_comments),
-                        discovery_query=post.discovery_query,
-                    )
+            async with await self._admit_budget("dspy_analyze_post"):
+                def _run_program() -> Any:
+                    assert self._dspy is not None
+                    assert self._lm is not None
+                    with self._dspy.settings.context(lm=self._lm):
+                        return program(
+                            subreddit=post.subreddit,
+                            title=post.title,
+                            body=post.body,
+                            top_comments="\n".join(post.top_comments),
+                            discovery_query=post.discovery_query,
+                        )
 
-            prediction = await asyncio.wait_for(asyncio.to_thread(_run_program), timeout=self.timeout_seconds)
-            await self._record_usage(post=post, prompt_text=prompt_text, prediction=prediction)
+                prediction = await asyncio.wait_for(asyncio.to_thread(_run_program), timeout=self.timeout_seconds)
+                await self._record_usage(post=post, prompt_text=prompt_text, prediction=prediction)
             return self._coerce_prediction(prediction)
+        except (BudgetCapReachedError, OpenRouterUsageAccountingError):
+            raise
         except Exception as exc:
             logger.warning("DSPy Reddit parser failed for %s: %s", post.post_id, exc)
             return None
@@ -257,7 +278,16 @@ class DSPyRedditPainParser:
                 candidate_stage="primary_dspy",
             )
         except Exception as exc:
-            logger.warning("dspy_usage_record_failed model=%s post_id=%s error=%s", self.model, post.post_id, exc)
+            logger.warning(
+                "llm_usage_record_failed model=%s operation=%s post_id=%s error=%s",
+                self.model,
+                "dspy_analyze_post",
+                post.post_id,
+                exc,
+            )
+            raise OpenRouterUsageAccountingError(
+                f"llm_usage_record_failed model={self.model} operation=dspy_analyze_post post_id={post.post_id}"
+            ) from exc
 
     def _coerce_prediction(self, prediction: Any) -> AnalysisResult | None:
         category = self._string_field(prediction, "category")

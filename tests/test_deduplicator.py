@@ -40,10 +40,10 @@ def _make_deduplicator(db, threshold=0.88):
     return Deduplicator(db=db, embedder=embedder, threshold=threshold), embedder
 
 
-async def _insert(db, post_id, source="reddit", emb=None):
+async def _insert(db, post_id, source="reddit", emb=None, *, title=None, body=None):
     await db.insert_pain_point(
-        subreddit="test", post_id=post_id, url="", title="t " + post_id,
-        body="b " + post_id, category="complaint", summary="s", severity="low",
+        subreddit="test", post_id=post_id, url="", title=title or ("t " + post_id),
+        body=body or ("b " + post_id), category="complaint", summary="s", severity="low",
         source=source, emb_vector=emb,
     )
 
@@ -134,3 +134,57 @@ class TestBackfill:
         embedder.embed = flaky_embed
         count = await dedup.backfill()  # must not raise
         assert count == 0  # only 1 of 2 embeddings stored, so no pair to merge
+
+    async def test_backfill_logs_merge_failure_and_continues(self, db, caplog, monkeypatch):
+        """A single merge failure should not stop later backfill merges."""
+        await _insert(db, "reddit_a", source="reddit", title="Pair A reddit", body="shared")
+        await _insert(db, "hn_a", source="hn", title="Pair A hn", body="shared")
+        await _insert(db, "reddit_b", source="reddit", title="Pair B reddit", body="shared")
+        await _insert(db, "hn_b", source="hn", title="Pair B hn", body="shared")
+
+        dedup, embedder = _make_deduplicator(db)
+        vec_a = [1.0] + [0.0] * 95
+        vec_b = [0.0, 1.0] + [0.0] * 94
+
+        async def embed_for_text(text: str) -> list[float]:
+            if "pair a" in text.lower():
+                return vec_a
+            return vec_b
+
+        embedder.embed = AsyncMock(side_effect=embed_for_text)
+
+        original_merge_duplicate = db.merge_duplicate
+        merge_calls = 0
+
+        async def flaky_merge_duplicate(*, canonical_post_id, dup_post_id, dup_emb_vector):
+            nonlocal merge_calls
+            merge_calls += 1
+            if merge_calls == 1:
+                raise RuntimeError("merge failed")
+            return await original_merge_duplicate(
+                canonical_post_id=canonical_post_id,
+                dup_post_id=dup_post_id,
+                dup_emb_vector=dup_emb_vector,
+            )
+
+        monkeypatch.setattr(db, "merge_duplicate", flaky_merge_duplicate)
+
+        with caplog.at_level("INFO"):
+            count = await dedup.backfill()
+
+        assert count == 1
+
+        reddit_a = await db.get_pain_point("reddit_a")
+        hn_a = await db.get_pain_point("hn_a")
+        reddit_b = await db.get_pain_point("reddit_b")
+        hn_b = await db.get_pain_point("hn_b")
+
+        assert reddit_a is not None
+        assert hn_a is not None
+        assert reddit_b is not None
+        assert hn_b is not None
+        assert hn_a["triage_status"] != "merged"
+        assert hn_b["triage_status"] == "merged"
+
+        backfill_logs = [rec.message for rec in caplog.records if "dedup backfill complete" in rec.message]
+        assert any("merge_failed_count=1" in message for message in backfill_logs)

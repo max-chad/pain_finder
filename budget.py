@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -21,11 +22,26 @@ class BudgetStatus:
     resume_override_until: str | None
 
 
+class _BudgetAdmissionLease:
+    def __init__(self, lock: asyncio.Lock):
+        self._lock = lock
+        self._released = False
+
+    async def __aenter__(self) -> "_BudgetAdmissionLease":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        if not self._released:
+            self._released = True
+            self._lock.release()
+
+
 class BudgetGuard:
     def __init__(self, db: Database, daily_cap_usd: float):
         self.db = db
         self.daily_cap_usd = max(0.0, daily_cap_usd)
         self._on_pause_callback: Callable[[str], Awaitable[None]] | None = None
+        self._admission_lock = asyncio.Lock()
 
     def set_on_pause_callback(self, callback: Callable[[str], Awaitable[None]] | None) -> None:
         self._on_pause_callback = callback
@@ -73,6 +89,15 @@ class BudgetGuard:
 
         if await self.db.is_llm_paused(now):
             raise BudgetCapReachedError("LLM operations are paused by runtime flag.")
+
+    async def admit(self, operation: str) -> _BudgetAdmissionLease:
+        await self._admission_lock.acquire()
+        try:
+            await self.ensure_can_spend(operation)
+        except BaseException:
+            self._admission_lock.release()
+            raise
+        return _BudgetAdmissionLease(self._admission_lock)
 
     async def record_usage(
         self,

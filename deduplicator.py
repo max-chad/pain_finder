@@ -105,6 +105,7 @@ class Deduplicator:
         # Phase 1: embed records that have no vector yet
         to_embed = await self._db.get_pain_points_without_embeddings()
         logger.info("dedup backfill: %d records to embed", len(to_embed))
+        embed_failed_count = 0
 
         for record in to_embed:
             try:
@@ -112,6 +113,7 @@ class Deduplicator:
                 vec = await self.embedder.embed(text)
                 await self._db.store_embedding(record["post_id"], vec)
             except Exception as exc:
+                embed_failed_count += 1
                 logger.warning(
                     "dedup backfill: embed failed for %s (%s), skipping",
                     record["post_id"],
@@ -126,6 +128,7 @@ class Deduplicator:
         )
 
         merged_count = 0
+        merge_failed_count = 0
         merged_ids: set[str] = set()
 
         for i, a in enumerate(all_stored):
@@ -153,9 +156,15 @@ class Deduplicator:
                             score,
                         )
                     except Exception as exc:
+                        merge_failed_count += 1
                         logger.warning("dedup backfill: merge failed (%s)", exc)
 
-        logger.info("dedup backfill complete: %d pairs merged", merged_count)
+        logger.info(
+            "dedup backfill complete: %d pairs merged embed_failed_count=%d merge_failed_count=%d",
+            merged_count,
+            embed_failed_count,
+            merge_failed_count,
+        )
         self._cache = None  # force reload on next find_and_merge
         return merged_count
 
