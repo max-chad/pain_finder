@@ -61,6 +61,7 @@ jobs:
                   conn.execute("CREATE TABLE monitored_subreddits (id INTEGER PRIMARY KEY, name TEXT, active INTEGER DEFAULT 1, last_error TEXT)")
                   conn.execute("CREATE TABLE pain_points (id INTEGER PRIMARY KEY, triage_status TEXT DEFAULT 'new')")
                   conn.execute("CREATE TABLE scheduled_job_status (id INTEGER PRIMARY KEY, last_error TEXT)")
+                  conn.execute("CREATE TABLE llm_usage_events (id INTEGER PRIMARY KEY, model TEXT NOT NULL, operation TEXT NOT NULL)")
                   conn.execute("INSERT INTO runtime_flags (id, llm_paused) VALUES (1, 0)")
                   conn.execute("INSERT INTO monitored_subreddits (name, active, last_error) VALUES ('python', 1, NULL)")
                   conn.execute("INSERT INTO pain_points (triage_status) VALUES ('favorite')")
