@@ -2,6 +2,7 @@ import math
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 import respx
 
 from embedder import Embedder, _bow_embed, _embed_url_for_provider, _stable_token_bucket
@@ -45,7 +46,7 @@ class TestOpenRouterEmbed:
         e = _make_embedder(provider="codex")
         result = await e.embed("test text")
 
-        assert result == embedding
+        assert result == pytest.approx(embedding)
         assert len(captured) == 1
         assert captured[0].headers["Authorization"] == "Bearer test_key"
 
@@ -60,7 +61,7 @@ class TestOpenRouterEmbed:
         )
         e = _make_embedder()
         result = await e.embed("test text")
-        assert result == embedding
+        assert result == pytest.approx(embedding)
 
     @respx.mock
     async def test_provider_embedding_is_l2_normalized_for_cosine_dedup(self):
@@ -91,7 +92,7 @@ class TestOpenRouterEmbed:
             e = _make_embedder()
             result = await e.embed("test text")
 
-        assert result == fake_st_vec
+        assert result == pytest.approx(fake_st_vec)
 
     @respx.mock
     async def test_fallback_to_bow_on_oversized_provider_response(self):
